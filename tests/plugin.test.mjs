@@ -52,3 +52,14 @@ test('an interactive pull records its final result after its progress',async()=>
  assert.equal(p.records.at(-1).state,'completed');assert.equal(p.records.at(-1).ok,true);
  assert.deepEqual(p.records.at(-1).result.downloaded,['one','en/two']);
 });
+
+test('interactive spaces checks persist a fresh scoped receipt',async()=>{
+ const p=plugin();p.client=()=>({registry:async()=>({workspaces:[{id:'metho',writable:true,migrationState:'active'}]})});
+ await p.showSpaces();const r=p.records.at(-1);
+ assert.equal(r.action,'spaces');assert.equal(r.workspaceId,'metho');assert.equal(r.origin,'https://center.example.org');assert.equal(r.path,'');
+ assert.equal(r.state,'completed');assert.equal(r.ok,true);assert.deepEqual(r.result,[{id:'metho',writable:true,migrationState:'active'}]);
+});
+test('failed interactive spaces checks preserve the failure in a receipt',async()=>{
+ const p=plugin();p.client=()=>({registry:async()=>{throw Object.assign(Error('offline'),{code:'network_error'});}});
+ await p.showSpaces();assert.equal(p.records.at(-1).state,'failed');assert.equal(p.records.at(-1).code,'network_error');
+});

@@ -183,8 +183,19 @@ export default class RssdPlugin extends Plugin{
   return createCenterClient({http,origin:this.settings.origin,token});
  }
  async showSpaces(){
-  try{new Notice(spacesSummary(await this.client().registry()),15000);}
-  catch(error){new Notice('Could not read spaces: '+error.message);}
+  const id=crypto.randomUUID(),workspaceId=this.settings.workspaceId;
+  try{
+   const registry=await this.operations.run('spaces',async()=>{
+    const origin=centerOrigin(this.settings.origin),record={id,action:'spaces',path:'',origin,workspaceId};
+    await this.writeRun({...record,state:'running',ok:null});
+    try{
+     const value=await this.client().registry();
+     const result=value.workspaces?.map(w=>({id:w.id,writable:w.writable===true,migrationState:w.migrationState??null}));
+     await this.writeRun({...record,state:'completed',ok:true,result});return value;
+    }catch(error){await this.writeRun({...record,state:'failed',ok:false,...diagnosticError(error)});throw error;}
+   });
+   new Notice(spacesSummary(registry),15000);
+  }catch(error){new Notice('Could not read spaces: '+error.message);}
  }
  async save(file){
   try{
