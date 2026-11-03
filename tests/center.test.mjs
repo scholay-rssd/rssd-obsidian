@@ -36,6 +36,35 @@ test('an unreachable Center does not claim that a write was rejected',async()=>{
  await assert.rejects(centerRequest(http,'https://center.example.org','/editorial/metho/drafts',{method:'POST',body:{}}),error=>error.code==='network_error'&&/may still have been accepted/.test(error.message));
 });
 
+test('GET retries bounded transport failures without changing the request',async()=>{
+ const attempts=[],delays=[];
+ const http=async request=>{attempts.push(request);if(attempts.length<2)throw Error('net::ERR_NETWORK_CHANGED');return reply(200,{items:['ok']});};
+ const result=await centerRequest(http,'https://center.example.org','/editorial/metho/catalog?scope=all&after=100&generation=42',{
+  token:TOKEN,sleep:async ms=>{delays.push(ms);}});
+ assert.deepEqual(result,{items:['ok']});
+ assert.deepEqual(delays,[5000]);
+ assert.equal(attempts.length,2);
+ assert.deepEqual(attempts[0],attempts[1]);
+});
+
+test('GET stops after bounded timeouts and does not retry server conflicts',async()=>{
+ let attempts=0;
+ await assert.rejects(centerRequest(()=>{attempts++;return new Promise(()=>{});},'https://center.example.org','/x',{
+  timeoutMs:2,sleep:async()=>{}}),error=>error.code==='network_error'&&/timed out/.test(error.message));
+ assert.equal(attempts,2);
+ attempts=0;
+ await assert.rejects(centerRequest(async()=>{attempts++;return reply(409,{message:'catalog changed',code:'catalog_changed'});},
+  'https://center.example.org','/catalog',{sleep:async()=>{}}),error=>error.status===409&&error.code==='catalog_changed');
+ assert.equal(attempts,1);
+});
+
+test('uncertain POST failures are never retried',async()=>{
+ let attempts=0;
+ await assert.rejects(centerRequest(async()=>{attempts++;throw Error('offline');},'https://center.example.org','/drafts',{
+  method:'POST',body:{},sleep:async()=>{throw Error('unexpected retry');}}),error=>error.code==='network_error');
+ assert.equal(attempts,1);
+});
+
 test('device login shows the code, waits for approval and returns the token',async()=>{
  const origin='https://center.example.org',polls=[];let shown;
  const http=async request=>{
