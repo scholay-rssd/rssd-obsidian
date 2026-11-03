@@ -14,11 +14,11 @@ export function centerOrigin(value){
 }
 
 /** One JSON request. Errors keep the Center's status and code so callers can tell a conflict from an outage. */
-export async function centerRequest(http,origin,path,{method='GET',body,token}={}){
- let response;
- try{response=await http({url:origin+'/api/rssd/v1'+path,method,throw:false,contentType:'application/json',
-  headers:{Accept:'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});}
- catch{throw new CenterError('Center is unreachable; nothing was changed');}
+export async function centerRequest(http,origin,path,{method='GET',body,token,timeoutMs=30000}={}){
+ let response,timer;
+ try{response=await Promise.race([http({url:origin+'/api/rssd/v1'+path,method,throw:false,contentType:'application/json',
+  headers:{Accept:'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Request timed out')),timeoutMs);})]);}
+ catch(error){const detail=String(error?.message||'network error').replace(/rssd_device_[A-Za-z0-9_-]+/g,'[redacted]').slice(0,300);throw new CenterError((method==='GET'?'Center is unreachable; try again when the connection is restored':'Center response was lost; a submitted save may still have been accepted. Recover it by its original request key')+' ('+detail+')');}finally{clearTimeout(timer);}
  let value=null;try{value=typeof response.json==='function'?await response.json():response.json;}catch{value=null;}
  if(response.status<200||response.status>=300)throw new CenterError(value?.message||'Center request failed ('+response.status+')',{status:response.status,code:value?.code||'http_error'});
  if(value===null&&response.status!==204)throw new CenterError('Center response could not be read',{code:'invalid_response'});

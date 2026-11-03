@@ -31,9 +31,9 @@ test('requests carry the device token and keep the Center error code',async()=>{
  assert.match(seen[2].url,/\/editorial\/metho\/catalog\?scope=all&limit=50$/);
 });
 
-test('an unreachable Center says nothing was changed',async()=>{
+test('an unreachable Center does not claim that a write was rejected',async()=>{
  const http=async()=>{throw new Error('offline');};
- await assert.rejects(centerRequest(http,'https://center.example.org','/identity'),error=>error.code==='network_error'&&/nothing was changed/.test(error.message));
+ await assert.rejects(centerRequest(http,'https://center.example.org','/editorial/metho/drafts',{method:'POST',body:{}}),error=>error.code==='network_error'&&/may still have been accepted/.test(error.message));
 });
 
 test('device login shows the code, waits for approval and returns the token',async()=>{
@@ -62,4 +62,8 @@ test('device login rejects a foreign authorization address, expiry and cancellat
  await assert.rejects(deviceLogin({http:pending,origin,name:'n',onCode(){},now:()=>now,sleep:async ms=>{now+=ms;}}),error=>error.code==='expired_token');
  const controller=new AbortController();
  await assert.rejects(deviceLogin({http:pending,origin,name:'n',onCode(){},signal:controller.signal,sleep:async()=>controller.abort()}),error=>error.code==='cancelled');
+});
+
+test('a timeout of an uncertain POST retains the original-request recovery instruction',async()=>{
+ await assert.rejects(centerRequest(()=>new Promise(()=>{}),'https://center.example.org','/editorial/metho/drafts',{method:'POST',timeoutMs:5}),e=>e.code==='network_error'&&/timed out/.test(e.message)&&/original request key/.test(e.message));
 });

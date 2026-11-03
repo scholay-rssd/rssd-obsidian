@@ -71,7 +71,7 @@ const fail=message=>{throw Error(message);};
 export function draftEnvelope({work,base,requestKey,assets}){
  const {data}=work;
  if(!base)fail('Pull this work from the Center before saving it');
- if(work.kind!=='news')fail('Structured records cannot be edited in Obsidian yet');
+ if(base.readOnly||work.kind!=='news')fail('Structured records cannot be edited in Obsidian yet');
  if(data.id!==base.articleId)fail('The rssd-id property was changed; restore it before saving');
  if(data.sectionId!==base.sectionId||data.locale!==base.locale)fail('The section or language of a work cannot be changed here');
  for(const key of ['title','summary','author','category'])if(!data[key].trim())fail('The '+key+' property is empty');

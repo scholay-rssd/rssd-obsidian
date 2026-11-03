@@ -172,3 +172,30 @@ test('a refused save keeps the Center reason so the message names the real cause
  assert.match(saveFailureMessage(Object.assign(new Error('offline'),{retained:true})),/save is kept/);
  assert.match(saveFailureMessage(Object.assign(new Error('bad date'),{status:400,code:'invalid_request'})),/Save failed: bad date \[invalid_request\]/);
 });
+
+test('an edit made while a remote detail is loading survives pull',async()=>{
+ const {engine,vault,works,center}=setup('one');await engine.pull('metho');
+ works.set('one',detail('one',{version:2,title:'Remote new title'}));
+ const work=center.client.work;
+ center.client.work=async(...args)=>{await edit(vault,'Works/one.md','Body','Local typing');return work(...args);};
+ const result=await engine.pull('metho');
+ assert.deepEqual(result.conflicts,['one']);assert.match(await vault.read('Works/one.md'),/Local typing/);
+ assert.equal((await engine.states('metho')).one,'conflict');
+});
+test('an edit immediately after writing does not become the downloaded baseline',async()=>{
+ const {engine,vault}=setup('one');const write=vault.write;
+ vault.write=async(path,text)=>write(path,text.replace('Body','New local edit'));
+ await engine.pull('metho');assert.equal((await engine.states('metho')).one,'local_changed');
+});
+test('changing a note ID cannot save over another downloaded work',async()=>{
+ const {engine,vault,center}=setup('one','two');await engine.pull('metho');
+ await edit(vault,'Works/one.md','rssd-id: one','rssd-id: two');
+ await assert.rejects(engine.save('metho','Works/one.md'),/does not match/);
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,0);
+});
+test('changing kind cannot turn a structured record into an editable article',async()=>{
+ const {engine,vault,works,center}=setup('one');works.set('one',detail('one',{record:{kind:'resource'}}));
+ await engine.pull('metho');await edit(vault,'Works/one.md','rssd-kind: resource','rssd-kind: news');await edit(vault,'Works/one.md','Body','Changed');
+ await assert.rejects(engine.save('metho','Works/one.md'),/Structured records/);
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,0);
+});

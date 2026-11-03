@@ -26,16 +26,18 @@ export class SyncEngine{
  async noteFingerprint(path){
   const content=await this.vault.read(path);if(content==null)return null;
   const work=noteToWork(content,this.yaml.parse);if(!work)return null;
-  return {work,fingerprint:await workFingerprint(work.data,localMediaPaths(work.media))};
+  return {work,content,fingerprint:await workFingerprint(work.data,localMediaPaths(work.media))};
  }
 
- async writeWork(workspaceId,detail){
+ async writeWork(workspaceId,detail,expectedContent=null){
   const note=workToNote(detail,this.yaml.stringify);
   for(const item of note.media)await this.vault.writeBinary(MEDIA_FOLDER+'/'+item.name,base64ToBytes(item.data));
-  await this.vault.write(note.path,note.content);
-  const local=await this.noteFingerprint(note.path);
+  if(await this.vault.read(note.path)!==expectedContent)throw Object.assign(Error('The note changed while pulling; local edits were kept'),{code:'local_edit_during_pull'});
+  await this.vault.write(note.path,note.content,{expectedContent});
+  const written=noteToWork(note.content,this.yaml.parse);
+  const fingerprint=await workFingerprint(written.data,localMediaPaths(written.media));
   await this.store.set(workspaceId,detail.data.id,{articleId:detail.data.id,sectionId:detail.data.sectionId,locale:detail.data.locale||'zh-CN',
-   version:detail.version,publishedVersion:detail.publishedVersion??null,fingerprint:local.fingerprint,readOnly:isReadOnlyWork(detail)});
+   version:detail.version,publishedVersion:detail.publishedVersion??null,fingerprint,readOnly:isReadOnlyWork(detail)});
   return note.path;
  }
 
@@ -58,7 +60,8 @@ export class SyncEngine{
     if(state==='unlinked'||state==='remote_changed'||state==='not_downloaded'||state==='missing'||state==='unpublished'){
      if(local&&!base){summary.conflicts.push(item.articleId);continue;}
      const detail=await this.client.work(workspaceId,item.articleId);
-     await this.writeWork(workspaceId,detail);(base?summary.updated:summary.downloaded).push(item.articleId);
+     try{await this.writeWork(workspaceId,detail,local?.content??null);(base?summary.updated:summary.downloaded).push(item.articleId);}
+     catch(error){if(error.code!=='local_edit_during_pull')throw error;summary.conflicts.push(item.articleId);}
     }
    }
   }
@@ -86,6 +89,7 @@ export class SyncEngine{
  async save(workspaceId,path){
   const local=await this.noteFingerprint(path);
   if(!local)throw Error('This note is not an RSSD work');
+  if(path!==notePath(local.work.data.id))throw Error('The rssd-id property does not match this work file; restore it before saving');
   const {work,fingerprint}=local,base=await this.store.get(workspaceId,work.data.id);
   if(base?.pending)return this.recover(workspaceId,path,base);
   if(base&&base.fingerprint===fingerprint)return {state:'unchanged'};

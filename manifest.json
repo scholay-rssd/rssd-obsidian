@@ -1,7 +1,7 @@
 {
   "id": "rssd",
   "name": "RSSD",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.11.4",
   "description": "Open an RSSD Center space as a vault of drafts, see each work's sync state and save edits back as private drafts.",
   "author": "Scholay",
