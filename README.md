@@ -23,6 +23,7 @@ Commands: *Log in*, *Pull works*, *Save this work*, *Check sync state of all wor
 - The Center is the source of truth. Do not run Obsidian Sync, iCloud or Git on this vault.
 - A note is identified by its `rssd-id` property, never by its file name. Do not edit `rssd-*` properties.
 - A pull never overwrites a note with local changes; a conflict is reported and the note is left as written.
+- The Center sends bounded batches when supported; the plugin falls back to limited individual reads. Interrupted pulls retain completed work and report failures for retry.
 - A save carries the exact base version and is refused if the Center moved. The Center must explicitly confirm it preserves existing attachments and editorial metadata. It never publishes.
 - A save whose answer was lost keeps its request key and is recovered by that key, never resent.
 - Structured records (notices, history, resources) download read-only.

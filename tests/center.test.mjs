@@ -103,3 +103,11 @@ test('work detail requests the explicitly selected language',async()=>{
  assert.match(seen[0].url,/\/editorial\/metho\/cloud\/work-one\?locale=en$/);
  assert.match(seen[1].url,/\/editorial\/metho\/cloud\/work-one\?locale=zh-CN$/);
 });
+
+test('batch detail requests include explicit locale and ordered encoded identities',async()=>{
+ let seen;const http=async request=>{seen=request;return reply(200,{locale:'en',items:[]});};
+ const client=createCenterClient({http,origin:'https://center.example.org',token:TOKEN});
+ await client.workBatch('metho',['one','two'],'en');
+ const url=new URL(seen.url);assert.equal(url.pathname,'/api/rssd/v1/editorial/metho/cloud/batch/read');
+ assert.equal(url.searchParams.get('locale'),'en');assert.equal(url.searchParams.get('ids'),'one,two');assert.equal(seen.method,'GET');
+});

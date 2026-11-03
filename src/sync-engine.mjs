@@ -5,7 +5,7 @@
 import {workToNote,noteToWork,workFingerprint,centerMediaPaths,localMediaPaths,workState,draftEnvelope,isReadOnlyWork,
  bytesToBase64,base64ToBytes,notePath,checkLocale,MEDIA_FOLDER} from './sync-model.mjs';
 
-const PAGE=100;
+const PAGE=100,DETAIL_CONCURRENCY=3,BATCH_SIZE=8;
 export const newRequestKey=()=>'obsidian-'+crypto.randomUUID().replace(/-/g,'');
 
 // Read a complete consistent catalog snapshot before yielding any pages. If a generation
@@ -21,7 +21,17 @@ async function* catalogPages(client,workspaceId,locale){
     if(!Array.isArray(page?.items)||page.generation==null)throw Object.assign(Error('The Center returned an invalid catalog page'),{code:'invalid_catalog'});
     if(generation!==undefined&&page.generation!==generation)throw Object.assign(Error('The Center catalog changed during pagination'),{code:'catalog_changed'});
     generation=page.generation;pages.push(page.items);
-    if(page.next==null){for(const items of pages)yield items;return;}
+    if(page.next==null){
+     // A repeated identity would let two workers race the same note. Reject the
+     // snapshot before touching the vault, including duplicates across pages.
+     const identities=new Set();
+     for(const items of pages)for(const item of items){
+      notePath(item?.articleId,locale);
+      if(identities.has(item.articleId))throw Object.assign(Error('The Center catalog contains a duplicate work identity'),{code:'identity_conflict'});
+      identities.add(item.articleId);
+     }
+     for(const items of pages)yield items;return;
+    }
     if(!Number.isSafeInteger(page.next)||page.next<0||(after!==undefined&&page.next<=after)||page.next===0)
      throw Object.assign(Error('The Center returned an invalid catalog cursor'),{code:'invalid_catalog'});
     after=page.next;
@@ -66,54 +76,126 @@ export class SyncEngine{
   checkLocale(locale);
   const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],unchanged:0,removedFromCenter:[]};
   const seen=new Set(),retry=[];
+  let batchAvailable=typeof this.client.workBatch==='function',failedBatches=0;
   const failure=(item,error)=>({articleId:item.articleId,code:error.code||'network_error',
    message:String(error.message||'Center is unreachable').replace(/rssd_device_[A-Za-z0-9_-]+/g,'[redacted]')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+/gi,'$1[redacted]').slice(0,500)});
   const snapshot=()=>({...summary,downloaded:[...summary.downloaded],updated:[...summary.updated],skipped:[...summary.skipped],
    conflicts:[...summary.conflicts],pending:[...summary.pending],failed:[...summary.failed],removedFromCenter:[...summary.removedFromCenter]});
-  const processItem=async item=>{
-   const base=await this.store.get(workspaceId,item.articleId,locale),path=notePath(item.articleId,locale),local=base?.pending?null:await this.noteFingerprint(path);
-   const state=base?.pending?'publishing':workState({base,localFingerprint:local?.fingerprint??null,remote:{version:item.version}});
-   await onProgress({articleId:item.articleId,locale,state,summary:snapshot()});
-   if(state==='publishing'){summary.pending.push(item.articleId);return;}
-   if(state==='synced'){summary.unchanged++;return;}
-   if(state==='local_changed'){summary.skipped.push(item.articleId);return;}
-   if(state==='conflict'){summary.conflicts.push(item.articleId);return;}
-   if(state==='unlinked'||state==='remote_changed'||state==='not_downloaded'||state==='missing'||state==='unpublished'){
-    if(local&&!base){summary.conflicts.push(item.articleId);return;}
-    let detail;
-    try{detail=await this.client.work(workspaceId,item.articleId,locale);}
-    catch(error){
-     // Only defer a transport failure from this GET. Local vault errors, HTTP
-     // failures and uncertain writes must never be silently classified as retries.
-     if(error?.code==='network_error'&&(!error.status||error.status===0))error.retryableDetail=true;
-     throw error;
-    }
-    if(detail?.articleId!==item.articleId||detail?.data?.id!==item.articleId)
-     throw Object.assign(Error('The Center returned a different work; local notes were kept'),{code:'identity_conflict'});
-    try{await this.writeWork(workspaceId,detail,local?.content??null,locale);(base?summary.updated:summary.downloaded).push(item.articleId);}
-    catch(error){if(error.code!=='local_edit_during_pull')throw error;summary.conflicts.push(item.articleId);}
-   }
-  };
   const attach=(item,error)=>{
    if(error&&typeof error==='object')Object.assign(error,{articleId:item.articleId,pullSummary:snapshot()});
    return error;
   };
-  for await(const items of catalogPages(this.client,workspaceId,locale)){
-   for(const item of items){
-    seen.add(item.articleId);
-    try{await processItem(item);}
-    catch(error){
-     if(!error?.retryableDetail)throw attach(item,error);
-     retry.push(item);summary.failed.push(failure(item,error));
+  // Prepare and apply in one ordered lane: the Obsidian vault adapter, settings
+  // store and progress receipts are shared mutable state. Only network reads
+  // are allowed to overlap.
+  const prepare=async item=>{
+   const base=await this.store.get(workspaceId,item.articleId,locale),path=notePath(item.articleId,locale),local=base?.pending?null:await this.noteFingerprint(path);
+   const state=base?.pending?'publishing':workState({base,localFingerprint:local?.fingerprint??null,remote:{version:item.version}});
+   await onProgress({articleId:item.articleId,locale,state,summary:snapshot()});
+   if(state==='publishing'){summary.pending.push(item.articleId);return null;}
+   if(state==='synced'){summary.unchanged++;return null;}
+   if(state==='local_changed'){summary.skipped.push(item.articleId);return null;}
+   if(state==='conflict'){summary.conflicts.push(item.articleId);return null;}
+   if(!['unlinked','remote_changed','not_downloaded','missing','unpublished'].includes(state))return null;
+   if(local&&!base){summary.conflicts.push(item.articleId);return null;}
+   return {item,base,baseSnapshot:JSON.stringify(base),local};
+  };
+  const single=async item=>{
+   try{return await this.client.work(workspaceId,item.articleId,locale);}
+   catch(error){
+    if(error?.code==='network_error'&&(!error.status||error.status===0))error.retryableDetail=true;
+    throw error;
+   }
+  };
+  const apply=async(prepared,detail)=>{
+   const {item,base,local}=prepared;
+   if(detail?.articleId!==item.articleId||detail?.data?.id!==item.articleId)
+    throw Object.assign(Error('The Center returned a different work; local notes were kept'),{code:'identity_conflict'});
+   // An intervening pending save or baseline change must not be overwritten.
+   const currentBase=await this.store.get(workspaceId,item.articleId,locale);
+   if(JSON.stringify(currentBase)!==prepared.baseSnapshot){
+    (currentBase?.pending?summary.pending:summary.conflicts).push(item.articleId);return;
+   }
+   try{await this.writeWork(workspaceId,detail,local?.content??null,locale);(base?summary.updated:summary.downloaded).push(item.articleId);}
+   catch(error){if(error.code!=='local_edit_during_pull')throw error;summary.conflicts.push(item.articleId);}
+  };
+  // Single-detail fallback is capped at three concurrent requests and waits for
+  // every started request before returning, even when one of them fails.
+  const singles=async entries=>{
+   const outcomes=new Array(entries.length);let next=0;
+   const worker=async()=>{for(;;){const index=next++;if(index>=entries.length)return;
+    try{outcomes[index]={status:'fulfilled',value:await single(entries[index].item)};}
+    catch(reason){outcomes[index]={status:'rejected',reason};}
+   }};
+   await Promise.all(Array.from({length:Math.min(DETAIL_CONCURRENCY,entries.length)},worker));return outcomes;
+  };
+  const fetchDetails=async entries=>{
+   if(!batchAvailable)return singles(entries);
+   let response;
+   try{response=await this.client.workBatch(workspaceId,entries.map(x=>x.item.articleId),locale);}
+   catch(error){
+    // Old Centers do not implement the route. A batch-level 404 is safe to
+    // retry as individual reads; no mutation is sent by either endpoint.
+    if(error?.status===404){batchAvailable=false;return singles(entries);}
+    if(error?.code==='network_error'&&(!error.status||error.status===0)){
+     error.retryableDetail=true;return entries.map(()=>({status:'rejected',reason:error}));
     }
+    throw error;
+   }
+   if(response?.locale!==locale||!Array.isArray(response.items)||response.items.length!==entries.length)
+    throw Object.assign(Error('The Center returned an invalid batch; local notes were kept'),{code:'invalid_batch'});
+   const outcomes=[],fallback=[];
+   for(let i=0;i<entries.length;i++){
+    const item=response.items[i];
+    if(!item||item.articleId!==entries[i].item.articleId||typeof item.ok!=='boolean')
+     throw Object.assign(Error('The Center returned mismatched batch identities; local notes were kept'),{code:'invalid_batch'});
+    if(item.ok){if(!item.detail||typeof item.detail!=='object')throw Object.assign(Error('The Center returned an invalid batch detail'),{code:'invalid_batch'});outcomes[i]={status:'fulfilled',value:item.detail};continue;}
+    const error=item.error;
+    if(!error||typeof error.code!=='string'||!Number.isInteger(error.status)||error.status<400||error.status>599)
+     throw Object.assign(Error('The Center returned an invalid batch error'),{code:'invalid_batch'});
+    if(error.code==='batch_response_limit'&&error.status===413){fallback.push({index:i,entry:entries[i]});continue;}
+    outcomes[i]={status:'rejected',batchError:true,reason:Object.assign(Error(String(error.message||'Center request failed').slice(0,500)),{code:error.code,status:error.status})};
+   }
+   if(fallback.length){const results=await singles(fallback.map(x=>x.entry));for(let i=0;i<fallback.length;i++)outcomes[fallback[i].index]=results[i];}
+   return outcomes;
+  };
+  for await(const items of catalogPages(this.client,workspaceId,locale)){
+   for(let offset=0;offset<items.length;offset+=BATCH_SIZE){
+    const group=items.slice(offset,offset+BATCH_SIZE),entries=[];
+    for(const item of group){
+     seen.add(item.articleId);
+     try{const prepared=await prepare(item);if(prepared)entries.push(prepared);}
+     catch(error){throw attach(item,error);}
+    }
+    if(!entries.length)continue;
+    let outcomes;
+    try{outcomes=await fetchDetails(entries);}catch(error){throw attach(entries[0].item,error);}
+    for(let i=0;i<entries.length;i++){
+     const {item}=entries[i],outcome=outcomes[i];
+     if(outcome.status==='rejected'){
+      const error=outcome.reason;
+      // A batch explicitly reports each item's independent failure. Retain it
+      // in the incomplete result without hiding other valid works or retrying
+      // non-network errors such as 404, 409 or 500.
+      if(outcome.batchError){summary.failed.push(failure(item,error));continue;}
+      if(!error?.retryableDetail)throw attach(item,error);
+      retry.push(item);summary.failed.push(failure(item,error));continue;
+     }
+     try{await apply(entries[i],outcome.value);}catch(error){throw attach(item,error);}
+    }
+    // Bound requests during an outage: requestUrl cannot cancel a timed-out GET,
+    // so do not launch batches indefinitely while the connection is down.
+    const allNetworkFailures=outcomes.every(x=>x.status==='rejected'&&x.reason?.retryableDetail);
+    failedBatches=allNetworkFailures?failedBatches+1:0;
+    if(failedBatches>=2)throw attach(entries[0].item,Object.assign(Error('Center connection failed repeatedly; retry the pull when it is available'),{code:'network_error'}));
    }
   }
-  // Re-evaluate the local file and baseline on the second pass. A user may have
-  // edited or created the note while other works downloaded; preserve that edit.
+  // Re-evaluate the note and baseline on retry: a user may have edited it while
+  // other works were downloading. This second pass uses single reads only.
   for(const item of retry){
    try{
-    await processItem(item);
+    const prepared=await prepare(item);if(prepared)await apply(prepared,await single(item));
     summary.failed=summary.failed.filter(entry=>entry.articleId!==item.articleId);
    }catch(error){
     if(!error?.retryableDetail)throw attach(item,error);

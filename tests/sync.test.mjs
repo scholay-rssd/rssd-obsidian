@@ -425,3 +425,76 @@ test('invalid Center media paths are rejected before any vault write',async()=>{
  await assert.rejects(engine.pull('metho'),error=>error.code==='invalid_media_path');
  assert.equal(await vault.read('outside.md'),'keep this');assert.equal(await vault.read('Works/one.md'),null);assert.deepEqual(await store.list('metho'),[]);
 });
+
+test('small batches reduce requests and preserve sequential vault writes',async()=>{
+ const ids=Array.from({length:10},(_,i)=>'batch-'+i),{engine,center,vault,works}=setup(...ids),calls=[];
+ let activeWrites=0,peakWrites=0;const write=vault.write;
+ vault.write=async(...args)=>{activeWrites++;peakWrites=Math.max(peakWrites,activeWrites);await new Promise(resolve=>setTimeout(resolve,1));try{return await write(...args);}finally{activeWrites--;}};
+ center.client.workBatch=async(space,asked,locale)=>{calls.push({space,asked,locale});return {locale,items:asked.map(id=>({articleId:id,ok:true,detail:works.get(id)}))};};
+ const result=await engine.pull('metho');
+ assert.deepEqual(calls.map(x=>x.asked.length),[8,2]);assert.equal(center.calls.filter(x=>x[0]==='work').length,0);
+ assert.equal(result.downloaded.length,10);assert.equal(peakWrites,1);assert.deepEqual(result.failed,[]);
+});
+
+test('older Center falls back once to bounded parallel single-work reads',async()=>{
+ const ids=Array.from({length:10},(_,i)=>'legacy-'+i),{engine,center}=setup(...ids);let batches=0,active=0,peak=0;
+ center.client.workBatch=async()=>{batches++;throw Object.assign(Error('Unknown editorial operation'),{status:404,code:'not_found'});};
+ const get=center.client.work;center.client.work=async(...args)=>{active++;peak=Math.max(peak,active);try{await new Promise(resolve=>setTimeout(resolve,2));return await get(...args);}finally{active--;}};
+ const result=await engine.pull('metho');assert.equal(batches,1);assert.equal(result.downloaded.length,10);
+ assert.equal(center.calls.filter(x=>x[0]==='work').length,10);assert.equal(peak,3);
+});
+
+test('batch size-limit fallback fetches only oversized works individually',async()=>{
+ const {engine,center,works}=setup('one','two','three');
+ center.client.workBatch=async(_space,ids,locale)=>({locale,items:ids.map(id=>id==='two'?
+  {articleId:id,ok:false,error:{code:'batch_response_limit',status:413,message:'Read this work individually'}}:
+  {articleId:id,ok:true,detail:works.get(id)})});
+ const result=await engine.pull('metho');assert.deepEqual(result.downloaded,['one','two','three']);
+ assert.deepEqual(center.calls.filter(x=>x[0]==='work').map(x=>x[1]),['two']);
+});
+
+test('batch per-work errors leave other works usable and make the result incomplete',async()=>{
+ const {engine,center,works,vault}=setup('one','two');
+ center.client.workBatch=async(_space,ids,locale)=>({locale,items:ids.map(id=>id==='one'?
+  {articleId:id,ok:false,error:{code:'identity_conflict',status:409,message:'Duplicate identity'}}:
+  {articleId:id,ok:true,detail:works.get(id)})});
+ const result=await engine.pull('metho');assert.deepEqual(result.failed,[{articleId:'one',code:'identity_conflict',message:'Duplicate identity'}]);
+ assert.deepEqual(result.downloaded,['two']);assert.equal(await vault.read('Works/one.md'),null);assert.ok(await vault.read('Works/two.md'));
+});
+
+test('mismatched batch identities are rejected before any note is written',async()=>{
+ const {engine,center,works,vault}=setup('one','two');
+ center.client.workBatch=async(_space,_ids,locale)=>({locale,items:[{articleId:'two',ok:true,detail:works.get('two')},{articleId:'one',ok:true,detail:works.get('one')}]});
+ await assert.rejects(engine.pull('metho'),error=>error.code==='invalid_batch');assert.equal(vault.files.size,0);
+});
+
+test('local edits and pending saves made during a batch read are preserved',async()=>{
+ const {engine,center,vault,works,store}=setup('one','two');await engine.pull('metho');
+ for(const id of ['one','two'])works.set(id,detail(id,{version:2,title:'Remote '+id}));
+ center.client.workBatch=async(_space,ids,locale)=>{
+  await edit(vault,'Works/one.md','Body','Local edit');
+  const base=await store.get('metho','two');await store.set('metho','two',{...base,pending:{requestKey:'keep-original'}});
+  return {locale,items:ids.map(id=>({articleId:id,ok:true,detail:works.get(id)}))};
+ };
+ const result=await engine.pull('metho');assert.deepEqual(result.conflicts,['one']);assert.deepEqual(result.pending,['two']);
+ assert.match(await vault.read('Works/one.md'),/Local edit/);assert.equal((await store.get('metho','two')).pending.requestKey,'keep-original');
+});
+
+test('repeated full-batch outages stop further requests and retain partial failures',async()=>{
+ const ids=Array.from({length:24},(_,i)=>'offline-'+i),{engine,center}=setup(...ids);let calls=0;
+ center.client.workBatch=async()=>{calls++;throw Object.assign(Error('unreachable'),{code:'network_error',status:0});};
+ await assert.rejects(engine.pull('metho'),error=>error.code==='network_error'&&error.pullSummary.failed.length===16);
+ assert.equal(calls,2);assert.equal(center.calls.filter(x=>x[0]==='work').length,0);
+});
+
+test('duplicate catalog identities cannot race one vault note',async()=>{
+ const {engine,center,vault}=setup('same');
+ center.client.catalog=async()=>({generation:1,items:[{articleId:'same',version:1},{articleId:'same',version:1}],next:null});
+ await assert.rejects(engine.pull('metho'),error=>error.code==='identity_conflict');assert.equal(vault.files.size,0);
+});
+
+test('single-read fallback waits for all in-flight requests before reporting a fatal error',async()=>{
+ const {engine,center,vault}=setup('one','two','three');const read=center.client.work;let active=0;
+ center.client.work=async(space,id)=>{active++;try{if(id==='one')throw Object.assign(Error('server failure'),{status:503});await new Promise(resolve=>setTimeout(resolve,4));return await read(space,id);}finally{active--;}};
+ await assert.rejects(engine.pull('metho'),error=>error.status===503);assert.equal(active,0);assert.equal(vault.files.size,0);
+});
