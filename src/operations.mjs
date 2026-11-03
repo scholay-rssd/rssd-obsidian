@@ -13,7 +13,7 @@ export function automationRequest(params) {
  const id=params.requestId||crypto.randomUUID();
  if (!/^[a-zA-Z0-9_-]{1,96}$/.test(id)) throw Error('Invalid requestId');
  const path=params.path||'';
- if (action==='save'&&!/^Works\/[a-zA-Z0-9._:-]+\.md$/.test(path)) throw Error('Give the exact path Works/<id>.md');
+ if (action==='save'&&!/^Works\/(?:en\/)?[a-zA-Z0-9._:-]+\.md$/.test(path)) throw Error('Give the exact path Works/<id>.md');
  return {id,action,path:action==='save'?path:''};
 }
 // Diagnostic receipts contain no response bodies or credentials.
@@ -34,7 +34,7 @@ export async function recordedOperation({request,read,write,execute}) {
  }
  const record={...request,state:'running',ok:null,at:new Date().toISOString()};
  await write(record);
- try { const result=await execute();Object.assign(record,{state:'completed',ok:true,result}); }
+ try { const result=await execute();const partial=request.action==='pull'&&Array.isArray(result?.failed)&&result.failed.length>0;Object.assign(record,{state:partial?'partial':'completed',ok:!partial,result}); }
  catch(error) { Object.assign(record,{state:'failed',ok:false,...diagnosticError(error)}); }
  record.at=new Date().toISOString();await write(record);return record;
 }

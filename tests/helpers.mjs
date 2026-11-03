@@ -6,8 +6,11 @@ export function memoryVault(){
   readBinary:async p=>files.has(p)?files.get(p):null,writeBinary:async(p,b)=>{if(!files.has(p))files.set(p,b);}};
 }
 export function memoryStore(){
- const data={};
- return {data,get:async(s,id)=>data[s]?.[id]??null,set:async(s,id,v)=>{(data[s]??={})[id]=v;},delete:async(s,id)=>{delete data[s]?.[id];},list:async s=>Object.values(data[s]||{})};
+ const data={},byLocale={};
+ const root=(locale='zh-CN')=>locale==='zh-CN'?data:(byLocale[locale]??={});
+ return {data,byLocale,get:async(s,id,locale)=>root(locale)[s]?.[id]??null,
+  set:async(s,id,v,locale)=>{(root(locale)[s]??={})[id]=v;},delete:async(s,id,locale)=>{delete root(locale)[s]?.[id];},
+  list:async(s,locale)=>Object.values(root(locale)[s]||{})};
 }
 export const png=new Uint8Array([137,80,78,71,13,10,26,10,1,2,3]);
 export const b64=bytes=>Buffer.from(bytes).toString('base64');

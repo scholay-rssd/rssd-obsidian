@@ -47,8 +47,8 @@ test('a failed interactive pull retains its failed work and partial progress wit
 test('an interactive pull records its final result after its progress',async()=>{
  const p=plugin();p.setStatus=()=>{};
  const result={downloaded:['one'],updated:[],unchanged:0,skipped:[],conflicts:[],removedFromCenter:[]};
- p.engine=()=>({pull:async(_space,{onProgress})=>{await onProgress({articleId:'one',summary:{downloaded:[]}});return result;}});
+ p.engine=()=>({pull:async(_space,{onProgress,locale})=>{await onProgress({articleId:'one',summary:{downloaded:[]}});return locale==='zh-CN'?result:{...result,downloaded:['two']};}});
  await p.pull();
  assert.equal(p.records.at(-1).state,'completed');assert.equal(p.records.at(-1).ok,true);
- assert.deepEqual(p.records.at(-1).result,result);
+ assert.deepEqual(p.records.at(-1).result.downloaded,['one','en/two']);
 });

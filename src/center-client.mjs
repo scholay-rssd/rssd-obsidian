@@ -50,7 +50,7 @@ export function createCenterClient({http,origin,token}){
   /** One page of every work in the space (drafts included), newest Center snapshot. */
   catalog:(workspaceId,options)=>request(editorial(workspaceId,'catalog?'+query({scope:'all',...options}))),
   /** The current Center edition of one work, with its data and image bytes. */
-  work:(workspaceId,articleId)=>request(editorial(workspaceId,'cloud/'+encodeURIComponent(articleId))),
+  work:(workspaceId,articleId,locale)=>request(editorial(workspaceId,'cloud/'+encodeURIComponent(articleId)+(locale?'?'+query({locale}):''))),
   /** Exact-base private save; never publishes. */
   saveDraft:(workspaceId,envelope)=>request(editorial(workspaceId,'drafts'),{method:'POST',body:envelope}),
   /** Recovery of a draft save whose answer was lost, by its original request key. */

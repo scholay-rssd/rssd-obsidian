@@ -7,10 +7,11 @@ import {deviceLogin} from './device-login.mjs';
 import {SyncEngine} from './sync-engine.mjs';
 import {saveFailureMessage} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
-import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER} from './sync-model.mjs';
+import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,notePath} from './sync-model.mjs';
 
 const TOKEN_SECRET='rssd-center-device-token';
-const DEFAULTS={origin:'',deviceName:'',workspaceId:'',baselines:{},allowAutomation:false};
+const DEFAULTS={origin:'',deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},allowAutomation:false};
+const LOCALES=['zh-CN','en'];
 const http=request=>requestUrl(request);
 
 class CodeModal extends Modal{
@@ -62,8 +63,8 @@ export default class RssdPlugin extends Plugin{
     execute:async()=>{
      const space=this.settings.workspaceId;
      if(request.action==='login')return this.performLogin({openBrowser:true});
-     if(request.action==='pull')return this.engine().pull(space);
-     if(request.action==='status')return this.engine().states(space);
+     if(request.action==='pull')return this.pullAll(space);
+     if(request.action==='status')return this.statesAll(space);
      if(request.action==='spaces')return (await this.client().registry()).workspaces?.map(w=>({id:w.id,writable:w.writable===true,migrationState:w.migrationState??null}));
      await this.assertWritable();return this.engine().save(space,request.path);
     }}));
@@ -100,12 +101,26 @@ export default class RssdPlugin extends Plugin{
     writeBinary:async(path,bytes)=>{await this.ensureFolder(path);if(!await adapter.exists(path))await vault.createBinary(path,bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength));},
    },
    store:{
-    get:async(space,id)=>this.settings.baselines[space]?.[id]??null,
-    set:async(space,id,value)=>{this.settings.boundSpace=space;(this.settings.baselines[space]??={})[id]=value;await this.saveSettings();},
-    delete:async(space,id)=>{delete this.settings.baselines[space]?.[id];await this.saveSettings();},
-    list:async space=>Object.values(this.settings.baselines[space]||{}),
+    get:async(space,id,locale='zh-CN')=>(locale==='zh-CN'?this.settings.baselines[space]:this.settings.baselinesByLocale?.[space]?.[locale])?.[id]??null,
+    set:async(space,id,value,locale='zh-CN')=>{this.settings.boundSpace=space;const bucket=locale==='zh-CN'?(this.settings.baselines[space]??={}):(((this.settings.baselinesByLocale??={})[space]??={})[locale]??={});bucket[id]=value;await this.saveSettings();},
+    delete:async(space,id,locale='zh-CN')=>{const bucket=locale==='zh-CN'?this.settings.baselines[space]:this.settings.baselinesByLocale?.[space]?.[locale];if(bucket)delete bucket[id];await this.saveSettings();},
+    list:async(space,locale='zh-CN')=>Object.values((locale==='zh-CN'?this.settings.baselines[space]:this.settings.baselinesByLocale?.[space]?.[locale])||{}),
    },
   });
+ }
+ async pullAll(space,{onProgress=()=>{}}={}){
+  const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],unchanged:0,removedFromCenter:[]},engine=this.engine();
+  for(const locale of LOCALES){
+   const result=await engine.pull(space,{locale,onProgress:progress=>onProgress({...progress,locale})});
+   for(const key of ['downloaded','updated','skipped','conflicts','pending','removedFromCenter'])summary[key].push(...(result[key]||[]).map(id=>locale==='zh-CN'?id:locale+'/'+id));
+   summary.failed.push(...(result.failed||[]).map(item=>({...item,locale})));summary.unchanged+=result.unchanged||0;
+  }
+  return summary;
+ }
+ async statesAll(space){
+  const states={},engine=this.engine();
+  for(const locale of LOCALES)for(const [id,state] of Object.entries(await engine.states(space,{locale})))states[notePath(id,locale)]=state;
+  return states;
  }
  async ensureFolder(path){
   const folder=path.split('/').slice(0,-1).join('/');
@@ -140,11 +155,11 @@ export default class RssdPlugin extends Plugin{
     this.setStatus('RSSD: pulling…');
     await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked});
     try{
-     const result=await this.engine().pull(workspaceId,{onProgress:async({articleId,summary})=>{
+     const result=await this.pullAll(workspaceId,{onProgress:async({articleId,summary,locale})=>{
       this.setStatus('RSSD: pulling… '+(++checked)+' works');
-      await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked,articleId,partial:summary});
+      await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked,articleId,locale,partial:summary});
      }});
-     await this.writeRun({id,action:'pull',workspaceId,state:'completed',ok:true,checked,result});
+     await this.writeRun({id,action:'pull',workspaceId,state:result.failed?.length?'partial':'completed',ok:!result.failed?.length,checked,result});
      return result;
     }catch(error){
      await this.writeRun({id,action:'pull',workspaceId,state:'failed',ok:false,checked,...diagnosticError(error)});
@@ -155,7 +170,9 @@ export default class RssdPlugin extends Plugin{
    const parts=[summary.downloaded.length+' new',summary.updated.length+' updated',summary.unchanged+' unchanged'];
    if(summary.skipped.length)parts.push(summary.skipped.length+' kept (local changes)');
    if(summary.conflicts.length)parts.push(summary.conflicts.length+' in conflict');
-   new Notice('Pull finished: '+parts.join(', '));
+   if(summary.pending?.length)parts.push(summary.pending.length+' waiting for save recovery');
+   if(summary.failed?.length)parts.push(summary.failed.length+' failed; pull again to retry');
+   new Notice((summary.failed?.length?'Pull incomplete: ':'Pull finished: ')+parts.join(', '));
    if(summary.conflicts.length)new Notice('Conflicts were not changed: '+summary.conflicts.join(', '),10000);
   }catch(error){new Notice('Pull failed: '+error.message);}
  }
@@ -181,7 +198,7 @@ export default class RssdPlugin extends Plugin{
 
  async refreshStates(){
   try{
-   const states=await this.operations.run('status',()=>this.engine().states(this.settings.workspaceId)),counts={};
+   const states=await this.operations.run('status',()=>this.statesAll(this.settings.workspaceId)),counts={};
    for(const state of Object.values(states))counts[state]=(counts[state]||0)+1;
    new Notice(Object.entries(counts).map(([state,n])=>n+' '+(STATE_LABELS[state]||state)).join(' · ')||'No works');
   }catch(error){new Notice('Check failed: '+error.message);}
@@ -216,13 +233,13 @@ class WorksView extends ItemView{
   const el=this.contentEl;el.empty();el.createEl('h3',{text:'RSSD · '+(this.plugin.settings.workspaceId||'Choose a space')});
   new Setting(el).addButton(b=>b.setButtonText('Refresh').onClick(()=>this.render())).addButton(b=>b.setButtonText('Pull works').onClick(async()=>{await this.plugin.pull();await this.render();}));
   try{
-   const data=await this.plugin.operations.run('works',async()=>({registry:await this.plugin.client().registry(),states:await this.plugin.engine().states(this.plugin.settings.workspaceId)}));
+   const data=await this.plugin.operations.run('works',async()=>({registry:await this.plugin.client().registry(),states:await this.plugin.statesAll(this.plugin.settings.workspaceId)}));
    const reason=readOnlyReason(spaceInfo(data.registry,this.plugin.settings.workspaceId),this.plugin.settings.workspaceId);
    if(reason)el.createEl('p',{text:reason});
-   for(const [id,state] of Object.entries(data.states)){
-    const file=this.app.vault.getAbstractFileByPath(WORKS_FOLDER+'/'+id+'.md');
+   for(const [path,state] of Object.entries(data.states)){
+    const id=path.split('/').at(-1).replace(/\.md$/,'');const file=this.app.vault.getAbstractFileByPath(path);
     const title=file?this.app.metadataCache.getFileCache(file)?.frontmatter?.title:null;
-    new Setting(el).setName(String(title||id)).setDesc(STATE_LABELS[state]||state).addButton(b=>b.setButtonText(file?'Open':'Pull first').setDisabled(!file).onClick(()=>this.app.workspace.getLeaf(false).openFile(file)));
+    new Setting(el).setName(String(title||id)).setDesc((path.startsWith('Works/en/')?'English · ':'')+(STATE_LABELS[state]||state)).addButton(b=>b.setButtonText(file?'Open':'Pull first').setDisabled(!file).onClick(()=>this.app.workspace.getLeaf(false).openFile(file)));
    }
   }catch(error){el.createEl('p',{text:error.message});}
  }

@@ -96,3 +96,10 @@ test('device login rejects a foreign authorization address, expiry and cancellat
 test('a timeout of an uncertain POST retains the original-request recovery instruction',async()=>{
  await assert.rejects(centerRequest(()=>new Promise(()=>{}),'https://center.example.org','/editorial/metho/drafts',{method:'POST',timeoutMs:5}),e=>e.code==='network_error'&&/timed out/.test(e.message)&&/original request key/.test(e.message));
 });
+
+test('work detail requests the explicitly selected language',async()=>{
+ const seen=[];const client=createCenterClient({origin:'https://center.example.org',token:TOKEN,http:async request=>{seen.push(request);return reply(200,{ok:true});}});
+ await client.work('metho','work-one','en');await client.work('metho','work-one','zh-CN');
+ assert.match(seen[0].url,/\/editorial\/metho\/cloud\/work-one\?locale=en$/);
+ assert.match(seen[1].url,/\/editorial\/metho\/cloud\/work-one\?locale=zh-CN$/);
+});

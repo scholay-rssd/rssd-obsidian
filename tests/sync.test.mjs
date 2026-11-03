@@ -6,6 +6,8 @@ import {yaml,memoryVault,memoryStore,stubCenter,detail,png} from './helpers.mjs'
 
 const setup=(...ids)=>{
  const works=new Map(ids.map(id=>[id,detail(id)])),center=stubCenter(works),vault=memoryVault(),store=memoryStore();
+ const get=center.client.work;
+ center.client.work=async(...args)=>({...await get(...args),preservesEditorialFieldsOnSave:true});
  return {works,center,vault,store,engine:new SyncEngine({client:center.client,vault,store,yaml})};
 };
 const edit=async(vault,path,from,to)=>vault.write(path,(await vault.read(path)).replace(from,to));
@@ -211,4 +213,165 @@ test('changing kind cannot turn a structured record into an editable article',as
  await engine.pull('metho');await edit(vault,'Works/one.md','rssd-kind: resource','rssd-kind: news');await edit(vault,'Works/one.md','Body','Changed');
  await assert.rejects(engine.save('metho','Works/one.md'),/Structured records/);
  assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,0);
+});
+
+test('catalog changes restart before applying pages from a mixed snapshot',async()=>{
+ const {engine,center,vault,store}=setup('one','two');
+ const original=center.client.catalog;let calls=0;
+ center.client.catalog=async(space,options)=>{
+  calls++;
+  if(calls===1)return {generation:1,items:[{articleId:'old-only',version:1}],next:1};
+  if(calls===2)throw Object.assign(Error('catalog changed'),{code:'catalog_changed'});
+  if(calls===3)return {generation:2,items:[{articleId:'one',version:1}],next:1};
+  if(calls===4)return {generation:2,items:[{articleId:'two',version:1}],next:null};
+  return original(space,options);
+ };
+ const summary=await engine.pull('metho');
+ assert.deepEqual(summary.downloaded,['one','two']);assert.equal(calls,4);
+ assert.equal(await vault.read('Works/old-only.md'),null);
+ assert.equal(await store.get('metho','old-only'),null);
+});
+
+test('a repeatedly changing catalog stops before touching local notes',async()=>{
+ const {engine,center,vault,store}=setup('one');let calls=0;
+ await vault.write('Works/local.md','Local work');
+ center.client.catalog=async()=>{calls++;throw Object.assign(Error('changed'),{code:'catalog_changed'});};
+ await assert.rejects(engine.pull('metho'),error=>error.code==='catalog_changed'&&/repeatedly/.test(error.message));
+ assert.equal(calls,4);assert.equal(await vault.read('Works/local.md'),'Local work');
+ assert.deepEqual(await store.list('metho'),[]);
+});
+
+test('malformed catalog cursor fails instead of looping forever',async()=>{
+ const {engine,center}=setup('one');let calls=0;
+ center.client.catalog=async()=>{calls++;return {generation:1,items:[],next:1};};
+ await assert.rejects(engine.pull('metho'),error=>error.code==='invalid_catalog');
+ assert.equal(calls,2);
+});
+
+test('pull preserves a pending save and locally reverted edits even if the Center moved',async()=>{
+ const {engine,vault,center,works,store}=setup('one');
+ await engine.pull('metho');
+ const original=await vault.read('Works/one.md');
+ await edit(vault,'Works/one.md','Body','Uncertain edit');
+ center.state.failNext=Object.assign(new Error('connection lost'),{status:0,code:'network_error'});
+ await assert.rejects(engine.save('metho','Works/one.md'),error=>error.retained===true);
+ const pending=(await store.get('metho','one')).pending;
+ // The user deliberately reverts after the uncertain submission, and the Center moves.
+ await vault.write('Works/one.md',original);
+ works.set('one',detail('one',{version:2,title:'Changed at Center'}));
+ const result=await engine.pull('metho');
+ assert.deepEqual(result.pending,['one']);assert.equal(await vault.read('Works/one.md'),original);
+ assert.deepEqual((await store.get('metho','one')).pending,pending);
+ assert.equal((await engine.states('metho')).one,'publishing');
+ // Even a missing file must not make pull erase the original recovery key.
+ vault.files.delete('Works/one.md');
+ assert.deepEqual((await engine.pull('metho')).pending,['one']);
+ assert.equal(await vault.read('Works/one.md'),null);
+ assert.deepEqual((await store.get('metho','one')).pending,pending);
+});
+
+test('saving to an older Center is blocked before posting, even without attachments',async()=>{
+ const {engine,vault,center,store}=setup('one');
+ await engine.pull('metho');await edit(vault,'Works/one.md','Body','Local change');
+ const prior=await store.get('metho','one'),read=center.client.work;
+ center.client.work=async(...args)=>{const d=await read(...args);delete d.preservesEditorialFieldsOnSave;return {...d,data:{...d.data,assets:[]}};};
+ const original=await vault.read('Works/one.md');
+ await assert.rejects(engine.save('metho','Works/one.md'),error=>error.code==='lossless_save_unavailable'&&/Local edits were kept/.test(error.message));
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,0);
+ assert.deepEqual(await store.get('metho','one'),prior);assert.equal((await store.get('metho','one')).pending,undefined);assert.equal(await vault.read('Works/one.md'),original);
+});
+
+test('save preflight rejects a different Center work without creating a pending submission',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');
+ await edit(vault,'Works/one.md','Body','Local change');const read=center.client.work;
+ center.client.work=async(...args)=>({...await read(...args),articleId:'different'});
+ await assert.rejects(engine.save('metho','Works/one.md'),error=>error.code==='identity_conflict');
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,0);
+ assert.equal((await store.get('metho','one')).pending,undefined);
+});
+
+test('recovering an uncertain prior save does not require new-save capability or repeat its POST',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');
+ await edit(vault,'Works/one.md','Body','Local change');
+ center.state.failNext=Object.assign(Error('connection lost'),{code:'network_error'});
+ await assert.rejects(engine.save('metho','Works/one.md'),error=>error.retained===true);
+ const key=(await store.get('metho','one')).pending.requestKey;
+ center.state.drafts.set(key,{revision:2});
+ center.client.work=async()=>{throw Error('must not read a new version to recover a pending request');};
+ assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'saved',revision:2});
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('pull retries a transient detail error after other works and reports successful recovery',async()=>{
+ const {engine,center,vault}=setup('one','two','three');const read=center.client.work;let first=true;
+ center.client.work=async(space,id)=>{if(id==='one'&&first){first=false;throw Object.assign(Error('temporary timeout'),{code:'network_error',status:0});}return read(space,id);};
+ const result=await engine.pull('metho');
+ assert.deepEqual(result.downloaded,['two','three','one']);assert.deepEqual(result.failed,[]);
+ assert.ok(await vault.read('Works/one.md'));assert.ok(await vault.read('Works/two.md'));
+});
+
+test('persistent per-work network failure is reported, bounded, and other works remain downloaded',async()=>{
+ const {engine,center,vault,store}=setup('one','two');const read=center.client.work;let attempts=0;
+ center.client.work=async(space,id)=>{if(id==='one'){attempts++;throw Object.assign(Error('timeout rssd_device_abc'),{code:'network_error',status:0});}return read(space,id);};
+ const result=await engine.pull('metho');
+ assert.equal(attempts,2);assert.deepEqual(result.downloaded,['two']);
+ assert.deepEqual(result.failed,[{articleId:'one',code:'network_error',message:'timeout [redacted]'}]);
+ assert.equal(await vault.read('Works/one.md'),null);assert.ok(await store.get('metho','two'));
+});
+
+test('a local edit made after a deferred detail failure survives the retry',async()=>{
+ const {engine,center,vault,works}=setup('one','two');await engine.pull('metho');
+ works.set('one',detail('one',{version:2,title:'Remote changed'}));
+ works.set('two',detail('two',{version:2,title:'Remote two'}));
+ const read=center.client.work;let failed=false;
+ center.client.work=async(space,id)=>{
+  if(id==='one'&&!failed){failed=true;throw Object.assign(Error('offline'),{code:'network_error',status:0});}
+  if(id==='two')await edit(vault,'Works/one.md','Body','Keep local editing');
+  return read(space,id);
+ };
+ const result=await engine.pull('metho');
+ assert.deepEqual(result.failed,[]);assert.deepEqual(result.conflicts,['one']);
+ assert.match(await vault.read('Works/one.md'),/Keep local editing/);
+ assert.deepEqual(result.updated,['two']);
+});
+
+test('network failure reading the catalog still stops the pull immediately',async()=>{
+ const {engine,center,vault}=setup('one');center.client.catalog=async()=>{throw Object.assign(Error('offline'),{code:'network_error',status:0});};
+ await assert.rejects(engine.pull('metho'),error=>error.code==='network_error');
+ assert.equal(await vault.read('Works/one.md'),null);
+});
+
+test('English and Chinese versions with the same ID stay separate through pull, edit, and save',async()=>{
+ const zh=detail('same',{version:1,title:'中文'}),en=detail('same',{version:4,title:'English'});en.locale='en';en.data.locale='en';
+ const entries={'zh-CN':zh,en},vault=memoryVault(),store=memoryStore(),calls=[];
+ const client={
+  catalog:async(_s,options)=>{calls.push(['catalog',options.locale]);return {generation:1,items:[{articleId:'same',version:entries[options.locale].version}],next:null};},
+  work:async(_s,id,locale)=>{calls.push(['work',id,locale]);return {...entries[locale],preservesEditorialFieldsOnSave:true};},
+  saveDraft:async(_s,envelope)=>{calls.push(['save',envelope]);assert.equal(envelope.data.locale,'en');assert.equal(envelope.expectedVersion,4);return {revision:5};}
+ };
+ const engine=new SyncEngine({client,vault,store,yaml});
+ await engine.pull('metho',{locale:'zh-CN'});await engine.pull('metho',{locale:'en'});
+ const chinese=await vault.read('Works/same.md');const english=await vault.read('Works/en/same.md');
+ assert.match(chinese,/title: 中文/);assert.match(chinese,/\.\.\/article-media\/a\.png/);
+ assert.match(english,/title: English/);assert.match(english,/\.\.\/\.\.\/article-media\/a\.png/);
+ assert.equal((await store.get('metho','same','zh-CN')).version,1);assert.equal((await store.get('metho','same','en')).version,4);
+ await edit(vault,'Works/en/same.md','Body','English edit');
+ assert.deepEqual(await engine.save('metho','Works/en/same.md'),{state:'saved',revision:5});
+ assert.equal(await vault.read('Works/same.md'),chinese);assert.equal((await store.get('metho','same','zh-CN')).version,1);
+ assert.equal((await store.get('metho','same','en')).version,5);
+ const payload=calls.find(c=>c[0]==='save')[1].data;
+ assert.match(payload.markdown,/English edit/);assert.match(payload.markdown,/\/article-media\/a\.png/);assert.equal(payload.assets[0].path,'/article-media/a.png');
+ assert.ok(calls.some(c=>c[0]==='work'&&c[2]==='en'));assert.ok(calls.some(c=>c[0]==='work'&&c[2]==='zh-CN'));
+});
+
+test('language identity changes and wrong-language Center details never overwrite another note',async()=>{
+ const {engine,vault,center}=setup('one');await engine.pull('metho');
+ const original=await vault.read('Works/one.md');
+ await vault.write('Works/one.md',original.replace('rssd-locale: zh-CN','rssd-locale: en'));
+ await assert.rejects(engine.save('metho','Works/one.md'),/does not match/);
+ assert.equal(center.calls.filter(c=>c[0]==='saveDraft').length,0);
+ const english=detail('two');english.locale='zh-CN';
+ const store=memoryStore(),other=new SyncEngine({client:{catalog:async()=>({generation:1,items:[{articleId:'two',version:1}],next:null}),work:async()=>english},vault,store,yaml});
+ await assert.rejects(other.pull('metho',{locale:'en'}),error=>error.code==='identity_conflict');
+ assert.equal(await vault.read('Works/en/two.md'),null);
 });

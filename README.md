@@ -13,7 +13,7 @@ Open one RSSD Center space as a vault of drafts, see each work's sync state, and
    node install.mjs /path/to/vault
    ```
 3. In Obsidian enable the plugin, open Settings → RSSD, enter the Center address and run **Log in to the RSSD Center**. Approve the device and its spaces in your browser.
-4. Run **Pull works from the Center**. Works appear in `Works/<id>.md`, images in `article-media/`.
+4. Run **Pull works from the Center**. Chinese works appear in `Works/<id>.md`, English works in `Works/en/<id>.md`, and images in `article-media/`.
 5. Edit a note, then run **Save this work to the Center as a private draft**.
 
 Commands: *Log in*, *Pull works*, *Save this work*, *Check sync state of all works*.
@@ -23,7 +23,7 @@ Commands: *Log in*, *Pull works*, *Save this work*, *Check sync state of all wor
 - The Center is the source of truth. Do not run Obsidian Sync, iCloud or Git on this vault.
 - A note is identified by its `rssd-id` property, never by its file name. Do not edit `rssd-*` properties.
 - A pull never overwrites a note with local changes; a conflict is reported and the note is left as written.
-- A save carries the exact base version and is refused if the Center moved. It never publishes.
+- A save carries the exact base version and is refused if the Center moved. The Center must explicitly confirm it preserves existing attachments and editorial metadata. It never publishes.
 - A save whose answer was lost keeps its request key and is recovered by that key, never resent.
 - Structured records (notices, history, resources) download read-only.
 
@@ -45,7 +45,7 @@ Command links are off by default and can be enabled in RSSD settings for an oper
 obsidian://rssd?vault=metho&do=status&requestId=status-001
 ```
 
-Supported actions: `login`, `pull`, `status`, `spaces`, `save`. Save also requires an exact `path=Works/<id>.md` (URL-encode the path). Each accepted command writes `.obsidian/plugins/rssd/runs/<requestId>.json`; `last-run.json` is a convenience copy. Reusing an ID returns the previous record, including an interrupted `running` record; it never repeats the action. Use a new command ID for an intentional retry. A pending draft save is still reconciled by its original **Center** request key. Keep these receipts private; no token is written into them.
+Supported actions: `login`, `pull`, `status`, `spaces`, `save`. Save also requires an exact `path=Works/<id>.md` or `path=Works/en/<id>.md` (URL-encode the path). Each accepted command writes `.obsidian/plugins/rssd/runs/<requestId>.json`; `last-run.json` is a convenience copy. Reusing an ID returns the previous record, including an interrupted `running` record; it never repeats the action. Use a new command ID for an intentional retry. A pending draft save is still reconciled by its original **Center** request key. Keep these receipts private; no token is written into them.
 
 Buttons, commands, panel refresh and command links share one operation gate. A busy vault refuses another operation rather than queuing a potentially stale save. Failed login preserves the server error and closes its modal; an old token does not turn that failure into a success.
 

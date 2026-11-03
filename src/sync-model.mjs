@@ -9,22 +9,35 @@ export const MEDIA_FOLDER='article-media';
 const EDITABLE=['title','summary','date','author','category'];
 const IDENTITY={id:'rssd-id',sectionId:'rssd-section',locale:'rssd-locale',kind:'rssd-kind',version:'rssd-version',publishedVersion:'rssd-published-version'};
 
-// Center bodies link images at the site root; notes live one folder down, beside the media folder.
-export const toVaultMarkdown=markdown=>markdown.replace(/([("])\/article-media\//g,'$1../'+MEDIA_FOLDER+'/');
-export const toCenterMarkdown=markdown=>markdown.replace(new RegExp('([("])\\.\\./'+MEDIA_FOLDER+'/','g'),'$1/article-media/');
-export const mediaNames=markdown=>[...new Set([...markdown.matchAll(new RegExp('[(\"]\\.\\./'+MEDIA_FOLDER+'/([A-Za-z0-9._-]+)','g'))].map(m=>m[1]))].sort();
-export const notePath=articleId=>WORKS_FOLDER+'/'+articleId+'.md';
+// Center bodies link images at the site root. English notes are one directory
+// deeper than legacy Chinese notes, so their relative image paths differ.
+export const LOCALES=Object.freeze(['zh-CN','en']);
+export function checkLocale(locale){
+ if(!LOCALES.includes(locale))throw Error('Unsupported RSSD work language: '+locale);
+ return locale;
+}
+const mediaPrefix=locale=>checkLocale(locale)==='en'?'../../':'../';
+export const toVaultMarkdown=(markdown,locale='zh-CN')=>markdown.replace(/([("])\/article-media\//g,'$1'+mediaPrefix(locale)+MEDIA_FOLDER+'/');
+export const toCenterMarkdown=(markdown,locale='zh-CN')=>{
+ const prefix=mediaPrefix(locale).replace(/\./g,'\\.');
+ return markdown.replace(new RegExp('([(\"])'+prefix+MEDIA_FOLDER+'/','g'),'$1/article-media/');
+};
+export const mediaNames=(markdown,locale='zh-CN')=>{
+ const prefix=mediaPrefix(locale).replace(/\./g,'\\.');
+ return [...new Set([...markdown.matchAll(new RegExp('[(\"]'+prefix+MEDIA_FOLDER+'/([A-Za-z0-9._-]+)','g'))].map(m=>m[1]))].sort();
+};
+export const notePath=(articleId,locale='zh-CN')=>WORKS_FOLDER+'/'+(checkLocale(locale)==='en'?'en/':'')+articleId+'.md';
 
 /** A structured record (notice, history, resource) keeps typed fields the plugin cannot edit yet. */
 export const isReadOnlyWork=detail=>!!detail?.data?.record;
 
 /** The vault note for a Center work: properties, then the body exactly as the Center stores it (image paths aside). */
 export function workToNote(detail,stringifyYaml){
- const data=detail.data,properties={};
+ const data=detail.data,properties={},locale=checkLocale(data.locale||'zh-CN');
  for(const key of EDITABLE)properties[key]=String(data[key]??'');
- Object.assign(properties,{[IDENTITY.id]:data.id,[IDENTITY.sectionId]:data.sectionId,[IDENTITY.locale]:data.locale||'zh-CN',
+ Object.assign(properties,{[IDENTITY.id]:data.id,[IDENTITY.sectionId]:data.sectionId,[IDENTITY.locale]:locale,
   [IDENTITY.kind]:data.record?.kind||'news',[IDENTITY.version]:detail.version,[IDENTITY.publishedVersion]:detail.publishedVersion??null});
- return {path:notePath(data.id),content:'---\n'+stringifyYaml(properties).trimEnd()+'\n---\n'+toVaultMarkdown(data.markdown),
+ return {path:notePath(data.id,locale),content:'---\n'+stringifyYaml(properties).trimEnd()+'\n---\n'+toVaultMarkdown(data.markdown,locale),
   media:(data.assets||[]).map(asset=>({name:asset.path.replace(/^\/article-media\//,''),data:asset.data}))};
 }
 
@@ -35,10 +48,10 @@ export function noteToWork(content,parseYaml){
  if(!match)return null;
  let properties;try{properties=parseYaml(match[1])||{};}catch{throw Error('The note properties cannot be read; fix the YAML before syncing');}
  if(!properties[IDENTITY.id])return null;
- const body=content.slice(match[0].length),data={};
+ const body=content.slice(match[0].length),data={},locale=checkLocale(text(properties[IDENTITY.locale])||'zh-CN');
  for(const key of EDITABLE)data[key]=text(properties[key]);
- Object.assign(data,{id:text(properties[IDENTITY.id]),sectionId:text(properties[IDENTITY.sectionId]),locale:text(properties[IDENTITY.locale])||'zh-CN',markdown:toCenterMarkdown(body)});
- return {data,kind:text(properties[IDENTITY.kind])||'news',media:mediaNames(body)};
+ Object.assign(data,{id:text(properties[IDENTITY.id]),sectionId:text(properties[IDENTITY.sectionId]),locale,markdown:toCenterMarkdown(body,locale)});
+ return {data,kind:text(properties[IDENTITY.kind])||'news',media:mediaNames(body,locale)};
 }
 
 const canonical=value=>Array.isArray(value)?'['+value.map(canonical).join(',')+']':value&&typeof value==='object'
