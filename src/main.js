@@ -5,6 +5,7 @@ import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {deviceLogin} from './device-login.mjs';
 import {SyncEngine} from './sync-engine.mjs';
 import {saveFailureMessage} from './messages.mjs';
+import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER} from './sync-model.mjs';
 
 const TOKEN_SECRET='rssd-center-device-token';
@@ -33,6 +34,7 @@ export default class RssdPlugin extends Plugin{
   this.addCommand({id:'save',name:'Save this work to the Center as a private draft',checkCallback:checking=>{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)this.save(file);return true;}});
   this.addCommand({id:'status',name:'Check sync state of all works',callback:()=>this.refreshStates()});
+  this.addCommand({id:'spaces',name:'Show which spaces accept saves',callback:()=>this.showSpaces()});
  }
  isWork(file){return file.extension==='md'&&file.path.startsWith(WORKS_FOLDER+'/');}
  setStatus(text){this.status?.setText(text);}
@@ -93,8 +95,19 @@ export default class RssdPlugin extends Plugin{
   }catch(error){this.setStatus('RSSD');new Notice('Pull failed: '+error.message);}
  }
 
+ client(){
+  const token=this.token();if(!token||!this.settings.origin)throw Error('Log in to the RSSD Center first');
+  return createCenterClient({http,origin:this.settings.origin,token});
+ }
+ async showSpaces(){
+  try{new Notice(spacesSummary(await this.client().registry()),15000);}
+  catch(error){new Notice('Could not read spaces: '+error.message);}
+ }
  async save(file){
   try{
+   // Check before sending: a space that is still migrating refuses every save.
+   const reason=readOnlyReason(spaceInfo(await this.client().registry(),this.settings.workspaceId),this.settings.workspaceId);
+   if(reason){new Notice(reason,15000);return;}
    const result=await this.engine().save(this.settings.workspaceId,file.path);
    new Notice(result.state==='unchanged'?'Nothing to save':'Saved as a private draft (revision '+result.revision+'). It is not published.');
   }catch(error){

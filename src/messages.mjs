@@ -7,6 +7,7 @@ const REASONS={
  identity_conflict:'The Center says this work\'s section, language or type differs from your note. Do not change the rssd-* properties.',
  source_conflict:'The Center cannot find the original this translation is based on.',
  stale_revision:'A newer edition exists at the Center. Run "Pull works" first.',
+ migration_staged:'This space is still migrating; its original site writer owns it, so the Center refuses saves until the cutover is complete. Your note was not changed.',
 };
 export function saveFailureMessage(error){
  const code=error?.code&&error.code!=='http_error'?error.code:'';
