@@ -10,13 +10,13 @@ const module={exports:{}};new Function('require','module','exports',result.outpu
 const Plugin=module.exports.default;
 function plugin(){
  const p=new Plugin();p.operations=new OperationGate();p.settings={origin:'https://center.example.org',boundOrigin:'https://center.example.org',workspaceId:'metho'};
- let secret='rssd_device_'+'a'.repeat(48);p.app={secretStorage:{getSecret:()=>secret,setSecret:(_k,v)=>secret=v}};p.saveSettings=async()=>{};return p;
+ let secret='rssd_device_'+'a'.repeat(48);p.app={secretStorage:{getSecret:()=>secret,setSecret:(_k,v)=>secret=v}};p.saveSettings=async()=>{};p.records=[];p.writeRun=async r=>p.records.push(r);return p;
 }
 const start={status:200,json:{verificationUriComplete:'https://center.example.org/device',userCode:'ABCD',deviceCode:'secret',expiresIn:0}};
 test('failed login preserves the original error even when an old token exists',async()=>{
  response=async()=>({status:403,json:{code:'access_denied',message:'Not authorized'}});
  const p=plugin();await assert.rejects(p.login(),e=>e.code==='access_denied'&&e.status===403);
- assert.ok(p.token());assert.equal(p.operations.active,null);
+ assert.ok(p.token());assert.equal(p.operations.active,null);assert.equal(p.records.at(-1).code,'access_denied');
 });
 test('expired login closes its modal and clears its cancellation controller',async()=>{
  response=async()=>start;const p=plugin();await assert.rejects(p.login(),e=>e.code==='expired_token');

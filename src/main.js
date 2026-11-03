@@ -112,7 +112,7 @@ export default class RssdPlugin extends Plugin{
   if(folder&&!await this.app.vault.adapter.exists(folder))await this.app.vault.createFolder(folder);
  }
 
- async login(options={}){return this.operations.run('login',()=>this.performLogin(options));}
+ async login(options={}){return this.operations.run('login',async()=>{const id=crypto.randomUUID();await this.writeRun({id,action:'login',state:'running',ok:null});try{const result=await this.performLogin(options);await this.writeRun({id,action:'login',state:'completed',ok:true,result});return result;}catch(error){await this.writeRun({id,action:'login',state:'failed',ok:false,error:error.message,code:error.code||null,status:error.status||null});throw error;}});}
  async performLogin({openBrowser=false}={}){
   this.assertBinding();
   const origin=centerOrigin(this.settings.origin),space=this.settings.workspaceId,controller=new AbortController();
