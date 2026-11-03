@@ -51,7 +51,7 @@ test('GET stops after bounded timeouts and does not retry server conflicts',asyn
  let attempts=0;
  await assert.rejects(centerRequest(()=>{attempts++;return new Promise(()=>{});},'https://center.example.org','/x',{
   timeoutMs:2,sleep:async()=>{}}),error=>error.code==='network_error'&&/timed out/.test(error.message));
- assert.equal(attempts,2);
+ assert.equal(attempts,1);
  attempts=0;
  await assert.rejects(centerRequest(async()=>{attempts++;return reply(409,{message:'catalog changed',code:'catalog_changed'});},
   'https://center.example.org','/catalog',{sleep:async()=>{}}),error=>error.status===409&&error.code==='catalog_changed');
@@ -61,12 +61,42 @@ test('GET stops after bounded timeouts and does not retry server conflicts',asyn
 test('a non-cancellable timed-out batch is not duplicated, but settled transport failures can retry',async()=>{
  let attempts=0;
  await assert.rejects(centerRequest(()=>{attempts++;return new Promise(()=>{});},'https://center.example.org','/batch',{
-  timeoutMs:2,retryTimeouts:false,sleep:async()=>{throw Error('must not retry timeout');}}),error=>error.code==='network_error'&&error.timedOut===true);
+  timeoutMs:2,sleep:async()=>{throw Error('must not retry timeout');}}),error=>error.code==='network_error'&&error.timedOut===true);
  assert.equal(attempts,1);
  attempts=0;
  assert.deepEqual(await centerRequest(async()=>{if(++attempts===1)throw Error('offline');return reply(200,{ok:true});},'https://center.example.org','/batch',{
-  retryTimeouts:false,sleep:async()=>{}}),{ok:true});
+  sleep:async()=>{}}),{ok:true});
  assert.equal(attempts,2);
+});
+
+test('a slow batch response is recovered during bounded grace without another request',async()=>{
+ let attempts=0;
+ const result=await centerRequest(()=>{attempts++;return new Promise(resolve=>setTimeout(()=>resolve(reply(200,{ok:true})),15));},'https://center.example.org','/batch',{
+  timeoutMs:2,timeoutGraceMs:100,sleep:async()=>{throw Error('must not retry');}});
+ assert.deepEqual(result,{ok:true});assert.equal(attempts,1);
+});
+
+test('a transport rejection during grace can be retried only after it settles',async()=>{
+ let attempts=0;
+ const result=await centerRequest(()=>{attempts++;if(attempts===1)return new Promise((_,reject)=>setTimeout(()=>reject(Error('offline')),15));return Promise.resolve(reply(200,{ok:true}));},'https://center.example.org','/batch',{
+  timeoutMs:2,timeoutGraceMs:100,sleep:async()=>{}});
+ assert.deepEqual(result,{ok:true});assert.equal(attempts,2);
+});
+
+test('HTTP errors received during grace are returned without retry',async()=>{
+ let attempts=0;
+ await assert.rejects(centerRequest(()=>{attempts++;return new Promise(resolve=>setTimeout(()=>resolve(reply(503,{code:'unavailable'})),15));},'https://center.example.org','/batch',{
+  timeoutMs:2,timeoutGraceMs:100,sleep:async()=>{throw Error('must not retry HTTP');}}),e=>e.status===503&&e.code==='unavailable');
+ assert.equal(attempts,1);
+});
+
+test('manual retry reuses an unresolved GET rather than duplicating it',async()=>{
+ let attempts=0,finish;
+ const http=()=>{attempts++;return new Promise(resolve=>{finish=resolve;});};
+ await assert.rejects(centerRequest(http,'https://center.example.org','/batch',{timeoutMs:2,timeoutGraceMs:2}),e=>e.timedOut===true);
+ const next=centerRequest(http,'https://center.example.org','/batch',{timeoutMs:100});
+ finish(reply(200,{ok:true}));
+ assert.deepEqual(await next,{ok:true});assert.equal(attempts,1);
 });
 
 test('batch details get a longer bounded timeout than ordinary requests',async()=>{

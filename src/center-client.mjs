@@ -4,6 +4,25 @@ export class CenterError extends Error {
  constructor(message,{status=0,code='network_error'}={}){super(message);this.status=status;this.code=code;}
 }
 const TOKEN=/^rssd_device_[A-Za-z0-9_-]{48}$/;
+// requestUrl cannot cancel a request after our deadline. Keep unresolved GETs
+// by transport and authenticated URL so a new pull cannot duplicate one.
+const inFlightReads=new WeakMap();
+
+function readRequest(http,key,request){
+ let active=inFlightReads.get(http);
+ if(!active){active=new Map();inFlightReads.set(http,active);}
+ if(active.has(key))return active.get(key);
+ const pending=Promise.resolve().then(()=>http(request));
+ active.set(key,pending);
+ pending.then(()=>{if(active.get(key)===pending)active.delete(key);},()=>{if(active.get(key)===pending)active.delete(key);});
+ return pending;
+}
+
+async function waitForRequest(pending,timeoutMs){
+ let timer;
+ try{return await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(Error('Request timed out'),{timedOut:true})),timeoutMs);})]);}
+ finally{clearTimeout(timer);}
+}
 
 /** Accept only an HTTPS origin (or localhost for development), never a path, query or credentials. */
 export function centerOrigin(value){
@@ -14,22 +33,27 @@ export function centerOrigin(value){
 }
 
 /** Retry only transport failures on GET. Never replay writes or HTTP error responses. */
-export async function centerRequest(http,origin,path,{method='GET',body,token,timeoutMs=30000,retryDelaysMs=[5000],retryTimeouts=true,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}){
+export async function centerRequest(http,origin,path,{method='GET',body,token,timeoutMs=30000,timeoutGraceMs=0,retryDelaysMs=[5000],sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}){
  let response,lastError;
  const delays=method==='GET'?retryDelaysMs:[];
  for(let attempt=0;attempt<=delays.length;attempt++){
-  let timer;
   try{
-   response=await Promise.race([http({url:origin+'/api/rssd/v1'+path,method,throw:false,contentType:'application/json',
-    headers:{Accept:'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(Error('Request timed out'),{timedOut:true})),timeoutMs);})]);
+   const request={url:origin+'/api/rssd/v1'+path,method,throw:false,contentType:'application/json',
+    headers:{Accept:'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})};
+   const pending=method==='GET'?readRequest(http,(token||'')+'\0'+request.url,request):Promise.resolve().then(()=>http(request));
+   try{response=await waitForRequest(pending,timeoutMs);}
+   catch(error){
+    // Continue waiting for the original batch, not another request. A response
+    // received during the grace window is processed exactly like an on-time one.
+    if(!error?.timedOut||method!=='GET'||timeoutGraceMs<=0)throw error;
+    response=await waitForRequest(pending,timeoutGraceMs);
+   }
    break;
   }catch(error){lastError=error;}
-  finally{clearTimeout(timer);}
-  // requestUrl cannot cancel a timed-out request. In particular, never duplicate a
-  // large batch while its timed-out original might still be using server resources.
-  if(lastError?.timedOut&&!retryTimeouts)break;
-  // Cap other retries and allow time for the
-  // original GET to finish before issuing another, avoiding an unbounded pileup.
+  // A deadline does not cancel the original request, so it must never trigger
+  // a second request. Explicitly rejected transport failures have settled and
+  // may be retried within the bounded attempt limit.
+  if(lastError?.timedOut)break;
   if(attempt<delays.length)await sleep(delays[attempt]);
  }
  if(!response){const detail=String(lastError?.message||'network error').replace(/rssd_device_[A-Za-z0-9_-]+/g,'[redacted]').slice(0,300);throw Object.assign(new CenterError((method==='GET'?'Center is unreachable; try again when the connection is restored':'Center response was lost; a submitted save may still have been accepted. Recover it by its original request key')+' ('+detail+')'),{timedOut:lastError?.timedOut===true});}
@@ -57,7 +81,7 @@ export function createCenterClient({http,origin,token}){
   /** Small bounded catalog batches. Older Centers return 404 and can use work(). */
   // Images can make a batch substantially larger than a single note. Give it a
   // bounded longer window and do not duplicate a request that is still in flight.
-  workBatch:(workspaceId,ids,locale)=>request(editorial(workspaceId,'cloud/batch/read?'+query({locale,ids:ids.join(',')})),{timeoutMs:120000,retryTimeouts:false}),
+  workBatch:(workspaceId,ids,locale)=>request(editorial(workspaceId,'cloud/batch/read?'+query({locale,ids:ids.join(',')})),{timeoutMs:120000,timeoutGraceMs:180000}),
   /** Exact-base private save; never publishes. */
   saveDraft:(workspaceId,envelope)=>request(editorial(workspaceId,'drafts'),{method:'POST',body:envelope}),
   /** Recovery of a draft save whose answer was lost, by its original request key. */

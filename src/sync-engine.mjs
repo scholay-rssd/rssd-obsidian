@@ -138,12 +138,14 @@ export class SyncEngine{
   // Single-detail fallback is capped at three concurrent requests and waits for
   // every started request before returning, even when one of them fails.
   const singles=async entries=>{
-   const outcomes=new Array(entries.length);let next=0;
-   const worker=async()=>{for(;;){const index=next++;if(index>=entries.length)return;
+   const outcomes=new Array(entries.length);let next=0,timedOut=null;
+   const worker=async()=>{for(;;){if(timedOut)return;const index=next++;if(index>=entries.length)return;
     try{outcomes[index]={status:'fulfilled',value:await single(entries[index].item,'fallback')};}
-    catch(reason){outcomes[index]={status:'rejected',reason};}
+    catch(reason){outcomes[index]={status:'rejected',reason};if(reason?.timedOut)timedOut=reason;}
    }};
-   await Promise.all(Array.from({length:Math.min(DETAIL_CONCURRENCY,entries.length)},worker));return outcomes;
+   await Promise.all(Array.from({length:Math.min(DETAIL_CONCURRENCY,entries.length)},worker));
+   if(timedOut){for(const entry of entries)summary.failed.push(failure(entry.item,timedOut));throw timedOut;}
+   return outcomes;
   };
   const fetchDetails=async entries=>{
    if(!batchAvailable)return singles(entries);
@@ -221,7 +223,7 @@ export class SyncEngine{
     const prepared=await prepare(item);if(prepared)await apply(prepared,await single(item,'retry'));
     summary.failed=summary.failed.filter(entry=>entry.articleId!==item.articleId);
    }catch(error){
-    if(!error?.retryableDetail)throw attach(item,error);
+    if(error?.timedOut||!error?.retryableDetail)throw attach(item,error);
     const index=summary.failed.findIndex(entry=>entry.articleId===item.articleId);
     if(index>=0)summary.failed[index]=failure(item,error);
    }

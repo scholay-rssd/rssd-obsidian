@@ -509,6 +509,13 @@ test('a timed-out batch stops the pull without starting another request',async()
  assert.equal(calls,1);assert.equal(center.calls.filter(x=>x[0]==='work').length,0);
 });
 
+test('a timed-out single fallback stops scheduling more work and reports the incomplete batch',async()=>{
+ const ids=Array.from({length:8},(_,i)=>'single-'+i),{engine,center}=setup(...ids);let calls=0;
+ center.client.work=async()=>{calls++;if(calls===1)throw Object.assign(Error('timed out'),{code:'network_error',status:0,timedOut:true});await new Promise(resolve=>setTimeout(resolve,5));return {};};
+ await assert.rejects(engine.pull('metho'),error=>{assert.equal(error.timedOut,true);assert.equal(error.pullSummary.failed.length,8);assert.equal(error.pullSummary.transport.singleRequests,3);return true;});
+ assert.equal(calls,3);
+});
+
 test('duplicate catalog identities cannot race one vault note',async()=>{
  const {engine,center,vault}=setup('same');
  center.client.catalog=async()=>({generation:1,items:[{articleId:'same',version:1},{articleId:'same',version:1}],next:null});
