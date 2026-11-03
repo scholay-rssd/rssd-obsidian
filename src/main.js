@@ -135,15 +135,17 @@ export default class RssdPlugin extends Plugin{
  onunload(){this.loginController?.abort();}
  async pull(){
   try{
-   this.setStatus('RSSD: pulling…');
-   const summary=await this.operations.run('pull',()=>this.engine().pull(this.settings.workspaceId));
+   const summary=await this.operations.run('pull',async()=>{
+    let checked=0;this.setStatus('RSSD: pulling…');
+    try{return await this.engine().pull(this.settings.workspaceId,{onProgress:()=>this.setStatus('RSSD: pulling… '+(++checked)+' works')});}
+    finally{this.setStatus('RSSD');}
+   });
    const parts=[summary.downloaded.length+' new',summary.updated.length+' updated',summary.unchanged+' unchanged'];
    if(summary.skipped.length)parts.push(summary.skipped.length+' kept (local changes)');
    if(summary.conflicts.length)parts.push(summary.conflicts.length+' in conflict');
    new Notice('Pull finished: '+parts.join(', '));
    if(summary.conflicts.length)new Notice('Conflicts were not changed: '+summary.conflicts.join(', '),10000);
-   this.setStatus('RSSD');
-  }catch(error){this.setStatus('RSSD');new Notice('Pull failed: '+error.message);}
+  }catch(error){new Notice('Pull failed: '+error.message);}
  }
 
  client(){
