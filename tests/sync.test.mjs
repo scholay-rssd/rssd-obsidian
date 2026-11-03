@@ -37,6 +37,19 @@ test('pull downloads works and images, then reports them synced',async()=>{
  assert.deepEqual(Object.values(await engine.states('metho')),['synced','synced']);
 });
 
+test('an interrupted pull retains earlier progress and a retry preserves subsequent local edits',async()=>{
+ const {engine,vault,center,store}=setup('a-one','b-two','c-three');
+ const get=center.client.work;let fail=true;
+ center.client.work=async(space,id)=>{if(id==='b-two'&&fail){fail=false;throw Object.assign(Error('temporarily unavailable'),{status:503});}return get(space,id);};
+ const err=await engine.pull('metho').catch(e=>e);
+ assert.equal(err.articleId,'b-two');assert.deepEqual(err.pullSummary.downloaded,['a-one']);
+ assert.ok(await store.get('metho','a-one'));assert.equal(await store.get('metho','b-two'),null);
+ await edit(vault,'Works/a-one.md','Body','Keep this edit');
+ const retry=await engine.pull('metho');
+ assert.deepEqual(retry.skipped,['a-one']);assert.deepEqual(retry.downloaded,['b-two','c-three']);
+ assert.match(await vault.read('Works/a-one.md'),/Keep this edit/);
+});
+
 test('pull updates an untouched note but never overwrites local changes',async()=>{
  const {engine,vault,works}=setup('a-one','b-two');
  await engine.pull('metho');

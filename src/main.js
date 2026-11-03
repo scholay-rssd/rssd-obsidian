@@ -2,7 +2,7 @@
 // state, and save edits back as private drafts. Publishing is never done here.
 import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView} from 'obsidian';
 import {createCenterClient,centerOrigin} from './center-client.mjs';
-import {OperationGate,automationRequest,recordedOperation} from './operations.mjs';
+import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
 import {deviceLogin} from './device-login.mjs';
 import {SyncEngine} from './sync-engine.mjs';
 import {saveFailureMessage} from './messages.mjs';
@@ -136,8 +136,20 @@ export default class RssdPlugin extends Plugin{
  async pull(){
   try{
    const summary=await this.operations.run('pull',async()=>{
-    let checked=0;this.setStatus('RSSD: pulling…');
-    try{return await this.engine().pull(this.settings.workspaceId,{onProgress:()=>this.setStatus('RSSD: pulling… '+(++checked)+' works')});}
+    let checked=0;const id=crypto.randomUUID(),workspaceId=this.settings.workspaceId;
+    this.setStatus('RSSD: pulling…');
+    await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked});
+    try{
+     const result=await this.engine().pull(workspaceId,{onProgress:async({articleId,summary})=>{
+      this.setStatus('RSSD: pulling… '+(++checked)+' works');
+      await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked,articleId,partial:summary});
+     }});
+     await this.writeRun({id,action:'pull',workspaceId,state:'completed',ok:true,checked,result});
+     return result;
+    }catch(error){
+     await this.writeRun({id,action:'pull',workspaceId,state:'failed',ok:false,checked,...diagnosticError(error)});
+     throw error;
+    }
     finally{this.setStatus('RSSD');}
    });
    const parts=[summary.downloaded.length+' new',summary.updated.length+' updated',summary.unchanged+' unchanged'];

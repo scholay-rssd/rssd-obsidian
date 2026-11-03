@@ -16,6 +16,15 @@ export function automationRequest(params) {
  if (action==='save'&&!/^Works\/[a-zA-Z0-9._:-]+\.md$/.test(path)) throw Error('Give the exact path Works/<id>.md');
  return {id,action,path:action==='save'?path:''};
 }
+// Diagnostic receipts contain no response bodies or credentials.
+export function diagnosticError(error) {
+ const message=String(error?.message||'Unknown error').replace(/rssd_device_[A-Za-z0-9_-]+/g,'[redacted]')
+  .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+/gi,'$1[redacted]').slice(0,500);
+ const result={error:message,code:error?.code||null,status:error?.status||null};
+ if(typeof error?.articleId==='string')result.articleId=error.articleId;
+ if(error?.pullSummary)result.partial=error.pullSummary;
+ return result;
+}
 export async function recordedOperation({request,read,write,execute}) {
  const previous=await read(request.id);
  if (previous) {
@@ -26,6 +35,6 @@ export async function recordedOperation({request,read,write,execute}) {
  const record={...request,state:'running',ok:null,at:new Date().toISOString()};
  await write(record);
  try { const result=await execute();Object.assign(record,{state:'completed',ok:true,result}); }
- catch(error) { Object.assign(record,{state:'failed',ok:false,error:error.message,code:error.code||null,status:error.status||null}); }
+ catch(error) { Object.assign(record,{state:'failed',ok:false,...diagnosticError(error)}); }
  record.at=new Date().toISOString();await write(record);return record;
 }

@@ -50,10 +50,11 @@ export class SyncEngine{
   const seen=new Set();
   for await(const items of catalogPages(this.client,workspaceId)){
    for(const item of items){
+    try{
     seen.add(item.articleId);
     const base=await this.store.get(workspaceId,item.articleId),path=notePath(item.articleId),local=await this.noteFingerprint(path);
     const state=workState({base,localFingerprint:local?.fingerprint??null,remote:{version:item.version}});
-    onProgress({articleId:item.articleId,state});
+    await onProgress({articleId:item.articleId,state,summary:{...summary,downloaded:[...summary.downloaded],updated:[...summary.updated],skipped:[...summary.skipped],conflicts:[...summary.conflicts],removedFromCenter:[...summary.removedFromCenter]}});
     if(state==='synced'){summary.unchanged++;continue;}
     if(state==='local_changed'){summary.skipped.push(item.articleId);continue;}
     if(state==='conflict'){summary.conflicts.push(item.articleId);continue;}
@@ -62,6 +63,10 @@ export class SyncEngine{
      const detail=await this.client.work(workspaceId,item.articleId);
      try{await this.writeWork(workspaceId,detail,local?.content??null);(base?summary.updated:summary.downloaded).push(item.articleId);}
      catch(error){if(error.code!=='local_edit_during_pull')throw error;summary.conflicts.push(item.articleId);}
+    }
+    }catch(error){
+     if(error&&typeof error==='object')Object.assign(error,{articleId:item.articleId,pullSummary:summary});
+     throw error;
     }
    }
   }

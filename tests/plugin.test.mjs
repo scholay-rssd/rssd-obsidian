@@ -30,3 +30,25 @@ test('mobile cannot save a private draft',async()=>{
  const p=plugin();mock.Platform.isMobile=true;
  try{await assert.rejects(p.assertWritable(),/read-only on mobile/);}finally{mock.Platform.isMobile=false;}
 });
+test('a failed interactive pull retains its failed work and partial progress without a token',async()=>{
+ const p=plugin();p.setStatus=()=>{};
+ p.engine=()=>({pull:async(_space,{onProgress})=>{
+  await onProgress({articleId:'one',summary:{downloaded:[]}});
+  throw Object.assign(new Error('offline rssd_device_'+'b'.repeat(48)),{code:'network_error',articleId:'two',pullSummary:{downloaded:['one']}});
+ }});
+ await p.pull();
+ assert.equal(p.records[0].state,'running');
+ assert.equal(p.records.at(-1).state,'failed');
+ assert.equal(p.records.at(-1).articleId,'two');
+ assert.deepEqual(p.records.at(-1).partial,{downloaded:['one']});
+ assert.doesNotMatch(JSON.stringify(p.records),/rssd_device_/);
+ assert.equal(p.operations.active,null);
+});
+test('an interactive pull records its final result after its progress',async()=>{
+ const p=plugin();p.setStatus=()=>{};
+ const result={downloaded:['one'],updated:[],unchanged:0,skipped:[],conflicts:[],removedFromCenter:[]};
+ p.engine=()=>({pull:async(_space,{onProgress})=>{await onProgress({articleId:'one',summary:{downloaded:[]}});return result;}});
+ await p.pull();
+ assert.equal(p.records.at(-1).state,'completed');assert.equal(p.records.at(-1).ok,true);
+ assert.deepEqual(p.records.at(-1).result,result);
+});
