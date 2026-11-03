@@ -42,3 +42,11 @@ test('a partially downloaded catalog is not reported as a successful command',as
  const record=await recordedOperation({request,read:async id=>records.get(id),write:async value=>records.set(value.id,{...value}),execute:async()=>({downloaded:['a'],failed:[{articleId:'b',code:'network_error'}]})});
  assert.equal(record.state,'partial');assert.equal(record.ok,false);assert.equal(record.result.failed[0].articleId,'b');
 });
+
+test('pull receipts report conflicts and unresolved saves as partial',async()=>{
+ for(const key of ['conflicts','pending','metadataPending']){
+  const request={id:'case-'+key,action:'pull',path:'',origin:'https://center.example.org',workspaceId:'metho'};
+  const record=await recordedOperation({request,read:async()=>null,write:async()=>{},execute:async()=>({[key]:['a'],failed:[]})});
+  assert.equal(record.state,'partial');assert.equal(record.ok,false);
+ }
+});

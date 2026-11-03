@@ -61,6 +61,28 @@ export function noteToWork(content,parseYaml){
  return {data,kind:text(properties[IDENTITY.kind])||'news',media:mediaNames(body,locale)};
 }
 
+/** Update only the top-level version scalar, preserving all other bytes.
+ * Return null when the identity or YAML shape cannot be verified safely. */
+export function updateNoteVersion(content,{articleId,sectionId,locale,version},parseYaml){
+ if(typeof content!=='string'||!Number.isSafeInteger(version)||version<1)return null;
+ const front=/^(---\r?\n)([\s\S]*?)(\r?\n---(?=\r?\n|$))/.exec(content);
+ if(!front)return null;
+ let props;try{props=parseYaml(front[2]);}catch{return null;}
+ if(!props||typeof props!=='object'||Array.isArray(props)||text(props[IDENTITY.id])!==articleId||
+  text(props[IDENTITY.sectionId])!==sectionId||(text(props[IDENTITY.locale])||'zh-CN')!==locale)return null;
+ const keyLines=[...front[2].matchAll(/^rssd-version[ \t]*:/gm)];
+ if(keyLines.length!==1)return null;
+ const scalar=/^(rssd-version[ \t]*:[ \t]*)(?:"(\d+)"|'(\d+)'|(\d+))([ \t]*(?:#[^\r\n]*)?)(\r?)$/gm;
+ const matches=[...front[2].matchAll(scalar)];if(matches.length!==1)return null;
+ const match=matches[0],old=Number(match[2]??match[3]??match[4]);
+ if(!Number.isSafeInteger(old)||old<0||old>version||Number(props[IDENTITY.version])!==old)return null;
+ if(old===version)return {content,changed:false};
+ const quote=match[2]!==undefined?'"':match[3]!==undefined?"'":'';
+ const replacement=match[1]+quote+String(version)+quote+match[5]+match[6];
+ const header=front[2].slice(0,match.index)+replacement+front[2].slice(match.index+match[0].length);
+ return {content:front[1]+header+front[3]+content.slice(front[0].length),changed:true};
+}
+
 const canonical=value=>Array.isArray(value)?'['+value.map(canonical).join(',')+']':value&&typeof value==='object'
  ?'{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+canonical(value[k])).join(',')+'}':JSON.stringify(value);
 /** What a person can change in a work. Equal fingerprints mean nothing to save. */

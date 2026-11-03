@@ -109,11 +109,12 @@ export default class RssdPlugin extends Plugin{
   });
  }
  async pullAll(space,{onProgress=()=>{}}={}){
-  const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],unchanged:0,removedFromCenter:[]},engine=this.engine();
+  const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],metadataPending:[],unchanged:0,removedFromCenter:[],transportByLocale:{}},engine=this.engine();
   for(const locale of LOCALES){
    const result=await engine.pull(space,{locale,onProgress:progress=>onProgress({...progress,locale})});
-   for(const key of ['downloaded','updated','skipped','conflicts','pending','removedFromCenter'])summary[key].push(...(result[key]||[]).map(id=>locale==='zh-CN'?id:locale+'/'+id));
+   for(const key of ['downloaded','updated','skipped','conflicts','pending','metadataPending','removedFromCenter'])summary[key].push(...(result[key]||[]).map(id=>locale==='zh-CN'?id:locale+'/'+id));
    summary.failed.push(...(result.failed||[]).map(item=>({...item,locale})));summary.unchanged+=result.unchanged||0;
+   summary.transportByLocale[locale]=result.transport;
   }
   return summary;
  }
@@ -151,18 +152,20 @@ export default class RssdPlugin extends Plugin{
  async pull(){
   try{
    const summary=await this.operations.run('pull',async()=>{
-    let checked=0;const id=crypto.randomUUID(),workspaceId=this.settings.workspaceId;
+    let checked=0,lastProgress;const id=crypto.randomUUID(),workspaceId=this.settings.workspaceId;
     this.setStatus('RSSD: pulling…');
     await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked});
     try{
      const result=await this.pullAll(workspaceId,{onProgress:async({articleId,summary,locale})=>{
       this.setStatus('RSSD: pulling… '+(++checked)+' works');
+      lastProgress={articleId,locale,partial:summary};
       await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked,articleId,locale,partial:summary});
      }});
-     await this.writeRun({id,action:'pull',workspaceId,state:result.failed?.length?'partial':'completed',ok:!result.failed?.length,checked,result});
+     const incomplete=['failed','conflicts','pending','metadataPending'].some(key=>result[key]?.length);
+     await this.writeRun({id,action:'pull',workspaceId,state:incomplete?'partial':'completed',ok:!incomplete,checked,result});
      return result;
     }catch(error){
-     await this.writeRun({id,action:'pull',workspaceId,state:'failed',ok:false,checked,...diagnosticError(error)});
+     await this.writeRun({id,action:'pull',workspaceId,state:'failed',ok:false,checked,...lastProgress,...(error.pullSummary?{partial:error.pullSummary}:{}),...diagnosticError(error)});
      throw error;
     }
     finally{this.setStatus('RSSD');}
@@ -171,8 +174,10 @@ export default class RssdPlugin extends Plugin{
    if(summary.skipped.length)parts.push(summary.skipped.length+' kept (local changes)');
    if(summary.conflicts.length)parts.push(summary.conflicts.length+' in conflict');
    if(summary.pending?.length)parts.push(summary.pending.length+' waiting for save recovery');
+   if(summary.metadataPending?.length)parts.push(summary.metadataPending.length+' local version labels need refresh');
    if(summary.failed?.length)parts.push(summary.failed.length+' failed; pull again to retry');
-   new Notice((summary.failed?.length?'Pull incomplete: ':'Pull finished: ')+parts.join(', '));
+   const incomplete=['failed','conflicts','pending','metadataPending'].some(key=>summary[key]?.length);
+   new Notice((incomplete?'Pull incomplete: ':'Pull finished: ')+parts.join(', '));
    if(summary.conflicts.length)new Notice('Conflicts were not changed: '+summary.conflicts.join(', '),10000);
   }catch(error){new Notice('Pull failed: '+error.message);}
  }
@@ -201,6 +206,7 @@ export default class RssdPlugin extends Plugin{
   try{
    const result=await this.operations.run('save',async()=>{await this.assertWritable();return this.engine().save(this.settings.workspaceId,file.path);});
    new Notice(result.state==='unchanged'?'Nothing to save':'Saved as a private draft (revision '+result.revision+'). It is not published.');
+   if(result.metadataWarning)new Notice('The draft was saved, but its local version label could not be refreshed: '+result.metadataWarning,10000);
   }catch(error){
    console.error('RSSD save failed',error.status,error.code,error.message);
    new Notice(saveFailureMessage(error),10000);

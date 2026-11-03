@@ -58,6 +58,27 @@ test('GET stops after bounded timeouts and does not retry server conflicts',asyn
  assert.equal(attempts,1);
 });
 
+test('a non-cancellable timed-out batch is not duplicated, but settled transport failures can retry',async()=>{
+ let attempts=0;
+ await assert.rejects(centerRequest(()=>{attempts++;return new Promise(()=>{});},'https://center.example.org','/batch',{
+  timeoutMs:2,retryTimeouts:false,sleep:async()=>{throw Error('must not retry timeout');}}),error=>error.code==='network_error'&&error.timedOut===true);
+ assert.equal(attempts,1);
+ attempts=0;
+ assert.deepEqual(await centerRequest(async()=>{if(++attempts===1)throw Error('offline');return reply(200,{ok:true});},'https://center.example.org','/batch',{
+  retryTimeouts:false,sleep:async()=>{}}),{ok:true});
+ assert.equal(attempts,2);
+});
+
+test('batch details get a longer bounded timeout than ordinary requests',async()=>{
+ const realSetTimeout=globalThis.setTimeout,windows=[];
+ globalThis.setTimeout=(callback,ms,...args)=>{windows.push(ms);return realSetTimeout(callback,ms,...args);};
+ try{
+  const client=createCenterClient({origin:'https://center.example.org',token:TOKEN,http:async()=>reply(200,{ok:true})});
+  await client.identity();await client.workBatch('metho',['one'],'zh-CN');
+  assert.deepEqual(windows,[30000,120000]);
+ }finally{globalThis.setTimeout=realSetTimeout;}
+});
+
 test('uncertain POST failures are never retried',async()=>{
  let attempts=0;
  await assert.rejects(centerRequest(async()=>{attempts++;throw Error('offline');},'https://center.example.org','/drafts',{

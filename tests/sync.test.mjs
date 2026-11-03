@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {SyncEngine} from '../src/sync-engine.mjs';
-import {workToNote,noteToWork,toVaultMarkdown,toCenterMarkdown,workState,draftEnvelope,notePath} from '../src/sync-model.mjs';
+import {workToNote,noteToWork,updateNoteVersion,toVaultMarkdown,toCenterMarkdown,workState,draftEnvelope,notePath} from '../src/sync-model.mjs';
 import {yaml,memoryVault,memoryStore,stubCenter,detail,png} from './helpers.mjs';
 
 const setup=(...ids)=>{
@@ -84,7 +84,7 @@ test('save sends an exact-base private draft with the edit and its images',async
  await edit(vault,'Works/a-one.md','Body','Edited body');
  assert.equal((await engine.states('metho'))['a-one'],'local_changed');
  const result=await engine.save('metho','Works/a-one.md');
- assert.deepEqual(result,{state:'saved',revision:2});
+ assert.deepEqual(result,{state:'saved',revision:2,metadataUpdated:true});
  const sent=center.calls.find(c=>c[0]==='saveDraft')[1];
  assert.equal(sent.expectedVersion,1);
  assert.equal(sent.expectedPublishedVersion,null);
@@ -120,7 +120,7 @@ test('a save whose answer is lost is recovered by its original key, never resent
  // The Center did accept it before the answer was lost.
  center.state.drafts.set(pending.requestKey,{articleId:'a-one',requestKey:pending.requestKey,revision:2});
  const result=await engine.save('metho','Works/a-one.md');
- assert.deepEqual(result,{state:'saved',revision:2});
+ assert.deepEqual(result,{state:'saved',revision:2,metadataUpdated:true});
  assert.equal(center.calls.filter(c=>c[0]==='saveDraft').length,1,'the request was not sent a second time');
  assert.deepEqual(center.calls.at(-1),['draftReceipt',pending.requestKey]);
 });
@@ -298,7 +298,7 @@ test('recovering an uncertain prior save does not require new-save capability or
  const key=(await store.get('metho','one')).pending.requestKey;
  center.state.drafts.set(key,{articleId:'one',requestKey:key,revision:2});
  center.client.work=async()=>{throw Error('must not read a new version to recover a pending request');};
- assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'saved',revision:2});
+ assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'saved',revision:2,metadataUpdated:true});
  assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
 });
 
@@ -307,6 +307,7 @@ test('pull retries a transient detail error after other works and reports succes
  center.client.work=async(space,id)=>{if(id==='one'&&first){first=false;throw Object.assign(Error('temporary timeout'),{code:'network_error',status:0});}return read(space,id);};
  const result=await engine.pull('metho');
  assert.deepEqual(result.downloaded,['two','three','one']);assert.deepEqual(result.failed,[]);
+ assert.equal(result.transport.singleRequests,4);assert.equal(result.transport.fallbackSingles,3);assert.equal(result.transport.retrySingles,1);
  assert.ok(await vault.read('Works/one.md'));assert.ok(await vault.read('Works/two.md'));
 });
 
@@ -356,8 +357,9 @@ test('English and Chinese versions with the same ID stay separate through pull, 
  assert.match(english,/title: English/);assert.match(english,/\.\.\/\.\.\/article-media\/a\.png/);
  assert.equal((await store.get('metho','same','zh-CN')).version,1);assert.equal((await store.get('metho','same','en')).version,4);
  await edit(vault,'Works/en/same.md','Body','English edit');
- assert.deepEqual(await engine.save('metho','Works/en/same.md'),{state:'saved',revision:5});
+ assert.deepEqual(await engine.save('metho','Works/en/same.md'),{state:'saved',revision:5,metadataUpdated:true});
  assert.equal(await vault.read('Works/same.md'),chinese);assert.equal((await store.get('metho','same','zh-CN')).version,1);
+ assert.match(await vault.read('Works/en/same.md'),/rssd-version: 5/);assert.match(await vault.read('Works/same.md'),/rssd-version: 1/);
  assert.equal((await store.get('metho','same','en')).version,5);
  const payload=calls.find(c=>c[0]==='save')[1].data;
  assert.match(payload.markdown,/English edit/);assert.match(payload.markdown,/\/article-media\/a\.png/);assert.equal(payload.assets[0].path,'/article-media/a.png');
@@ -383,7 +385,7 @@ test('a malformed save receipt retains the original request key and recovers wit
  center.client.saveDraft=async(...args)=>{await save(...args);return {revision:2,articleId:'other',requestKey:args[1].requestKey};};
  await assert.rejects(engine.save('metho','Works/one.md'),error=>error.code==='invalid_receipt'&&error.retained===true);
  const base=await store.get('metho','one'),key=base.pending.requestKey;assert.equal(base.version,1);
- assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'saved',revision:2});
+ assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'saved',revision:2,metadataUpdated:true});
  assert.equal(center.calls.filter(c=>c[0]==='saveDraft').length,1);assert.equal(center.calls.at(-1)[1],key);
 });
 
@@ -405,7 +407,7 @@ test('an HTTP 408 response preserves the original write key for recovery',async(
  await assert.rejects(engine.save('metho','Works/one.md'),error=>error.retained===true);
  const key=(await store.get('metho','one')).pending.requestKey;assert.ok(key);
  center.state.drafts.set(key,{articleId:'one',requestKey:key,revision:2});
- assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'saved',revision:2});
+ assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'saved',revision:2,metadataUpdated:true});
  assert.equal(center.calls.filter(c=>c[0]==='saveDraft').length,1);
 });
 
@@ -434,6 +436,16 @@ test('small batches reduce requests and preserve sequential vault writes',async(
  const result=await engine.pull('metho');
  assert.deepEqual(calls.map(x=>x.asked.length),[8,2]);assert.equal(center.calls.filter(x=>x[0]==='work').length,0);
  assert.equal(result.downloaded.length,10);assert.equal(peakWrites,1);assert.deepEqual(result.failed,[]);
+ assert.deepEqual(result.transport,{batchRequests:2,batchWorks:10,batchDelivered:10,batchRequestErrors:0,batchUnsupported:0,batchOverLimit:0,batchItemFailures:0,singleRequests:0,fallbackSingles:0,retrySingles:0});
+});
+
+test('transport progress snapshots remain stable and contain only counters',async()=>{
+ const ids=Array.from({length:9},(_,i)=>'private-id-'+i),{engine,center,works}=setup(...ids),snapshots=[];
+ center.client.workBatch=async(_space,asked,locale)=>({locale,items:asked.map(id=>({articleId:id,ok:true,detail:works.get(id)}))});
+ const result=await engine.pull('metho',{onProgress:({summary})=>snapshots.push(summary.transport)});
+ assert.equal(snapshots[0].batchRequests,0);assert.equal(snapshots[8].batchRequests,1);assert.equal(snapshots[8].batchWorks,8);
+ assert.equal(result.transport.batchRequests,2);assert.ok(Object.values(result.transport).every(value=>Number.isInteger(value)&&value>=0));
+ assert.doesNotMatch(JSON.stringify(result.transport),/private-id|rssd_device|Bearer/);
 });
 
 test('older Center falls back once to bounded parallel single-work reads',async()=>{
@@ -442,6 +454,7 @@ test('older Center falls back once to bounded parallel single-work reads',async(
  const get=center.client.work;center.client.work=async(...args)=>{active++;peak=Math.max(peak,active);try{await new Promise(resolve=>setTimeout(resolve,2));return await get(...args);}finally{active--;}};
  const result=await engine.pull('metho');assert.equal(batches,1);assert.equal(result.downloaded.length,10);
  assert.equal(center.calls.filter(x=>x[0]==='work').length,10);assert.equal(peak,3);
+ assert.deepEqual(result.transport,{batchRequests:1,batchWorks:8,batchDelivered:0,batchRequestErrors:1,batchUnsupported:1,batchOverLimit:0,batchItemFailures:0,singleRequests:10,fallbackSingles:10,retrySingles:0});
 });
 
 test('batch size-limit fallback fetches only oversized works individually',async()=>{
@@ -451,6 +464,7 @@ test('batch size-limit fallback fetches only oversized works individually',async
   {articleId:id,ok:true,detail:works.get(id)})});
  const result=await engine.pull('metho');assert.deepEqual(result.downloaded,['one','two','three']);
  assert.deepEqual(center.calls.filter(x=>x[0]==='work').map(x=>x[1]),['two']);
+ assert.equal(result.transport.batchDelivered,2);assert.equal(result.transport.batchOverLimit,1);assert.equal(result.transport.singleRequests,1);assert.equal(result.transport.fallbackSingles,1);
 });
 
 test('batch per-work errors leave other works usable and make the result incomplete',async()=>{
@@ -460,6 +474,7 @@ test('batch per-work errors leave other works usable and make the result incompl
   {articleId:id,ok:true,detail:works.get(id)})});
  const result=await engine.pull('metho');assert.deepEqual(result.failed,[{articleId:'one',code:'identity_conflict',message:'Duplicate identity'}]);
  assert.deepEqual(result.downloaded,['two']);assert.equal(await vault.read('Works/one.md'),null);assert.ok(await vault.read('Works/two.md'));
+ assert.equal(result.transport.batchDelivered,1);assert.equal(result.transport.batchItemFailures,1);assert.equal(result.transport.singleRequests,0);
 });
 
 test('mismatched batch identities are rejected before any note is written',async()=>{
@@ -483,8 +498,15 @@ test('local edits and pending saves made during a batch read are preserved',asyn
 test('repeated full-batch outages stop further requests and retain partial failures',async()=>{
  const ids=Array.from({length:24},(_,i)=>'offline-'+i),{engine,center}=setup(...ids);let calls=0;
  center.client.workBatch=async()=>{calls++;throw Object.assign(Error('unreachable'),{code:'network_error',status:0});};
- await assert.rejects(engine.pull('metho'),error=>error.code==='network_error'&&error.pullSummary.failed.length===16);
+ await assert.rejects(engine.pull('metho'),error=>{assert.equal(error.code,'network_error');assert.equal(error.pullSummary.failed.length,16);assert.equal(error.pullSummary.transport.batchRequests,2);assert.equal(error.pullSummary.transport.batchWorks,16);assert.equal(error.pullSummary.transport.batchRequestErrors,2);return true;});
  assert.equal(calls,2);assert.equal(center.calls.filter(x=>x[0]==='work').length,0);
+});
+
+test('a timed-out batch stops the pull without starting another request',async()=>{
+ const ids=Array.from({length:24},(_,i)=>'slow-'+i),{engine,center}=setup(...ids);let calls=0;
+ center.client.workBatch=async()=>{calls++;throw Object.assign(Error('timed out'),{code:'network_error',status:0,timedOut:true});};
+ await assert.rejects(engine.pull('metho'),error=>{assert.equal(error.timedOut,true);assert.equal(error.pullSummary.failed.length,8);assert.equal(error.pullSummary.transport.batchRequests,1);return true;});
+ assert.equal(calls,1);assert.equal(center.calls.filter(x=>x[0]==='work').length,0);
 });
 
 test('duplicate catalog identities cannot race one vault note',async()=>{
@@ -497,4 +519,147 @@ test('single-read fallback waits for all in-flight requests before reporting a f
  const {engine,center,vault}=setup('one','two','three');const read=center.client.work;let active=0;
  center.client.work=async(space,id)=>{active++;try{if(id==='one')throw Object.assign(Error('server failure'),{status:503});await new Promise(resolve=>setTimeout(resolve,4));return await read(space,id);}finally{active--;}};
  await assert.rejects(engine.pull('metho'),error=>error.status===503);assert.equal(active,0);assert.equal(vault.files.size,0);
+});
+
+test('confirmed private saves update only the local version label, not the published version',async()=>{
+ const {engine,vault,works,store}=setup('one');works.set('one',detail('one',{published:1}));await engine.pull('metho');
+ await edit(vault,'Works/one.md','Body','Edited body');const before=await vault.read('Works/one.md'),fingerprint=(await engine.noteFingerprint('Works/one.md')).fingerprint;
+ const result=await engine.save('metho','Works/one.md'),after=await vault.read('Works/one.md');
+ assert.deepEqual(result,{state:'saved',revision:2,metadataUpdated:true});
+ assert.equal(after,before.replace('rssd-version: 1','rssd-version: 2'));assert.match(after,/rssd-published-version: 1/);
+ assert.equal((await engine.noteFingerprint('Works/one.md')).fingerprint,fingerprint);
+ assert.equal((await store.get('metho','one')).metadataSync,undefined);
+ await edit(vault,'Works/one.md','Edited body','Edited twice');await engine.save('metho','Works/one.md');
+ assert.match(await vault.read('Works/one.md'),/rssd-version: 3/);assert.match(await vault.read('Works/one.md'),/rssd-published-version: 1/);
+});
+
+test('edits made during the Center save survive the version label update',async()=>{
+ const {engine,vault,center}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','First edit');
+ const submit=center.client.saveDraft;center.client.saveDraft=async(...args)=>{const receipt=await submit(...args);await edit(vault,'Works/one.md','First edit','First edit plus concurrent typing');return receipt;};
+ const result=await engine.save('metho','Works/one.md');assert.equal(result.metadataUpdated,true);
+ const content=await vault.read('Works/one.md');assert.match(content,/First edit plus concurrent typing/);assert.match(content,/rssd-version: 2/);
+ assert.equal((await engine.states('metho')).one,'local_changed');assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('repeated compare-and-swap races keep the save successful and can be repaired on pull',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','Original edit');
+ const write=vault.write;let races=0;
+ vault.write=async(path,content,options={})=>{
+  if(path==='Works/one.md'&&options.expectedContent&&content.includes('rssd-version: 2')){
+   races++;await write(path,(await vault.read(path))+'concurrent '+races+'\n');
+  }
+  return write(path,content,options);
+ };
+ const result=await engine.save('metho','Works/one.md');
+ assert.equal(result.state,'saved');assert.equal(result.revision,2);assert.equal(result.metadataUpdated,false);assert.match(result.metadataWarning,/local version label/);
+ const base=await store.get('metho','one');assert.equal(base.pending,undefined);assert.equal(base.metadataSync.revision,2);
+ assert.match(await vault.read('Works/one.md'),/concurrent 1\nconcurrent 2/);assert.match(await vault.read('Works/one.md'),/rssd-version: 1/);
+ vault.write=write;const pull=await engine.pull('metho');assert.deepEqual(pull.metadataPending,[]);assert.deepEqual(pull.skipped,['one']);
+ assert.match(await vault.read('Works/one.md'),/rssd-version: 2/);assert.match(await vault.read('Works/one.md'),/concurrent 1\nconcurrent 2/);
+ assert.equal((await store.get('metho','one')).metadataSync,undefined);assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('a removed or reidentified note is never recreated or overwritten after a confirmed save',async()=>{
+ for(const mode of ['removed','identity']){
+  const {engine,vault,center,store}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','Edited');const submit=center.client.saveDraft;
+  center.client.saveDraft=async(...args)=>{const receipt=await submit(...args);if(mode==='removed')vault.files.delete('Works/one.md');else await edit(vault,'Works/one.md','rssd-id: one','rssd-id: different');return receipt;};
+  const result=await engine.save('metho','Works/one.md');assert.equal(result.state,'saved');assert.equal(result.metadataUpdated,false);
+  assert.equal((await store.get('metho','one')).version,2);assert.equal((await store.get('metho','one')).pending,undefined);
+  if(mode==='removed')assert.equal(await vault.read('Works/one.md'),null);else assert.match(await vault.read('Works/one.md'),/rssd-id: different/);
+ }
+});
+
+test('failed saves do not change the local version; original-key recovery updates it safely',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','Saved content');
+ const submit=center.client.saveDraft;center.client.saveDraft=async(...args)=>{await submit(...args);throw Object.assign(Error('response lost'),{status:408});};
+ await assert.rejects(engine.save('metho','Works/one.md'),e=>e.retained===true);assert.match(await vault.read('Works/one.md'),/rssd-version: 1/);
+ const key=(await store.get('metho','one')).pending.requestKey;await edit(vault,'Works/one.md','Saved content','Saved content plus later work');
+ const recovered=await engine.save('metho','Works/one.md');assert.equal(recovered.state,'saved');assert.equal(recovered.metadataUpdated,true);
+ assert.match(await vault.read('Works/one.md'),/rssd-version: 2/);assert.match(await vault.read('Works/one.md'),/plus later work/);
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);assert.equal(center.calls.find(x=>x[0]==='draftReceipt')[1],key);
+ assert.equal((await engine.states('metho')).one,'local_changed');
+});
+
+test('version marker patch preserves CRLF, quotes, comments and all body bytes',()=>{
+ const before='---\r\ntitle: Example\r\nrssd-id: one\r\nrssd-section: frontiers\r\nrssd-locale: zh-CN\r\nrssd-version: "1"  # preserved\r\nrssd-published-version: 1\r\n---\r\nBody\r\nrssd-version: 1\r\n';
+ const patched=updateNoteVersion(before,{articleId:'one',sectionId:'frontiers',locale:'zh-CN',version:2},yaml.parse);
+ assert.equal(patched.content,before.replace('rssd-version: "1"  # preserved','rssd-version: "2"  # preserved'));
+ assert.equal(updateNoteVersion(before,{articleId:'other',sectionId:'frontiers',locale:'zh-CN',version:2},yaml.parse),null);
+ assert.equal(updateNoteVersion(before.replace('rssd-version: "1"','rssd-version: "9"'),{articleId:'one',sectionId:'frontiers',locale:'zh-CN',version:2},yaml.parse),null);
+ const duplicate=before.replace('rssd-published-version: 1','rssd-version: 1\r\nrssd-published-version: 1');
+ assert.equal(updateNoteVersion(duplicate,{articleId:'one',sectionId:'frontiers',locale:'zh-CN',version:2},yaml.parse),null);
+});
+
+test('pull safely repairs a version label left stale by an older plugin',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','Sent edit');await engine.save('metho','Works/one.md');
+ await edit(vault,'Works/one.md','rssd-version: 2','rssd-version: 1');await edit(vault,'Works/one.md','Sent edit','Sent edit plus local work');
+ const before=await vault.read('Works/one.md'),result=await engine.pull('metho');
+ assert.equal(await vault.read('Works/one.md'),before.replace('rssd-version: 1','rssd-version: 2'));
+ assert.deepEqual(result.skipped,['one']);assert.deepEqual(result.metadataPending,[]);assert.equal((await store.get('metho','one')).metadataSync,undefined);
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('unrepairable stale metadata is reported without changing the file or sending a save',async()=>{
+ const {engine,vault,center}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','Changed');await engine.save('metho','Works/one.md');
+ await edit(vault,'Works/one.md','rssd-version: 2','rssd-version: 99');const before=await vault.read('Works/one.md');
+ const result=await engine.pull('metho');assert.deepEqual(result.metadataPending,['one']);assert.equal(await vault.read('Works/one.md'),before);
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('a baseline persistence failure retains the request key and recovery never resubmits',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','Edited');
+ const set=store.set;let fail=true;store.set=async(space,id,value,locale)=>{if(fail&&value.version===2&&!value.pending){fail=false;throw Error('disk full');}return set(space,id,value,locale);};
+ await assert.rejects(engine.save('metho','Works/one.md'),/disk full/);const pending=(await store.get('metho','one')).pending;
+ assert.ok(pending?.requestKey);assert.match(await vault.read('Works/one.md'),/rssd-version: 1/);
+ const recovered=await engine.save('metho','Works/one.md');assert.equal(recovered.state,'saved');assert.equal(recovered.metadataUpdated,true);
+ assert.match(await vault.read('Works/one.md'),/rssd-version: 2/);assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+ assert.equal(center.calls.find(x=>x[0]==='draftReceipt')[1],pending.requestKey);
+});
+
+test('metadata repair failure never causes a repeated private draft POST',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','Edited');
+ const write=vault.write;let blocked=true;vault.write=async(path,content,options={})=>{
+  if(blocked&&path==='Works/one.md'&&content.includes('rssd-version: 2')&&options.expectedContent)throw Error('local file locked');
+  return write(path,content,options);
+ };
+ const saved=await engine.save('metho','Works/one.md');assert.equal(saved.state,'saved');assert.equal(saved.metadataUpdated,false);
+ const unchanged=await engine.save('metho','Works/one.md');assert.equal(unchanged.state,'unchanged');assert.equal(unchanged.metadataUpdated,false);
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);assert.equal((await store.get('metho','one')).metadataSync.revision,2);
+ blocked=false;assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'unchanged'});
+ assert.match(await vault.read('Works/one.md'),/rssd-version: 2/);assert.equal((await store.get('metho','one')).metadataSync,undefined);
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('a restored missing note can repair its version marker without a new remote write',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','Edited');
+ const original=await vault.read('Works/one.md'),submit=center.client.saveDraft;
+ center.client.saveDraft=async(...args)=>{const receipt=await submit(...args);vault.files.delete('Works/one.md');return receipt;};
+ const saved=await engine.save('metho','Works/one.md');assert.equal(saved.metadataUpdated,false);assert.equal(await vault.read('Works/one.md'),null);
+ await vault.write('Works/one.md',original);const result=await engine.pull('metho');
+ assert.deepEqual(result.metadataPending,[]);assert.match(await vault.read('Works/one.md'),/rssd-version: 2/);
+ assert.equal((await store.get('metho','one')).metadataSync,undefined);assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('metadata repair refuses a baseline with another work identity or language',async()=>{
+ for(const change of [{articleId:'other'},{locale:'en'}]){
+  const {engine,vault,store}=setup('one');await engine.pull('metho');
+  const before=await vault.read('Works/one.md'),base=await store.get('metho','one');
+  await store.set('metho','one',{...base,...change,version:2,metadataSync:{revision:2}});
+  const result=await engine.repairMetadata('metho','one','zh-CN');assert.equal(result.metadataUpdated,false);
+  assert.equal(await vault.read('Works/one.md'),before);assert.equal((await store.get('metho','one')).metadataSync.revision,2);
+ }
+});
+
+test('a single version-marker CAS conflict retries against the latest user edit',async()=>{
+ const {engine,vault,center}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','Sent text');
+ const write=vault.write;let raced=false;
+ vault.write=async(path,content,options={})=>{
+  if(!raced&&path==='Works/one.md'&&options.expectedContent&&content.includes('rssd-version: 2')){
+   raced=true;await write(path,(await vault.read(path)).replace('Sent text','Sent text plus newer edit'));
+  }
+  return write(path,content,options);
+ };
+ const result=await engine.save('metho','Works/one.md');assert.equal(result.metadataUpdated,true);
+ assert.match(await vault.read('Works/one.md'),/Sent text plus newer edit/);assert.match(await vault.read('Works/one.md'),/rssd-version: 2/);
+ assert.equal((await engine.states('metho')).one,'local_changed');assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
 });

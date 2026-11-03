@@ -14,22 +14,25 @@ export function centerOrigin(value){
 }
 
 /** Retry only transport failures on GET. Never replay writes or HTTP error responses. */
-export async function centerRequest(http,origin,path,{method='GET',body,token,timeoutMs=30000,retryDelaysMs=[5000],sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}){
+export async function centerRequest(http,origin,path,{method='GET',body,token,timeoutMs=30000,retryDelaysMs=[5000],retryTimeouts=true,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}){
  let response,lastError;
  const delays=method==='GET'?retryDelaysMs:[];
  for(let attempt=0;attempt<=delays.length;attempt++){
   let timer;
   try{
    response=await Promise.race([http({url:origin+'/api/rssd/v1'+path,method,throw:false,contentType:'application/json',
-    headers:{Accept:'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Request timed out')),timeoutMs);})]);
+    headers:{Accept:'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(Error('Request timed out'),{timedOut:true})),timeoutMs);})]);
    break;
   }catch(error){lastError=error;}
   finally{clearTimeout(timer);}
-  // requestUrl cannot cancel a timed-out request. Cap retries and allow time for the
+  // requestUrl cannot cancel a timed-out request. In particular, never duplicate a
+  // large batch while its timed-out original might still be using server resources.
+  if(lastError?.timedOut&&!retryTimeouts)break;
+  // Cap other retries and allow time for the
   // original GET to finish before issuing another, avoiding an unbounded pileup.
   if(attempt<delays.length)await sleep(delays[attempt]);
  }
- if(!response){const detail=String(lastError?.message||'network error').replace(/rssd_device_[A-Za-z0-9_-]+/g,'[redacted]').slice(0,300);throw new CenterError((method==='GET'?'Center is unreachable; try again when the connection is restored':'Center response was lost; a submitted save may still have been accepted. Recover it by its original request key')+' ('+detail+')');}
+ if(!response){const detail=String(lastError?.message||'network error').replace(/rssd_device_[A-Za-z0-9_-]+/g,'[redacted]').slice(0,300);throw Object.assign(new CenterError((method==='GET'?'Center is unreachable; try again when the connection is restored':'Center response was lost; a submitted save may still have been accepted. Recover it by its original request key')+' ('+detail+')'),{timedOut:lastError?.timedOut===true});}
  let value=null;try{value=typeof response.json==='function'?await response.json():response.json;}catch{value=null;}
  if(response.status<200||response.status>=300)throw new CenterError(value?.message||'Center request failed ('+response.status+')',{status:response.status,code:value?.code||'http_error'});
  if(value===null&&response.status!==204)throw new CenterError('Center response could not be read',{code:'invalid_response'});
@@ -52,7 +55,9 @@ export function createCenterClient({http,origin,token}){
   /** The current Center edition of one work, with its data and image bytes. */
   work:(workspaceId,articleId,locale)=>request(editorial(workspaceId,'cloud/'+encodeURIComponent(articleId)+(locale?'?'+query({locale}):''))),
   /** Small bounded catalog batches. Older Centers return 404 and can use work(). */
-  workBatch:(workspaceId,ids,locale)=>request(editorial(workspaceId,'cloud/batch/read?'+query({locale,ids:ids.join(',')}))),
+  // Images can make a batch substantially larger than a single note. Give it a
+  // bounded longer window and do not duplicate a request that is still in flight.
+  workBatch:(workspaceId,ids,locale)=>request(editorial(workspaceId,'cloud/batch/read?'+query({locale,ids:ids.join(',')})),{timeoutMs:120000,retryTimeouts:false}),
   /** Exact-base private save; never publishes. */
   saveDraft:(workspaceId,envelope)=>request(editorial(workspaceId,'drafts'),{method:'POST',body:envelope}),
   /** Recovery of a draft save whose answer was lost, by its original request key. */

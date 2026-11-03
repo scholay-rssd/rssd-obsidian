@@ -34,7 +34,7 @@ export async function recordedOperation({request,read,write,execute}) {
  }
  const record={...request,state:'running',ok:null,at:new Date().toISOString()};
  await write(record);
- try { const result=await execute();const partial=request.action==='pull'&&Array.isArray(result?.failed)&&result.failed.length>0;Object.assign(record,{state:partial?'partial':'completed',ok:!partial,result}); }
+ try { const result=await execute();const partial=request.action==='pull'&&['failed','conflicts','pending','metadataPending'].some(key=>Array.isArray(result?.[key])&&result[key].length>0);Object.assign(record,{state:partial?'partial':'completed',ok:!partial,result}); }
  catch(error) { Object.assign(record,{state:'failed',ok:false,...diagnosticError(error)}); }
  record.at=new Date().toISOString();await write(record);return record;
 }

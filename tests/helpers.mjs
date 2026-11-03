@@ -2,7 +2,11 @@ import YAML from 'yaml';
 export const yaml={parse:text=>YAML.parse(text),stringify:value=>YAML.stringify(value)};
 export function memoryVault(){
  const files=new Map();
- return {files,read:async p=>files.has(p)?files.get(p):null,write:async(p,c)=>{files.set(p,c);},
+ return {files,read:async p=>files.has(p)?files.get(p):null,write:async(p,c,options={})=>{
+   if('expectedContent' in options&&(files.has(p)?files.get(p):null)!==options.expectedContent)
+    throw Object.assign(Error('Local edits were kept'),{code:'local_edit_during_pull'});
+   files.set(p,c);
+  },
   readBinary:async p=>files.has(p)?files.get(p):null,writeBinary:async(p,b)=>{if(!files.has(p))files.set(p,b);}};
 }
 export function memoryStore(){

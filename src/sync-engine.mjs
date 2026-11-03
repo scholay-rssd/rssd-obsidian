@@ -2,7 +2,7 @@
 // are injected. Rules (see the RSSD business spec): the Center is the source of truth; a pull never overwrites a
 // note with local changes; a save carries the exact base and is refused when the Center moved; saving never
 // publishes; a save whose answer was lost is recovered by its original request key, never resent.
-import {workToNote,noteToWork,workFingerprint,centerMediaPaths,localMediaPaths,workState,draftEnvelope,isReadOnlyWork,
+import {workToNote,noteToWork,updateNoteVersion,workFingerprint,centerMediaPaths,localMediaPaths,workState,draftEnvelope,isReadOnlyWork,
  bytesToBase64,base64ToBytes,notePath,checkLocale,MEDIA_FOLDER} from './sync-model.mjs';
 
 const PAGE=100,DETAIL_CONCURRENCY=3,BATCH_SIZE=8;
@@ -74,14 +74,19 @@ export class SyncEngine{
   */
  async pull(workspaceId,{locale='zh-CN',onProgress=()=>{}}={}){
   checkLocale(locale);
-  const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],unchanged:0,removedFromCenter:[]};
+  // Counts are logical client method calls, not low-level HTTP attempts: the
+  // transport may internally retry a GET. No IDs, paths, tokens or content are
+  // included in these diagnostics.
+  const transport={batchRequests:0,batchWorks:0,batchDelivered:0,batchRequestErrors:0,batchUnsupported:0,
+   batchOverLimit:0,batchItemFailures:0,singleRequests:0,fallbackSingles:0,retrySingles:0};
+  const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],metadataPending:[],failed:[],unchanged:0,removedFromCenter:[],transport};
   const seen=new Set(),retry=[];
   let batchAvailable=typeof this.client.workBatch==='function',failedBatches=0;
   const failure=(item,error)=>({articleId:item.articleId,code:error.code||'network_error',
    message:String(error.message||'Center is unreachable').replace(/rssd_device_[A-Za-z0-9_-]+/g,'[redacted]')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]+/gi,'$1[redacted]').slice(0,500)});
   const snapshot=()=>({...summary,downloaded:[...summary.downloaded],updated:[...summary.updated],skipped:[...summary.skipped],
-   conflicts:[...summary.conflicts],pending:[...summary.pending],failed:[...summary.failed],removedFromCenter:[...summary.removedFromCenter]});
+   conflicts:[...summary.conflicts],pending:[...summary.pending],metadataPending:[...summary.metadataPending],failed:[...summary.failed],removedFromCenter:[...summary.removedFromCenter],transport:{...transport}});
   const attach=(item,error)=>{
    if(error&&typeof error==='object')Object.assign(error,{articleId:item.articleId,pullSummary:snapshot()});
    return error;
@@ -90,7 +95,14 @@ export class SyncEngine{
   // store and progress receipts are shared mutable state. Only network reads
   // are allowed to overlap.
   const prepare=async item=>{
-   const base=await this.store.get(workspaceId,item.articleId,locale),path=notePath(item.articleId,locale),local=base?.pending?null:await this.noteFingerprint(path);
+   let base=await this.store.get(workspaceId,item.articleId,locale);
+   if(base&&!base.pending){
+    const repaired=await this.repairMetadata(workspaceId,item.articleId,locale,{infer:true});
+    if(!repaired.metadataUpdated&&!summary.metadataPending.includes(item.articleId))summary.metadataPending.push(item.articleId);
+    if(repaired.metadataUpdated)summary.metadataPending=summary.metadataPending.filter(id=>id!==item.articleId);
+    base=await this.store.get(workspaceId,item.articleId,locale);
+   }
+   const path=notePath(item.articleId,locale),local=base?.pending?null:await this.noteFingerprint(path);
    const state=base?.pending?'publishing':workState({base,localFingerprint:local?.fingerprint??null,remote:{version:item.version}});
    await onProgress({articleId:item.articleId,locale,state,summary:snapshot()});
    if(state==='publishing'){summary.pending.push(item.articleId);return null;}
@@ -101,7 +113,10 @@ export class SyncEngine{
    if(local&&!base){summary.conflicts.push(item.articleId);return null;}
    return {item,base,baseSnapshot:JSON.stringify(base),local};
   };
-  const single=async item=>{
+  const single=async(item,reason)=>{
+   transport.singleRequests++;
+   if(reason==='fallback')transport.fallbackSingles++;
+   if(reason==='retry')transport.retrySingles++;
    try{return await this.client.work(workspaceId,item.articleId,locale);}
    catch(error){
     if(error?.code==='network_error'&&(!error.status||error.status===0))error.retryableDetail=true;
@@ -117,7 +132,7 @@ export class SyncEngine{
    if(JSON.stringify(currentBase)!==prepared.baseSnapshot){
     (currentBase?.pending?summary.pending:summary.conflicts).push(item.articleId);return;
    }
-   try{await this.writeWork(workspaceId,detail,local?.content??null,locale);(base?summary.updated:summary.downloaded).push(item.articleId);}
+   try{await this.writeWork(workspaceId,detail,local?.content??null,locale);(base?summary.updated:summary.downloaded).push(item.articleId);summary.metadataPending=summary.metadataPending.filter(id=>id!==item.articleId);}
    catch(error){if(error.code!=='local_edit_during_pull')throw error;summary.conflicts.push(item.articleId);}
   };
   // Single-detail fallback is capped at three concurrent requests and waits for
@@ -125,7 +140,7 @@ export class SyncEngine{
   const singles=async entries=>{
    const outcomes=new Array(entries.length);let next=0;
    const worker=async()=>{for(;;){const index=next++;if(index>=entries.length)return;
-    try{outcomes[index]={status:'fulfilled',value:await single(entries[index].item)};}
+    try{outcomes[index]={status:'fulfilled',value:await single(entries[index].item,'fallback')};}
     catch(reason){outcomes[index]={status:'rejected',reason};}
    }};
    await Promise.all(Array.from({length:Math.min(DETAIL_CONCURRENCY,entries.length)},worker));return outcomes;
@@ -133,12 +148,17 @@ export class SyncEngine{
   const fetchDetails=async entries=>{
    if(!batchAvailable)return singles(entries);
    let response;
+   transport.batchRequests++;transport.batchWorks+=entries.length;
    try{response=await this.client.workBatch(workspaceId,entries.map(x=>x.item.articleId),locale);}
    catch(error){
+    transport.batchRequestErrors++;
     // Old Centers do not implement the route. A batch-level 404 is safe to
     // retry as individual reads; no mutation is sent by either endpoint.
-    if(error?.status===404){batchAvailable=false;return singles(entries);}
+    if(error?.status===404){batchAvailable=false;transport.batchUnsupported++;return singles(entries);}
     if(error?.code==='network_error'&&(!error.status||error.status===0)){
+     // requestUrl cannot cancel a timed-out request. Stop this pull instead of
+     // starting a new batch while the previous request may still be active.
+     if(error.timedOut){for(const entry of entries)summary.failed.push(failure(entry.item,error));throw error;}
      error.retryableDetail=true;return entries.map(()=>({status:'rejected',reason:error}));
     }
     throw error;
@@ -157,6 +177,9 @@ export class SyncEngine{
     if(error.code==='batch_response_limit'&&error.status===413){fallback.push({index:i,entry:entries[i]});continue;}
     outcomes[i]={status:'rejected',batchError:true,reason:Object.assign(Error(String(error.message||'Center request failed').slice(0,500)),{code:error.code,status:error.status})};
    }
+   transport.batchDelivered+=outcomes.filter(x=>x?.status==='fulfilled').length;
+   transport.batchItemFailures+=outcomes.filter(x=>x?.batchError).length;
+   transport.batchOverLimit+=fallback.length;
    if(fallback.length){const results=await singles(fallback.map(x=>x.entry));for(let i=0;i<fallback.length;i++)outcomes[fallback[i].index]=results[i];}
    return outcomes;
   };
@@ -195,7 +218,7 @@ export class SyncEngine{
   // other works were downloading. This second pass uses single reads only.
   for(const item of retry){
    try{
-    const prepared=await prepare(item);if(prepared)await apply(prepared,await single(item));
+    const prepared=await prepare(item);if(prepared)await apply(prepared,await single(item,'retry'));
     summary.failed=summary.failed.filter(entry=>entry.articleId!==item.articleId);
    }catch(error){
     if(!error?.retryableDetail)throw attach(item,error);
@@ -232,7 +255,10 @@ export class SyncEngine{
   if(path!==notePath(local.work.data.id,local.work.data.locale))throw Error('The rssd-id property does not match this work file; restore it before saving');
   const {work,fingerprint}=local,base=await this.store.get(workspaceId,work.data.id,work.data.locale);
   if(base?.pending)return this.recover(workspaceId,path,base);
-  if(base&&base.fingerprint===fingerprint)return {state:'unchanged'};
+  if(base&&base.fingerprint===fingerprint){
+   const repaired=await this.repairMetadata(workspaceId,work.data.id,work.data.locale,{infer:true});
+   return repaired.metadataUpdated?{state:'unchanged'}:{state:'unchanged',...repaired};
+  }
   const assets=[];
   for(const name of work.media){
    const bytes=await this.vault.readBinary(MEDIA_FOLDER+'/'+name);
@@ -278,8 +304,55 @@ export class SyncEngine{
   // mismatched response leaves the write outcome uncertain and recoverable.
   if(receipt?.requestKey!==requestKey||receipt?.articleId!==articleId||!Number.isSafeInteger(receipt?.revision)||receipt.revision<=base.version)
    throw Object.assign(Error('The Center returned an invalid save receipt; keep the original request and retry recovery'),{code:'invalid_receipt',retained:true});
-  const {pending,...rest}=base;
-  await this.store.set(workspaceId,articleId,{...rest,version:receipt.revision,fingerprint},base.locale||'zh-CN');
-  return {state:'saved',revision:receipt.revision};
+  const locale=base.locale||'zh-CN',live=await this.store.get(workspaceId,articleId,locale);
+  if(live?.pending?.requestKey!==requestKey||live.pending.fingerprint!==fingerprint||live.version!==base.version)
+   throw Object.assign(Error('The local save record changed; keep the original request for recovery'),{code:'local_baseline_changed',retained:true});
+  const {pending,...rest}=live;
+  // The server save is final once the new baseline is persisted. A separate
+  // marker makes the display-only YAML version recoverable without replaying POST.
+  await this.store.set(workspaceId,articleId,{...rest,version:receipt.revision,fingerprint,metadataSync:{revision:receipt.revision}},locale);
+  return {state:'saved',revision:receipt.revision,...await this.repairMetadata(workspaceId,articleId,locale)};
+ }
+
+ /** Best-effort version-label repair; never turns a confirmed Center save into
+  * a failed or retried POST. The entire latest note is compare-and-swapped. */
+ async repairMetadata(workspaceId,articleId,locale,{infer=false}={}){
+  const warning={metadataUpdated:false,metadataWarning:'The local version label could not be safely updated; pull again after resolving local changes.'};
+  try{
+   const path=notePath(articleId,locale);
+   for(let attempt=0;attempt<2;attempt++){
+    const base=await this.store.get(workspaceId,articleId,locale),marker=base?.metadataSync;
+    if(!marker&&!infer)return {metadataUpdated:true};
+    const revision=marker?.revision??base?.version;
+    if(!base||base.pending||base.articleId!==articleId||(base.locale||'zh-CN')!==locale||
+     !Number.isSafeInteger(revision)||revision!==base.version)return warning;
+    const content=await this.vault.read(path);
+    const patched=updateNoteVersion(content,{articleId,sectionId:base.sectionId,locale,version:revision},this.yaml.parse);
+    if(!patched)return warning;
+    // Earlier plugin versions advanced the baseline without updating the YAML.
+    // If detected on a pull, record a repair marker before touching the file.
+    if(!marker&&patched.changed){
+     const current=await this.store.get(workspaceId,articleId,locale);
+     if(current?.pending||current?.version!==revision||current?.metadataSync||current?.articleId!==articleId||
+      current?.sectionId!==base.sectionId||(current?.locale||'zh-CN')!==locale)return warning;
+     await this.store.set(workspaceId,articleId,{...current,metadataSync:{revision}},locale);
+    }
+    if(patched.changed){
+     const current=await this.store.get(workspaceId,articleId,locale);
+     if(current?.pending||current?.version!==revision||current?.metadataSync?.revision!==revision||
+      current?.articleId!==articleId||current?.sectionId!==base.sectionId||(current?.locale||'zh-CN')!==locale)return warning;
+     try{await this.vault.write(path,patched.content,{expectedContent:content});}
+     catch(error){if(error?.code==='local_edit_during_pull')continue;return warning;}
+    }
+    const current=await this.store.get(workspaceId,articleId,locale);
+    if(current?.pending||current?.version!==revision)return warning;
+    if(!current.metadataSync)return {metadataUpdated:true};
+    if(current.metadataSync.revision!==revision)return warning;
+    const {metadataSync,...rest}=current;
+    await this.store.set(workspaceId,articleId,rest,locale);
+    return {metadataUpdated:true};
+   }
+  }catch{return warning;}
+  return warning;
  }
 }
