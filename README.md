@@ -14,8 +14,8 @@ Open one RSSD Center space as a vault of drafts, see each work's sync state, and
    ```
 3. In Obsidian enable the plugin, open Settings → RSSD, enter the Center address and run **Log in to the RSSD Center**. Approve the device and its spaces in your browser.
 4. Run **Pull works from the Center**. Chinese works appear in `Works/<id>.md`, English works in `Works/en/<id>.md`, and images in `article-media/`.
-5. To check whether a space can accept edits, run **Show which spaces accept saves**. A staged space can be read and pulled, but cannot save to the Center until its migration is complete; mobile is read-only.
-6. In a writable space, edit a note, then run **Save this work to the Center as a private draft**. A successful save updates the draft, not the published article.
+5. Automatic sync is on by default. While Obsidian and the vault are open, it checks for remote changes periodically and saves edits to linked works as private drafts after a short delay. It discovers offline edits after reopening. Use Settings → RSSD → **Automatic sync** to turn it off. The manual pull and save commands remain available.
+6. Active spaces save to Center private drafts. When the Center advertises staged-draft support, a staged space saves an independent private migration draft based on its imported snapshot; the original site still owns publication, and later legacy changes can require reconciliation. Neither kind of save publishes. Mobile is read-only.
 
 Commands: *Log in*, *Pull works*, *Save this work*, *Check sync state of all works*.
 
@@ -27,8 +27,9 @@ Commands: *Log in*, *Pull works*, *Save this work*, *Check sync state of all wor
 - The Center sends bounded batches when supported; the plugin falls back to limited individual reads. Interrupted pulls retain completed work and report failures for retry.
 - A save carries the exact base version and is refused if the Center moved. The Center must explicitly confirm it preserves existing attachments and editorial metadata. It never publishes.
 - A save whose answer was lost keeps its request key and is recovered by that key, never resent.
-- Structured records (notices, history, resources) download read-only.
-- Existing Center image paths are converted to local Markdown paths and back on save. Obsidian's `![[image]]` embedding is not converted into a Center attachment. Put images in `article-media/` and use Markdown paths such as `![description](../article-media/image.png)` in Chinese works, or `![description](../../article-media/image.png)` in English works.
+- Structured records (`year`, `history`, `openSource`) require a Center that explicitly supports safe private drafts. Only the title and the prose inside their existing named sections are editable; the first Markdown H1 must match the title. Other properties, section names and source fields must remain unchanged. Invalid edits stay local and are reported.
+- Referenced images are detected by their bytes and uploaded by content hash. Supported syntax is a relative Markdown path under `article-media/` or an explicit `![[article-media/name.png|alt]]` embed. Ambiguous `![[image.png]]`, files in other directories and unreferenced hidden-attachment replacement cannot be safely synchronized. A work may reference at most 12 PNG, JPEG or WebP images totaling 2 MiB.
+- New unlinked notes, local renames and local deletions do not create, rename or delete Center works. Moved or missing linked notes are reported and are not silently recreated. Return the original note to its linked path to resume syncing.
 
 ## Interrupted pulls and saves
 
@@ -47,7 +48,7 @@ Publishing, live production logs, the chat sidebar, merge view, logged-in source
 
 ## Works panel and command links
 
-Run **Open RSSD works** (or use the ribbon icon) to see readable titles and current sync states. Space selection lists authorized spaces; after downloading works the vault is bound to that space. A staged space remains readable but cannot save. Mobile cannot save private drafts.
+Run **Open RSSD works** (or use the ribbon icon) to see readable titles and current sync states. Space selection lists authorized spaces; after downloading works the vault is bound to that space. A staged private draft is a separate migration branch and does not activate its site. Mobile cannot save private drafts.
 
 Command links are off by default and can be enabled in RSSD settings for an operator-controlled vault. Example:
 

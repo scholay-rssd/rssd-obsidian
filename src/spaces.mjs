@@ -11,6 +11,6 @@ export function readOnlyReason(info,workspaceId){
  if(!info.writable)return 'The space "'+workspaceId+'" is still migrating (state: '+(info.migrationState||'unknown')+'). Its original site writer owns it, so the Center refuses saves until the cutover is complete. You can pull and read here, but not save.';
  return null;
 }
-export function spacesSummary(registry){
- return (registry?.workspaces||[]).map(w=>w.id+': '+(w.writable===false?'read-only ('+(w.migrationState||'migrating')+')':'writable')).join('\n')||'No spaces are authorized for this device.';
+export function spacesSummary(registry,{stagedDraftsAvailable=false}={}){
+ return (registry?.workspaces||[]).map(w=>w.id+': '+(w.writable===false?(stagedDraftsAvailable&&w.migrationState==='staged'?'private migration drafts (publication disabled)':'read-only ('+(w.migrationState||'migrating')+')'):'writable')).join('\n')||'No spaces are authorized for this device.';
 }

@@ -69,6 +69,18 @@ export function createCenterClient({http,origin,token}){
  const request=(path,options={})=>centerRequest(http,origin,path,{...options,token});
  const query=options=>new URLSearchParams(Object.entries(options||{}).filter(([,v])=>v!==undefined&&v!==null)).toString();
  const editorial=(workspaceId,path)=>'/editorial/'+encodeURIComponent(workspaceId)+'/'+path;
+ const site=workspaceId=>request(editorial(workspaceId,'site')),boundedSites=new Map();
+ const requireBounded=async workspaceId=>{
+  if(!boundedSites.has(workspaceId))boundedSites.set(workspaceId,site(workspaceId).then(value=>{
+   if(!value?.capabilities?.includes('bounded-media-v1'))throw Object.assign(Error('This Center does not support bounded media reads; update it before syncing'),{code:'bounded_media_unavailable'});
+  }).catch(error=>{boundedSites.delete(workspaceId);throw error;}));
+  return boundedSites.get(workspaceId);
+ };
+ const boundedDetail=async(workspaceId,path,options)=>{
+  await requireBounded(workspaceId);const value=await request(path,options);
+  if(value?.boundedMediaReads!==true)throw Object.assign(Error('The Center did not confirm bounded media reads'),{code:'bounded_media_unavailable'});
+  return value;
+ };
  return {origin,
   identity:()=>request('/identity'),
   registry:()=>request('/registry'),
@@ -77,14 +89,20 @@ export function createCenterClient({http,origin,token}){
   /** One page of every work in the space (drafts included), newest Center snapshot. */
   catalog:(workspaceId,options)=>request(editorial(workspaceId,'catalog?'+query({scope:'all',...options}))),
   /** The current Center edition of one work, with its data and image bytes. */
-  work:(workspaceId,articleId,locale)=>request(editorial(workspaceId,'cloud/'+encodeURIComponent(articleId)+(locale?'?'+query({locale}):''))),
+  work:(workspaceId,articleId,locale)=>boundedDetail(workspaceId,editorial(workspaceId,'cloud/'+encodeURIComponent(articleId)+'?'+query({locale,media:'referenced'}))),
   /** Small bounded catalog batches. Older Centers return 404 and can use work(). */
   // Images can make a batch substantially larger than a single note. Give it a
   // bounded longer window and do not duplicate a request that is still in flight.
-  workBatch:(workspaceId,ids,locale)=>request(editorial(workspaceId,'cloud/batch/read?'+query({locale,ids:ids.join(',')})),{timeoutMs:120000,timeoutGraceMs:180000}),
+  workBatch:async(workspaceId,ids,locale)=>{await requireBounded(workspaceId);const result=await request(editorial(workspaceId,'cloud/batch/read?'+query({locale,ids:ids.join(','),media:'referenced'})),{timeoutMs:120000,timeoutGraceMs:180000});if(result?.items?.some(item=>item?.ok&&item.detail?.boundedMediaReads!==true))throw Object.assign(Error('The Center did not confirm bounded media reads'),{code:'bounded_media_unavailable'});return result;},
   /** Exact-base private save; never publishes. */
   saveDraft:(workspaceId,envelope)=>request(editorial(workspaceId,'drafts'),{method:'POST',body:envelope}),
   /** Recovery of a draft save whose answer was lost, by its original request key. */
   draftReceipt:(workspaceId,requestKey)=>request(editorial(workspaceId,'drafts/requests/'+encodeURIComponent(requestKey))),
+  stagedSite:site,
+  stagedList:(workspaceId,locale,options={})=>request(editorial(workspaceId,'staged-drafts?'+query({locale,...options}))),
+  stagedWork:(workspaceId,articleId,locale)=>boundedDetail(workspaceId,editorial(workspaceId,'staged-drafts/'+encodeURIComponent(articleId)+'?'+query({locale}))),
+  saveStaged:(workspaceId,envelope)=>request(editorial(workspaceId,'staged-drafts'),{method:'POST',body:envelope}),
+  stagedReceipt:(workspaceId,key)=>request(editorial(workspaceId,'staged-drafts/requests/'+encodeURIComponent(key))),
+  stagedPromotion:(workspaceId,articleId,locale,overlayRevision)=>request(editorial(workspaceId,'staged-drafts/promotions/'+encodeURIComponent(articleId)+'?'+query({locale,overlayRevision}))),
  };
 }

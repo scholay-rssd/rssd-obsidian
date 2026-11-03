@@ -103,9 +103,9 @@ test('batch details get a longer bounded timeout than ordinary requests',async()
  const realSetTimeout=globalThis.setTimeout,windows=[];
  globalThis.setTimeout=(callback,ms,...args)=>{windows.push(ms);return realSetTimeout(callback,ms,...args);};
  try{
-  const client=createCenterClient({origin:'https://center.example.org',token:TOKEN,http:async()=>reply(200,{ok:true})});
+  const client=createCenterClient({origin:'https://center.example.org',token:TOKEN,http:async req=>reply(200,req.url.endsWith('/site')?{capabilities:['bounded-media-v1']}:{ok:true,items:[]})});
   await client.identity();await client.workBatch('metho',['one'],'zh-CN');
-  assert.deepEqual(windows,[30000,120000]);
+  assert.deepEqual(windows,[30000,30000,120000]);
  }finally{globalThis.setTimeout=realSetTimeout;}
 });
 
@@ -149,16 +149,28 @@ test('a timeout of an uncertain POST retains the original-request recovery instr
 });
 
 test('work detail requests the explicitly selected language',async()=>{
- const seen=[];const client=createCenterClient({origin:'https://center.example.org',token:TOKEN,http:async request=>{seen.push(request);return reply(200,{ok:true});}});
+ const seen=[];const client=createCenterClient({origin:'https://center.example.org',token:TOKEN,http:async request=>{if(request.url.endsWith('/site'))return reply(200,{capabilities:['bounded-media-v1']});seen.push(request);return reply(200,{ok:true,boundedMediaReads:true});}});
  await client.work('metho','work-one','en');await client.work('metho','work-one','zh-CN');
- assert.match(seen[0].url,/\/editorial\/metho\/cloud\/work-one\?locale=en$/);
- assert.match(seen[1].url,/\/editorial\/metho\/cloud\/work-one\?locale=zh-CN$/);
+ assert.match(seen[0].url,/\/editorial\/metho\/cloud\/work-one\?locale=en&media=referenced$/);
+ assert.match(seen[1].url,/\/editorial\/metho\/cloud\/work-one\?locale=zh-CN&media=referenced$/);
 });
 
 test('batch detail requests include explicit locale and ordered encoded identities',async()=>{
- let seen;const http=async request=>{seen=request;return reply(200,{locale:'en',items:[]});};
+ let seen;const http=async request=>{if(request.url.endsWith('/site'))return reply(200,{capabilities:['bounded-media-v1']});seen=request;return reply(200,{locale:'en',items:[]});};
  const client=createCenterClient({http,origin:'https://center.example.org',token:TOKEN});
  await client.workBatch('metho',['one','two'],'en');
  const url=new URL(seen.url);assert.equal(url.pathname,'/api/rssd/v1/editorial/metho/cloud/batch/read');
- assert.equal(url.searchParams.get('locale'),'en');assert.equal(url.searchParams.get('ids'),'one,two');assert.equal(seen.method,'GET');
+ assert.equal(url.searchParams.get('locale'),'en');assert.equal(url.searchParams.get('ids'),'one,two');assert.equal(url.searchParams.get('media'),'referenced');assert.equal(seen.method,'GET');
+});
+test('unbounded old Centers are rejected before requesting article data',async()=>{
+ const calls=[],client=createCenterClient({origin:'https://center.example.org',token:TOKEN,http:async req=>{calls.push(req);return reply(200,{capabilities:[]});}});
+ await assert.rejects(client.work('site','a','zh-CN'),{code:'bounded_media_unavailable'});assert.equal(calls.length,1);assert.match(calls[0].url,/\/site$/);
+});
+test('a Center must confirm each successful bounded media response',async()=>{
+ const client=createCenterClient({origin:'https://center.example.org',token:TOKEN,http:async req=>reply(200,req.url.endsWith('/site')?{capabilities:['bounded-media-v1']}:{items:[{ok:true,detail:{}}]})});
+ await assert.rejects(client.workBatch('site',['a'],'zh-CN'),{code:'bounded_media_unavailable'});
+});
+test('promotion lookup sends the exact overlay identity and device credential',async()=>{
+ const calls=[],client=createCenterClient({http:async request=>{calls.push(request);return reply(200,{canonicalRevision:4});},origin:'https://center.example.org',token:TOKEN});
+ assert.deepEqual(await client.stagedPromotion('site-id','article-one','en',3),{canonicalRevision:4});assert.equal(calls.length,1);assert.equal(calls[0].url,'https://center.example.org/api/rssd/v1/editorial/site-id/staged-drafts/promotions/article-one?locale=en&overlayRevision=3');assert.equal(calls[0].headers.Authorization,'Bearer '+TOKEN);assert.equal(calls[0].method,'GET');
 });

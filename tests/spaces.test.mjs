@@ -13,6 +13,7 @@ test('a staged space is read-only before anything is sent',()=>{
 });
 test('the spaces summary lists which spaces accept saves',()=>{
  assert.equal(spacesSummary(registry),'personal: read-only (staged)\nmetho: writable\nfresh: writable');
+ assert.match(spacesSummary(registry,{stagedDraftsAvailable:true}),/personal: private migration drafts \(publication disabled\)/);
  assert.match(spacesSummary({workspaces:[]}),/No spaces/);
 });
 test('a migration_staged refusal from the Center is explained',()=>{

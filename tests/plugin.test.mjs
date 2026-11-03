@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {OperationGate} from '../src/operations.mjs';
+import {yaml} from './helpers.mjs';
 const result=await build({entryPoints:['src/main.js'],bundle:true,format:'cjs',platform:'browser',external:['obsidian'],write:false});
 let response,modal;
 const mock={Plugin:class{},PluginSettingTab:class{},ItemView:class{},TFile:class{},Setting:class{},Notice:class{},Platform:{isMobile:false},
- Modal:class{constructor(){modal=this;}open(){}close(){this.closed=true;this.onCancel?.();}},requestUrl:async req=>response(req)};
+ Modal:class{constructor(){modal=this;}open(){}close(){this.closed=true;this.onCancel?.();}},requestUrl:async req=>response(req),parseYaml:yaml.parse,stringifyYaml:yaml.stringify};
 const module={exports:{}};new Function('require','module','exports',result.outputFiles[0].text)(()=>mock,module,module.exports);
 const Plugin=module.exports.default;
 function plugin(){
@@ -32,7 +33,8 @@ test('mobile cannot save a private draft',async()=>{
 });
 test('a failed interactive pull retains its failed work and partial progress without a token',async()=>{
  const p=plugin();p.setStatus=()=>{};
- p.engine=()=>({pull:async(_space,{onProgress})=>{
+ p.client=()=>({registry:async()=>({workspaces:[{id:'metho',writable:true,migrationState:'active'}]})});
+ p.engine=()=>({store:{list:async()=>[]},pull:async(_space,{onProgress})=>{
   await onProgress({articleId:'one',summary:{downloaded:[]}});
   throw Object.assign(new Error('offline rssd_device_'+'b'.repeat(48)),{code:'network_error',articleId:'two',pullSummary:{downloaded:['one']}});
  }});
@@ -46,11 +48,45 @@ test('a failed interactive pull retains its failed work and partial progress wit
 });
 test('an interactive pull records its final result after its progress',async()=>{
  const p=plugin();p.setStatus=()=>{};
+ p.client=()=>({registry:async()=>({workspaces:[{id:'metho',writable:true,migrationState:'active'}]})});
  const result={downloaded:['one'],updated:[],unchanged:0,skipped:[],conflicts:[],removedFromCenter:[]};
- p.engine=()=>({pull:async(_space,{onProgress,locale})=>{await onProgress({articleId:'one',summary:{downloaded:[]}});return locale==='zh-CN'?result:{...result,downloaded:['two']};}});
+ p.engine=()=>({store:{list:async()=>[]},pull:async(_space,{onProgress,locale})=>{await onProgress({articleId:'one',summary:{downloaded:[]}});return locale==='zh-CN'?result:{...result,downloaded:['two']};}});
  await p.pull();
  assert.equal(p.records.at(-1).state,'completed');assert.equal(p.records.at(-1).ok,true);
  assert.deepEqual(p.records.at(-1).result.downloaded,['one','en/two']);
+});
+
+test('save routes active and staged spaces to separate write handlers',async()=>{
+ const p=plugin();let canonical=0;
+ const engine={save:async()=>{canonical++;return {state:'saved'};},noteFingerprint:async()=>null};
+ p.client=()=>({registry:async()=>({workspaces:[{id:'metho',writable:true,migrationState:'active'},{id:'personal',writable:false,migrationState:'staged'}]})});
+ assert.equal((await p.saveWork('metho','Works/one.md',engine)).state,'saved');assert.equal(canonical,1);
+ await assert.rejects(p.saveWork('personal','Works/one.md',engine),/not an RSSD work/);assert.equal(canonical,1,'staged writes never use the canonical handler');
+ await assert.rejects(p.saveWork('unknown','Works/one.md',engine),{code:'forbidden'});
+});
+
+test('a staged pull reconciles both languages through the private branch',async()=>{
+ const p=plugin(),seen=[];p.settings.workspaceId='personal';
+ p.client=()=>({registry:async()=>({workspaces:[{id:'personal',writable:false,migrationState:'staged'}]})});
+ p.engine=()=>({client:{stagedSite:async()=>({capabilities:['staged-drafts-v1']}),stagedList:async(_space,locale)=>{seen.push(locale);return {items:[],generation:1,next:null};}},store:{list:async()=>[]},pull:async()=>({downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],metadataPending:[],removedFromCenter:[],unchanged:0})});
+ const result=await p.pullAll('personal');assert.deepEqual(seen,['zh-CN','en']);assert.deepEqual(result.conflicts,[]);
+});
+
+test('moving a linked note blocks recreation until the returned identity is verified',async()=>{
+ const p=plugin();p.settings.baselines={metho:{'one':{articleId:'one'}}};p.settings.pathRecords={};let marked='',unblocked='';
+ p.autoSync={mark:path=>marked=path,unblock:path=>unblocked=path};
+ p.app.vault={adapter:{read:async()=>"---\nrssd-id: one\nrssd-locale: zh-CN\n---\nBody"}};
+ await p.recordPathChange('rename','Works/one.md','Archive/one.md');
+ assert.equal(p.settings.pathRecords['zh-CN/one'].state,'moved');
+ await p.recordPathChange('rename','Archive/one.md','Works/one.md');
+ assert.deepEqual(p.settings.pathRecords,{});assert.equal(marked,'Works/one.md');assert.equal(unblocked,marked);
+});
+test('concurrent settings writes preserve pending saves and path guards in order',async()=>{
+ const p=plugin();let release;const writes=[];p.saveSettings=Plugin.prototype.saveSettings.bind(p);
+ p.saveData=async snapshot=>{writes.push(snapshot);if(writes.length===1)await new Promise(resolve=>release=resolve);};
+ p.settings.baselines={metho:{one:{pending:{requestKey:'keep-original'}}}};const a=p.saveSettings();await new Promise(resolve=>setImmediate(resolve));
+ p.settings.pathRecords={'zh-CN/one':{state:'moved'}};const b=p.saveSettings();release();await Promise.all([a,b]);
+ assert.equal(writes.length,2);assert.equal(writes[1].baselines.metho.one.pending.requestKey,'keep-original');assert.equal(writes[1].pathRecords['zh-CN/one'].state,'moved');
 });
 
 test('interactive spaces checks persist a fresh scoped receipt',async()=>{

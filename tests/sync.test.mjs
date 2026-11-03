@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {SyncEngine} from '../src/sync-engine.mjs';
-import {workToNote,noteToWork,updateNoteVersion,toVaultMarkdown,toCenterMarkdown,workState,draftEnvelope,notePath} from '../src/sync-model.mjs';
+import {workToNote,noteToWork,updateNoteVersion,toVaultMarkdown,toCenterMarkdown,workState,draftEnvelope,notePath,mediaHash} from '../src/sync-model.mjs';
 import {yaml,memoryVault,memoryStore,stubCenter,detail,png} from './helpers.mjs';
 
 const setup=(...ids)=>{
@@ -89,13 +89,29 @@ test('save sends an exact-base private draft with the edit and its images',async
  assert.equal(sent.expectedVersion,1);
  assert.equal(sent.expectedPublishedVersion,null);
  assert.match(sent.data.markdown,/^Edited body/);
- assert.match(sent.data.markdown,/\/article-media\/a\.png/);
- assert.equal(sent.data.assets[0].path,'/article-media/a.png');
+ const imagePath='/article-media/'+await mediaHash(png)+'.png';
+ assert.ok(sent.data.markdown.includes(imagePath));
+ assert.equal(sent.data.assets[0].path,imagePath);
  assert.match(sent.requestKey,/^obsidian-[0-9a-f]{32}$/);
  const base=await store.get('metho','a-one');
  assert.equal(base.version,2);assert.equal(base.pending,undefined);
  assert.equal((await engine.states('metho'))['a-one'],'synced');
  assert.equal(sent.publish,undefined,'saving never publishes');
+});
+
+test('a new unlinked note is reported instead of silently counted as synced',async()=>{
+ const {engine,vault}=setup('a-one');await vault.write('Works/new-note.md','# Local note\n');
+ await assert.rejects(engine.hasLocalChanges('metho','Works/new-note.md'),{code:'unlinked_work'});
+ assert.equal(await engine.hasLocalChanges('metho','Works/absent.md'),false);
+});
+
+test('legacy blank optional properties are preserved only with explicit Center capability',async()=>{
+ const {engine,vault,works,center}=setup('a-one');const work=works.get('a-one');work.data.author='';work.data.category='';
+ await engine.pull('metho');await edit(vault,'Works/a-one.md','Body','Edited');
+ await assert.rejects(engine.save('metho','Works/a-one.md'),{code:'optional_property_unavailable'});
+ const original=center.client.work;center.client.work=async(...args)=>({...await original(...args),preservesLegacyOptionalBlanksOnSave:true});
+ assert.equal((await engine.save('metho','Works/a-one.md')).state,'saved');
+ const envelope=center.calls.find(c=>c[0]==='saveDraft')[1];assert.equal(envelope.data.author,'');assert.equal(envelope.data.category,'');
 });
 
 test('a save is refused when the Center moved, and the note stays untouched',async()=>{
@@ -170,6 +186,38 @@ test('structured records are downloaded read-only and never saved',async()=>{
  await edit(vault,'Works/rec-one.md','Body','Edited');
  await assert.rejects(engine.save('metho','Works/rec-one.md'),/Structured records/);
  assert.equal(center.calls.filter(c=>c[0]==='saveDraft').length,0);
+});
+
+const structuredId='record-123e4567-e89b-42f0-a456-426614174000';
+const structuredDetail=(kind='history')=>{
+ const sections={year:['摘要','正文'],history:['事实摘要','历史意义'],openSource:['项目简介','使用价值']}[kind];
+ const d=detail(structuredId,{record:{kind,documentId:structuredId.slice(7),fields:{privateExtension:{retain:true}}},markdown:'# Title\n\n## '+sections[0]+'\n\nFirst\n\n## '+sections[1]+'\n\nSecond\n'});
+ return d;
+};
+function structuredSetup(kind='history',{capable=true}={}){
+ const d=structuredDetail(kind),works=new Map([[structuredId,d]]),center=stubCenter(works),vault=memoryVault(),store=memoryStore();
+ const get=center.client.work;center.client.work=async(...args)=>({...await get(...args),preservesEditorialFieldsOnSave:true,...(capable?{preservesStructuredDraftsOnSave:true}:{})});
+ return {works,center,vault,store,engine:new SyncEngine({client:center.client,vault,store,yaml})};
+}
+for(const kind of ['year','history','openSource'])test(kind+' structured prose uses verified private save without sending raw fields',async()=>{
+ const {engine,center,vault,store}=structuredSetup(kind),path='Works/'+structuredId+'.md';await engine.pull('metho');
+ await edit(vault,path,'First','Changed first');const result=await engine.save('metho',path);
+ assert.equal(result.state,'saved');const sent=center.calls.find(c=>c[0]==='saveDraft')[1];
+ assert.match(sent.data.markdown,/Changed first/);assert.equal('record' in sent.data,false);assert.equal((await store.get('metho',structuredId)).readOnly,true);
+});
+test('structured saves require explicit Center capability, preserve identity and protect unmapped properties',async()=>{
+ for(const mutation of ['old-server','kind','record-id','summary','author','date','category','title']){
+  const x=structuredSetup('history',{capable:mutation!=='old-server'}),path='Works/'+structuredId+'.md';await x.engine.pull('metho');
+  await edit(x.vault,path,'First','Edited');
+  if(mutation==='kind')await edit(x.vault,path,'rssd-kind: history','rssd-kind: news');
+  if(mutation==='record-id'){const get=x.center.client.work;x.center.client.work=async(...args)=>{const result=await get(...args);return {...result,data:{...result.data,record:{...result.data.record,documentId:'other'}}};};}
+  if(mutation==='summary')await edit(x.vault,path,'summary: Summary','summary: Other');
+  if(mutation==='author')await edit(x.vault,path,'author: Ed','author: Other');
+  if(mutation==='date')await edit(x.vault,path,'date: 2026-11-03','date: 2026-11-04');
+  if(mutation==='category')await edit(x.vault,path,'category: News','category: Other');
+  if(mutation==='title')await edit(x.vault,path,'title: Title','title: Other');
+  await assert.rejects(x.engine.save('metho',path),undefined,mutation);assert.equal(x.center.calls.filter(c=>c[0]==='saveDraft').length,0,mutation);
+ }
 });
 
 test('a refused save keeps the Center reason so the message names the real cause',async()=>{
@@ -362,7 +410,7 @@ test('English and Chinese versions with the same ID stay separate through pull, 
  assert.match(await vault.read('Works/en/same.md'),/rssd-version: 5/);assert.match(await vault.read('Works/same.md'),/rssd-version: 1/);
  assert.equal((await store.get('metho','same','en')).version,5);
  const payload=calls.find(c=>c[0]==='save')[1].data;
- assert.match(payload.markdown,/English edit/);assert.match(payload.markdown,/\/article-media\/a\.png/);assert.equal(payload.assets[0].path,'/article-media/a.png');
+ assert.match(payload.markdown,/English edit/);const imagePath='/article-media/'+await mediaHash(png)+'.png';assert.ok(payload.markdown.includes(imagePath));assert.equal(payload.assets[0].path,imagePath);
  assert.ok(calls.some(c=>c[0]==='work'&&c[2]==='en'));assert.ok(calls.some(c=>c[0]==='work'&&c[2]==='zh-CN'));
 });
 
@@ -669,4 +717,128 @@ test('a single version-marker CAS conflict retries against the latest user edit'
  const result=await engine.save('metho','Works/one.md');assert.equal(result.metadataUpdated,true);
  assert.match(await vault.read('Works/one.md'),/Sent text plus newer edit/);assert.match(await vault.read('Works/one.md'),/rssd-version: 2/);
  assert.equal((await engine.states('metho')).one,'local_changed');assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('changing an image alone is detected and saved by its new content hash',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');
+ const changed=new Uint8Array([...png,77]);vault.files.set('article-media/a.png',changed);
+ assert.equal(await engine.hasLocalChanges('metho','Works/one.md'),true);
+ assert.equal((await engine.states('metho')).one,'local_changed');
+ const before=await vault.read('Works/one.md'),result=await engine.save('metho','Works/one.md');
+ assert.equal(result.state,'saved');
+ const payload=center.calls.find(x=>x[0]==='saveDraft')[1].data,path='/article-media/'+await mediaHash(changed)+'.png';
+ assert.ok(payload.markdown.includes(path));assert.equal(payload.assets[0].path,path);
+ assert.equal(payload.assets[0].data,Buffer.from(changed).toString('base64'));
+ assert.equal(await vault.read('Works/one.md'),before.replace('rssd-version: 1','rssd-version: 2'));
+ assert.equal((await store.get('metho','one')).mediaHashes['a.png'],await mediaHash(changed));
+ assert.equal(await engine.hasLocalChanges('metho','Works/one.md'),false);
+});
+
+test('shared media changes stay dirty independently for each associated work',async()=>{
+ const {engine,vault}=setup('one','two');await engine.pull('metho');
+ vault.files.set('article-media/a.png',new Uint8Array([...png,55]));
+ assert.equal((await engine.states('metho')).one,'local_changed');
+ assert.equal((await engine.states('metho')).two,'local_changed');
+ await engine.save('metho','Works/one.md');
+ assert.equal(await engine.hasLocalChanges('metho','Works/one.md'),false);
+ assert.equal(await engine.hasLocalChanges('metho','Works/two.md'),true);
+});
+
+test('a Center update never overwrites a note whose referenced image changed locally',async()=>{
+ const {engine,vault,works}=setup('one');await engine.pull('metho');
+ const changed=new Uint8Array([...png,45]);vault.files.set('article-media/a.png',changed);
+ const before=await vault.read('Works/one.md');works.set('one',detail('one',{version:2,title:'Remote edit'}));
+ const result=await engine.pull('metho');assert.deepEqual(result.conflicts,['one']);
+ assert.equal(await vault.read('Works/one.md'),before);assert.deepEqual(vault.files.get('article-media/a.png'),changed);
+});
+
+test('an image edited while a remote batch loads keeps the local note and image',async()=>{
+ const {engine,vault,works,center}=setup('one');await engine.pull('metho');
+ const before=await vault.read('Works/one.md');works.set('one',detail('one',{version:2,title:'Remote edit'}));
+ const changed=new Uint8Array([...png,22]);
+ center.client.workBatch=async(_space,ids,locale)=>{vault.files.set('article-media/a.png',changed);return {locale,items:ids.map(id=>({articleId:id,ok:true,detail:works.get(id)}))};};
+ const result=await engine.pull('metho');assert.deepEqual(result.conflicts,['one']);
+ assert.equal(await vault.read('Works/one.md'),before);assert.deepEqual(vault.files.get('article-media/a.png'),changed);
+});
+
+test('an image edited during the note write rolls back the remote note without erasing the image',async()=>{
+ const {engine,vault,works}=setup('one');await engine.pull('metho');
+ const before=await vault.read('Works/one.md'),changed=new Uint8Array([...png,33]);works.set('one',detail('one',{version:2,title:'Remote edit'}));
+ const write=vault.write;let inject=true;
+ vault.write=async(path,content,options)=>{await write(path,content,options);if(inject&&path==='Works/one.md'&&content.includes('Remote edit')){inject=false;vault.files.set('article-media/a.png',changed);}};
+ const result=await engine.pull('metho');assert.deepEqual(result.conflicts,['one']);
+ assert.equal(await vault.read('Works/one.md'),before);assert.deepEqual(vault.files.get('article-media/a.png'),changed);
+});
+
+test('an image changed during an uncertain save remains dirty after original-key recovery',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');
+ const first=new Uint8Array([...png,1]);vault.files.set('article-media/a.png',first);
+ const submit=center.client.saveDraft;center.client.saveDraft=async(...args)=>{await submit(...args);throw Object.assign(Error('lost'),{status:408});};
+ await assert.rejects(engine.save('metho','Works/one.md'),error=>error.retained===true);
+ const pending=(await store.get('metho','one')).pending;assert.equal(pending.mediaHashes['a.png'],await mediaHash(first));
+ const later=new Uint8Array([...png,2]);vault.files.set('article-media/a.png',later);
+ assert.equal((await engine.save('metho','Works/one.md')).state,'saved');
+ assert.equal((await store.get('metho','one')).mediaHashes['a.png'],await mediaHash(first));
+ assert.equal(await engine.hasLocalChanges('metho','Works/one.md'),true);
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('older content-addressed baselines detect changed local images without adopting them',async()=>{
+ const {engine,vault,works,store}=setup('one'),hash=await mediaHash(png),name=hash+'.png';
+ const original=detail('one');original.data.markdown=original.data.markdown.replace('a.png',name);original.data.assets[0].path='/article-media/'+name;works.set('one',original);
+ await engine.pull('metho');const base=await store.get('metho','one');delete base.mediaHashes;
+ const changed=new Uint8Array([...png,11]);vault.files.set('article-media/'+name,changed);
+ assert.equal(await engine.hasLocalChanges('metho','Works/one.md'),true);
+ assert.equal((await engine.states('metho')).one,'local_changed');
+ assert.equal((await engine.save('metho','Works/one.md')).state,'saved');
+ assert.equal((await store.get('metho','one')).mediaHashes[name],await mediaHash(changed));
+});
+
+test('an old non-addressed baseline is rebuilt only from the matching Center snapshot',async()=>{
+ const {engine,vault,center,works,store}=setup('one');await engine.pull('metho');
+ const base=await store.get('metho','one');delete base.mediaHashes;
+ assert.equal(await engine.hasLocalChanges('metho','Works/one.md'),true,'unknown is not treated as clean');
+ const before=await vault.read('Works/one.md');const result=await engine.save('metho','Works/one.md');
+ assert.equal(result.state,'unchanged');assert.equal((await store.get('metho','one')).mediaHashes['a.png'],await mediaHash(png));
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,0);assert.equal(await vault.read('Works/one.md'),before);
+ delete (await store.get('metho','one')).mediaHashes;works.set('one',detail('one',{version:2}));
+ vault.files.set('article-media/a.png',new Uint8Array([...png,5]));
+ await assert.rejects(engine.save('metho','Works/one.md'),error=>error.code==='revision_conflict');
+});
+
+test('missing local image cannot be sent or silently accepted',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');vault.files.delete('article-media/a.png');
+ assert.equal(await engine.hasLocalChanges('metho','Works/one.md'),true);
+ await assert.rejects(engine.save('metho','Works/one.md'),/missing from the vault/);
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,0);assert.equal((await store.get('metho','one')).pending,undefined);
+});
+
+test('explicit Obsidian image embed is packed, ambiguous or unsupported local embeds stop before POST',async()=>{
+ const {engine,vault,center}=setup('one');await engine.pull('metho');
+ await edit(vault,'Works/one.md','![](../article-media/a.png)','![[article-media/a.png|diagram]]');
+ await engine.save('metho','Works/one.md');const saved=center.calls.find(x=>x[0]==='saveDraft')[1];
+ assert.match(saved.data.markdown,/!\[diagram\]\(\/article-media\/[a-f0-9]{64}\.png\)/);
+ await edit(vault,'Works/one.md','![[article-media/a.png|diagram]]','![[other-folder/image.png]]');
+ await assert.rejects(engine.save('metho','Works/one.md'),error=>error.code==='unsupported_embed');
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('a missing prior save receipt keeps the pending request rather than repeating its POST',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');await edit(vault,'Works/one.md','Body','Edit');
+ center.state.failNext=Object.assign(Error('lost'),{status:408});await assert.rejects(engine.save('metho','Works/one.md'));
+ const key=(await store.get('metho','one')).pending.requestKey;
+ center.client.draftReceipt=async()=>{throw Object.assign(Error('not found'),{status:404});};
+ await assert.rejects(engine.save('metho','Works/one.md'),e=>e.code==='receipt_pending'&&e.retained===true);
+ assert.equal((await store.get('metho','one')).pending.requestKey,key);
+ assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
+});
+
+test('canonical pulls and receipt recovery never overwrite or misroute staged drafts',async()=>{
+ const {engine,vault,works,store,center}=setup('one');await engine.pull('metho');
+ const base=await store.get('metho','one');base.staged={baseRevision:1,overlayRevision:1};
+ works.set('one',detail('one',{version:2,title:'Canonical moved'}));const before=await vault.read('Works/one.md');
+ const result=await engine.pull('metho');assert.deepEqual(result.skipped,['one']);assert.equal(await vault.read('Works/one.md'),before);
+ base.pending={kind:'staged',requestKey:'original-staged'};
+ await assert.rejects(engine.save('metho','Works/one.md'),e=>e.code==='staged_handler_required'&&e.retained===true);
+ assert.equal(center.calls.filter(x=>x[0]==='draftReceipt').length,0);
 });

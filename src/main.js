@@ -5,12 +5,15 @@ import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
 import {deviceLogin} from './device-login.mjs';
 import {SyncEngine} from './sync-engine.mjs';
+import {StagedSyncEngine} from './staged-sync-engine.mjs';
+import {canonicalPathIdentity,trackRename,trackDelete,confirmReturn} from './path-guard.mjs';
+import {AutoSync,startupDelay,syncLease} from './auto-sync.mjs';
 import {saveFailureMessage} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
-import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,notePath} from './sync-model.mjs';
+import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,notePath,noteToWork} from './sync-model.mjs';
 
 const TOKEN_SECRET='rssd-center-device-token';
-const DEFAULTS={origin:'',deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},allowAutomation:false};
+const DEFAULTS={origin:'',deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true};
 const LOCALES=['zh-CN','en'];
 const http=request=>requestUrl(request);
 
@@ -47,7 +50,21 @@ export default class RssdPlugin extends Plugin{
   // obsidian://rssd?vault=<vault>&do=login|pull|save|status|spaces[&path=Works/x.md] lets scripts and agents drive
   // the plugin. Any app or page can open such a link, so it only works when the vault opts in.
   this.registerObsidianProtocolHandler('rssd',params=>this.automate(params));
-
+  this.autoSync=new AutoSync({
+   ready:()=>this.settings.autoSync!==false&&!!this.settings.origin&&!!this.settings.workspaceId&&!!this.token()&&!this.operations.active,
+   lease:run=>{let locks;try{locks=globalThis.navigator?.locks;}catch{}return syncLease(locks,this.settings.origin)(run);},
+   pull:()=>this.operations.run('automatic-pull',()=>this.pullAll(this.settings.workspaceId)),
+   save:path=>this.operations.run('automatic-save',async()=>{const engine=this.engine(),space=this.settings.workspaceId;if(!await engine.hasLocalChanges(space,path))return {state:'unchanged'};return this.saveWork(space,path,engine);}),
+   report:({path,error})=>{console.error('RSSD automatic sync',path||'',error?.code||'',error?.message||error);new Notice('RSSD automatic sync needs attention'+(path?' for '+path:'')+': '+saveFailureMessage(error),10000);}
+  });
+  this.registerEvent(this.app.vault.on('modify',file=>{if(!(file instanceof TFile))return;if(this.isWork(file))this.autoSync.mark(file.path);else if(file.path.startsWith(MEDIA_FOLDER+'/'))void this.markMedia(file.path);}));
+  this.registerEvent(this.app.vault.on('create',file=>{if(file instanceof TFile&&this.isWork(file)){if(canonicalPathIdentity(file.path))this.autoSync.mark(file.path);else new Notice('RSSD: this new note is not linked to a Center work and has not been synced.',10000);}}));
+  this.registerEvent(this.app.vault.on('rename',(file,oldPath)=>{if(file instanceof TFile)void this.recordPathChange('rename',oldPath,file.path);}));
+  this.registerEvent(this.app.vault.on('delete',file=>{if(file instanceof TFile)void this.recordPathChange('delete',file.path);}));
+  // Stagger open vaults; each successful scan repeats hourly. The scan also
+  // rediscovers changes made while Obsidian was closed.
+  let nextScan=Date.now()+startupDelay(this.settings.workspaceId);
+  this.registerInterval(window.setInterval(()=>{if(this.autoSync.running||!this.autoSync.ready())return;const scan=Date.now()>=nextScan;if(scan)nextScan=Date.now()+300000;void this.autoSync.tick({scan}).then(ok=>{if(scan&&ok)nextScan=Date.now()+3600000;});},10000));
  }
  async writeRun(record){
   try{await this.app.vault.adapter.write(this.manifest.dir+'/last-run.json',JSON.stringify({...record,at:new Date().toISOString()},null,2));}catch{}
@@ -66,7 +83,7 @@ export default class RssdPlugin extends Plugin{
      if(request.action==='pull')return this.pullAll(space);
      if(request.action==='status')return this.statesAll(space);
      if(request.action==='spaces')return (await this.client().registry()).workspaces?.map(w=>({id:w.id,writable:w.writable===true,migrationState:w.migrationState??null}));
-     await this.assertWritable();return this.engine().save(space,request.path);
+     return this.saveWork(space,request.path);
     }}));
    new Notice('RSSD '+request.action+': '+(record.error||record.state));
   }catch(error){new Notice('RSSD: '+error.message);}
@@ -76,6 +93,18 @@ export default class RssdPlugin extends Plugin{
   const reason=readOnlyReason(spaceInfo(await this.client().registry(),this.settings.workspaceId),this.settings.workspaceId);
   if(reason)throw Object.assign(Error(reason),{code:'migration_staged'});
  }
+ async saveWork(space,path,engine=this.engine()){
+  if(Platform.isMobile)throw Error('RSSD is read-only on mobile');
+  const info=spaceInfo(await this.client().registry(),space);
+  if(!info.found)throw Object.assign(Error(readOnlyReason(info,space)),{code:'forbidden'});
+  if(info.writable){
+   const local=await engine.noteFingerprint(path);
+   if(local){const base=await engine.store.get(space,local.work.data.id,local.work.data.locale);if(base?.staged||base?.pending?.kind==='staged')await new StagedSyncEngine({engine}).promote(space,local.work.data.id,local.work.data.locale);}
+   return engine.save(space,path);
+  }
+  if(info.migrationState==='staged')return new StagedSyncEngine({engine}).save(space,path);
+  throw Object.assign(Error(readOnlyReason(info,space)),{code:'migration_staged'});
+ }
  assertBinding(){
   if(centerOrigin(this.settings.origin)!==centerOrigin(this.settings.boundOrigin||this.settings.origin))throw Error('This login belongs to a different Center. Use a separate vault.');
   if(this.settings.boundSpace&&this.settings.workspaceId!==this.settings.boundSpace)throw Error('This vault is bound to '+this.settings.boundSpace+'. Open a separate vault for another space.');
@@ -84,7 +113,13 @@ export default class RssdPlugin extends Plugin{
  isWork(file){return file.extension==='md'&&file.path.startsWith(WORKS_FOLDER+'/');}
  setStatus(text){this.status?.setText(text);}
  token(){return this.app.secretStorage.getSecret(TOKEN_SECRET);}
- saveSettings(){return this.saveData(this.settings);}
+ saveSettings(){
+  // Vault events and sync receipts may update different parts of settings at
+  // once. Serialize writes and take the snapshot only when its turn starts so
+  // a slow earlier write cannot erase a later path guard or request key.
+  const next=(this.settingsWrite||Promise.resolve()).catch(()=>{}).then(()=>this.saveData(structuredClone(this.settings)));
+  this.settingsWrite=next;return next;
+ }
 
  engine(){
   this.assertBinding();
@@ -93,6 +128,7 @@ export default class RssdPlugin extends Plugin{
   const adapter=this.app.vault.adapter,vault=this.app.vault;
   return new SyncEngine({
    client:createCenterClient({http,origin:this.settings.origin,token}),
+   pathRecords:()=>this.settings.pathRecords||{},
    yaml:{parse:parseYaml,stringify:stringifyYaml},
    vault:{
     read:async path=>await adapter.exists(path)?adapter.read(path):null,
@@ -110,11 +146,23 @@ export default class RssdPlugin extends Plugin{
  }
  async pullAll(space,{onProgress=()=>{}}={}){
   const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],metadataPending:[],unchanged:0,removedFromCenter:[],transportByLocale:{}},engine=this.engine();
+  const info=spaceInfo(await this.client().registry(),space);
+  if(!info.found)throw Object.assign(Error(readOnlyReason(info,space)),{code:'forbidden'});
   for(const locale of LOCALES){
+   if(info.writable){
+    for(const base of await engine.store.list(space,locale))if(base.staged||base.pending?.kind==='staged'){
+     try{await new StagedSyncEngine({engine}).promote(space,base.articleId,locale);}
+     catch(error){if(error?.code==='network_error'||error?.retained||error?.status>=500)throw error;const id=locale==='zh-CN'?base.articleId:locale+'/'+base.articleId;if(!summary.conflicts.includes(id))summary.conflicts.push(id);}
+    }
+   }
    const result=await engine.pull(space,{locale,onProgress:progress=>onProgress({...progress,locale})});
    for(const key of ['downloaded','updated','skipped','conflicts','pending','metadataPending','removedFromCenter'])summary[key].push(...(result[key]||[]).map(id=>locale==='zh-CN'?id:locale+'/'+id));
    summary.failed.push(...(result.failed||[]).map(item=>({...item,locale})));summary.unchanged+=result.unchanged||0;
    summary.transportByLocale[locale]=result.transport;
+   if(!info.writable&&info.migrationState==='staged'){
+    const overlay=await new StagedSyncEngine({engine}).pull(space,{locale});
+    for(const key of ['updated','conflicts','pending'])for(const id of overlay[key]||[]){const name=locale==='zh-CN'?id:locale+'/'+id;if(!summary[key].includes(name))summary[key].push(name);}
+   }
   }
   return summary;
  }
@@ -126,6 +174,32 @@ export default class RssdPlugin extends Plugin{
  async ensureFolder(path){
   const folder=path.split('/').slice(0,-1).join('/');
   if(folder&&!await this.app.vault.adapter.exists(folder))await this.app.vault.createFolder(folder);
+ }
+ async recordPathChange(action,oldPath,newPath){
+  try{
+   const records=this.settings.pathRecords||{},identity=canonicalPathIdentity(oldPath),space=this.settings.workspaceId;
+   const tracked=Object.values(records).some(item=>item?.currentPath===oldPath);
+   const bucket=identity&&(identity.locale==='zh-CN'?this.settings.baselines?.[space]:this.settings.baselinesByLocale?.[space]?.[identity.locale]);
+   if(!tracked&&(!identity||!bucket?.[identity.articleId]))return;
+   let next=action==='rename'?trackRename(records,oldPath,newPath):trackDelete(records,oldPath);
+   this.settings.pathRecords=next;await this.saveSettings();
+   if(action==='rename'){
+    const entry=Object.values(next).find(item=>item?.currentPath===newPath&&item?.state==='verify_return');
+    if(entry){const text=await this.app.vault.adapter.read(newPath),work=noteToWork(text,parseYaml);next=confirmReturn(next,{articleId:entry.articleId,locale:entry.locale,path:newPath,observedArticleId:work?.data.id,observedLocale:work?.data.locale});this.settings.pathRecords=next;await this.saveSettings();this.autoSync?.unblock(newPath);this.autoSync?.mark(newPath);return;}
+   }
+   new Notice('RSSD: a linked work was moved or removed locally. Its Center copy was not deleted; return it to its original path to resume sync.',10000);
+  }catch(error){console.error('RSSD path protection',error);new Notice('RSSD could not verify a moved work; its local changes were kept.',10000);}
+ }
+ async markMedia(path){
+  const name=path.slice((MEDIA_FOLDER+'/').length);if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(name))return;
+  const space=this.settings.workspaceId,adapter=this.app.vault.adapter;
+  for(const locale of LOCALES){
+   const bucket=locale==='zh-CN'?this.settings.baselines?.[space]:this.settings.baselinesByLocale?.[space]?.[locale];
+   for(const base of Object.values(bucket||{})){
+    const workPath=notePath(base.articleId,locale);
+    try{if(await adapter.exists(workPath)&&noteToWork(await adapter.read(workPath),parseYaml)?.media.includes(name))this.autoSync.mark(workPath);}catch(error){console.error('RSSD media scan failed',workPath,error);}
+   }
+  }
  }
 
  async login(options={}){return this.operations.run('login',async()=>{const id=crypto.randomUUID();await this.writeRun({id,action:'login',state:'running',ok:null});try{const result=await this.performLogin(options);await this.writeRun({id,action:'login',state:'completed',ok:true,result});return result;}catch(error){await this.writeRun({id,action:'login',state:'failed',ok:false,error:error.message,code:error.code||null,status:error.status||null});throw error;}});}
@@ -148,7 +222,7 @@ export default class RssdPlugin extends Plugin{
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
  }
- onunload(){this.loginController?.abort();}
+ onunload(){this.autoSync?.stop();this.loginController?.abort();}
  async pull(){
   try{
    const summary=await this.operations.run('pull',async()=>{
@@ -199,13 +273,17 @@ export default class RssdPlugin extends Plugin{
      await this.writeRun({...record,state:'completed',ok:true,result});return value;
     }catch(error){await this.writeRun({...record,state:'failed',ok:false,...diagnosticError(error)});throw error;}
    });
-   new Notice(spacesSummary(registry),15000);
+   let stagedDraftsAvailable=false;
+   const staged=registry.workspaces?.find(w=>w.writable===false&&w.migrationState==='staged');
+   if(staged){try{stagedDraftsAvailable=(await this.client().stagedSite(staged.id)).capabilities?.includes('staged-drafts-v1')===true;}catch{}}
+   new Notice(spacesSummary(registry,{stagedDraftsAvailable}),15000);
   }catch(error){new Notice('Could not read spaces: '+error.message);}
  }
  async save(file){
   try{
-   const result=await this.operations.run('save',async()=>{await this.assertWritable();return this.engine().save(this.settings.workspaceId,file.path);});
-   new Notice(result.state==='unchanged'?'Nothing to save':'Saved as a private draft (revision '+result.revision+'). It is not published.');
+   const result=await this.operations.run('save',async()=>this.saveWork(this.settings.workspaceId,file.path));
+   this.autoSync?.unblock(file.path);
+   new Notice(result.state==='unchanged'?'Nothing to save':result.stagedRevision?'Saved as a private migration draft (revision '+result.stagedRevision+'). It is not published.':'Saved as a private draft (revision '+result.revision+'). It is not published.');
    if(result.metadataWarning)new Notice('The draft was saved, but its local version label could not be refreshed: '+result.metadataWarning,10000);
   }catch(error){
    console.error('RSSD save failed',error.status,error.code,error.message);
@@ -235,6 +313,7 @@ class RssdSettings extends PluginSettingTab{
   new Setting(containerEl).setName('Log in').setDesc(this.plugin.token()?'This device is logged in.':'Approve this device in your browser.')
    .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
   new Setting(containerEl).setName('Command links').setDesc('Allow local commands to drive this vault. Each request has its own receipt.').addToggle(t=>t.setValue(!!s.allowAutomation).onChange(async v=>{s.allowAutomation=v;await this.plugin.saveSettings();}));
+  new Setting(containerEl).setName('Automatic sync').setDesc('Periodically pull and save changed works as private drafts. Conflicts and read-only spaces need attention; this never publishes.').addToggle(t=>t.setValue(s.autoSync!==false).onChange(async v=>{s.autoSync=v;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Pull works').setDesc('Download new and changed works into '+WORKS_FOLDER+'/ (images go to '+MEDIA_FOLDER+'/). Notes with local changes are never overwritten.')
    .addButton(b=>b.setButtonText('Pull').onClick(()=>this.plugin.pull()));
  }
@@ -251,7 +330,11 @@ class WorksView extends ItemView{
   new Setting(el).addButton(b=>b.setButtonText('Refresh').onClick(()=>this.render())).addButton(b=>b.setButtonText('Pull works').onClick(async()=>{await this.plugin.pull();await this.render();}));
   try{
    const data=await this.plugin.operations.run('works',async()=>({registry:await this.plugin.client().registry(),states:await this.plugin.statesAll(this.plugin.settings.workspaceId)}));
-   const reason=readOnlyReason(spaceInfo(data.registry,this.plugin.settings.workspaceId),this.plugin.settings.workspaceId);
+   const info=spaceInfo(data.registry,this.plugin.settings.workspaceId);
+   let reason=readOnlyReason(info,this.plugin.settings.workspaceId);
+   if(!info.writable&&info.migrationState==='staged'){
+    try{const site=await this.plugin.client().stagedSite(this.plugin.settings.workspaceId);if(site.capabilities?.includes('staged-drafts-v1'))reason='Edits are saved as private migration drafts. The original site still owns publishing; its later changes may require reconciliation.';}catch{}
+   }
    if(reason)el.createEl('p',{text:reason});
    for(const [path,state] of Object.entries(data.states)){
     const id=path.split('/').at(-1).replace(/\.md$/,'');const file=this.app.vault.getAbstractFileByPath(path);

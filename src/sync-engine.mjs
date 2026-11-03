@@ -2,8 +2,9 @@
 // are injected. Rules (see the RSSD business spec): the Center is the source of truth; a pull never overwrites a
 // note with local changes; a save carries the exact base and is refused when the Center moved; saving never
 // publishes; a save whose answer was lost is recovered by its original request key, never resent.
-import {workToNote,noteToWork,updateNoteVersion,workFingerprint,centerMediaPaths,localMediaPaths,workState,draftEnvelope,isReadOnlyWork,
+import {workToNote,noteToWork,updateNoteVersion,workFingerprint,centerMediaPaths,localMediaPaths,workState,draftEnvelope,isReadOnlyWork,isStructuredKind,verifyStructuredDetail,mediaHash,packWorkMedia,
  bytesToBase64,base64ToBytes,notePath,checkLocale,MEDIA_FOLDER} from './sync-model.mjs';
+import {checkCanonicalPull} from './path-guard.mjs';
 
 const PAGE=100,DETAIL_CONCURRENCY=3,BATCH_SIZE=8;
 export const newRequestKey=()=>'obsidian-'+crypto.randomUUID().replace(/-/g,'');
@@ -46,25 +47,93 @@ async function* catalogPages(client,workspaceId,locale){
 
 export class SyncEngine{
  /** `store` keeps baselines: get(workspaceId,articleId), set(...), delete(...), list(workspaceId). */
- constructor({client,vault,store,yaml}){this.client=client;this.vault=vault;this.store=store;this.yaml=yaml;}
+ constructor({client,vault,store,yaml,pathRecords=()=>({})}){this.client=client;this.vault=vault;this.store=store;this.yaml=yaml;this.pathRecords=pathRecords;}
 
  async noteFingerprint(path){
   const content=await this.vault.read(path);if(content==null)return null;
   const work=noteToWork(content,this.yaml.parse);if(!work)return null;
-  return {work,content,fingerprint:await workFingerprint(work.data,localMediaPaths(work.media))};
+  const mediaBytes={},mediaHashes={};
+  for(const name of work.media){
+   const bytes=await this.vault.readBinary(MEDIA_FOLDER+'/'+name);
+   mediaBytes[name]=bytes==null?null:new Uint8Array(bytes);
+   mediaHashes[name]=bytes==null?null:await mediaHash(mediaBytes[name]);
+  }
+  return {work,content,fingerprint:await workFingerprint(work.data,localMediaPaths(work.media)),mediaBytes,mediaHashes};
  }
 
- async writeWork(workspaceId,detail,expectedContent=null,locale='zh-CN'){
+ /** Compare legacy text baseline and byte-level image baseline without trusting
+  * a newly observed local image as evidence of its original Center contents. */
+ localChanges(base,local){
+  if(!base||!local)return true;
+  if(base.fingerprint!==local.fingerprint)return true;
+  let expected=base.mediaHashes;
+  if(!expected){
+   expected={};
+   for(const name of local.work.media){
+    const match=/^([a-f0-9]{64})\.(?:png|jpg|webp)$/.exec(name);
+    if(!match)return null;
+    expected[name]=match[1];
+   }
+  }
+  const keys=Object.keys(expected).sort(),now=Object.keys(local.mediaHashes).sort();
+  return JSON.stringify(keys)!==JSON.stringify(now)||keys.some(name=>expected[name]!==local.mediaHashes[name]);
+ }
+
+ assertLocalPath(base,id,locale,canonicalExists){
+  const decision=checkCanonicalPull({articleId:id,locale,hasBaseline:!!base,canonicalExists,records:this.pathRecords()});
+  if(!decision.allowed)throw Object.assign(Error('This linked note was moved or removed; restore its original path before syncing'),{code:decision.code,conflict:true});
+ }
+
+ async hasLocalChanges(workspaceId,path){
+  const local=await this.noteFingerprint(path);
+  if(!local){if(await this.vault.read(path)==null)return false;throw Object.assign(Error('This note is not linked to an RSSD work; its local content was kept'),{code:'unlinked_work'});}
+  const base=await this.store.get(workspaceId,local.work.data.id,local.work.data.locale);
+  this.assertLocalPath(base,local.work.data.id,local.work.data.locale,true);
+  if(!base||base.pending)return true;
+  return this.localChanges(base,local)!==false;
+ }
+
+ /** Derive original media hashes from the authenticated Center response, not
+  * from a local file that may already have been modified. */
+ async centerMediaHashes(detail){
+  const note=workToNote(detail,this.yaml.stringify),work=noteToWork(note.content,this.yaml.parse),hashes={};
+  for(const name of work.media){
+   const asset=note.media.find(item=>item.name===name);
+   if(!asset)throw Object.assign(Error('The Center omitted an image referenced by this work'),{code:'invalid_media'});
+   hashes[name]=await mediaHash(base64ToBytes(asset.data));
+  }
+  return hashes;
+ }
+
+ async writeWork(workspaceId,detail,expectedContent=null,locale='zh-CN',expectedMediaHashes=null){
   checkLocale(locale);
   if((detail?.data?.locale||'zh-CN')!==locale||(detail?.locale&&detail.locale!==locale))throw Object.assign(Error('The Center returned a different language; local notes were kept'),{code:'identity_conflict'});
   const note=workToNote(detail,this.yaml.stringify);
+  const mediaHashes=await this.centerMediaHashes(detail);
   for(const item of note.media)await this.vault.writeBinary(MEDIA_FOLDER+'/'+item.name,base64ToBytes(item.data));
   if(await this.vault.read(note.path)!==expectedContent)throw Object.assign(Error('The note changed while pulling; local edits were kept'),{code:'local_edit_during_pull'});
+  if(expectedMediaHashes){
+   const latest=await this.noteFingerprint(note.path);
+   if(!latest||JSON.stringify(latest.mediaHashes)!==JSON.stringify(expectedMediaHashes))
+    throw Object.assign(Error('An image changed while pulling; local edits were kept'),{code:'local_edit_during_pull'});
+  }
   await this.vault.write(note.path,note.content,{expectedContent});
+  if(expectedMediaHashes){
+   const hashes={};
+   for(const name of Object.keys(expectedMediaHashes)){
+    const bytes=await this.vault.readBinary(MEDIA_FOLDER+'/'+name);hashes[name]=bytes==null?null:await mediaHash(bytes);
+   }
+   if(JSON.stringify(hashes)!==JSON.stringify(expectedMediaHashes)){
+    // If an image changed during the write, restore the original note only if
+    // nobody has edited the newly written note in the meantime.
+    try{await this.vault.write(note.path,expectedContent,{expectedContent:note.content});}catch{}
+    throw Object.assign(Error('An image changed while pulling; local edits were kept'),{code:'local_edit_during_pull'});
+   }
+  }
   const written=noteToWork(note.content,this.yaml.parse);
   const fingerprint=await workFingerprint(written.data,localMediaPaths(written.media));
   await this.store.set(workspaceId,detail.data.id,{articleId:detail.data.id,sectionId:detail.data.sectionId,locale:detail.data.locale||'zh-CN',
-   version:detail.version,publishedVersion:detail.publishedVersion??null,fingerprint,readOnly:isReadOnlyWork(detail)},locale);
+   version:detail.version,publishedVersion:detail.publishedVersion??null,fingerprint,mediaHashes,readOnly:isReadOnlyWork(detail)},locale);
   return note.path;
  }
 
@@ -96,6 +165,13 @@ export class SyncEngine{
   // are allowed to overlap.
   const prepare=async item=>{
    let base=await this.store.get(workspaceId,item.articleId,locale);
+   if(base){
+    const path=notePath(item.articleId,locale),decision=checkCanonicalPull({articleId:item.articleId,locale,hasBaseline:true,canonicalExists:await this.vault.read(path)!==null,records:this.pathRecords()});
+    if(!decision.allowed){summary[base.pending?'pending':'conflicts'].push(item.articleId);return null;}
+   }
+   // A staged draft is an independent branch, not a canonical edition. A
+   // canonical pull must never overwrite it, even when canonical has advanced.
+   if(base?.staged){summary[base.pending?'pending':'skipped'].push(item.articleId);return null;}
    if(base&&!base.pending){
     const repaired=await this.repairMetadata(workspaceId,item.articleId,locale,{infer:true});
     if(!repaired.metadataUpdated&&!summary.metadataPending.includes(item.articleId))summary.metadataPending.push(item.articleId);
@@ -103,7 +179,8 @@ export class SyncEngine{
     base=await this.store.get(workspaceId,item.articleId,locale);
    }
    const path=notePath(item.articleId,locale),local=base?.pending?null:await this.noteFingerprint(path);
-   const state=base?.pending?'publishing':workState({base,localFingerprint:local?.fingerprint??null,remote:{version:item.version}});
+   const mediaChanged=base&&local?this.localChanges(base,local):false;
+   const state=base?.pending?'publishing':workState({base,localFingerprint:local?(mediaChanged===false?local.fingerprint:'media-changed:'+local.fingerprint):null,remote:{version:item.version}});
    await onProgress({articleId:item.articleId,locale,state,summary:snapshot()});
    if(state==='publishing'){summary.pending.push(item.articleId);return null;}
    if(state==='synced'){summary.unchanged++;return null;}
@@ -132,7 +209,15 @@ export class SyncEngine{
    if(JSON.stringify(currentBase)!==prepared.baseSnapshot){
     (currentBase?.pending?summary.pending:summary.conflicts).push(item.articleId);return;
    }
-   try{await this.writeWork(workspaceId,detail,local?.content??null,locale);(base?summary.updated:summary.downloaded).push(item.articleId);summary.metadataPending=summary.metadataPending.filter(id=>id!==item.articleId);}
+   // A referenced image can change without changing the Markdown file. Recheck
+   // its bytes after the network read, before replacing any note content.
+   if(local){
+    const latest=await this.noteFingerprint(notePath(item.articleId,locale));
+    if(!latest||latest.content!==local.content||JSON.stringify(latest.mediaHashes)!==JSON.stringify(local.mediaHashes)){
+     summary.conflicts.push(item.articleId);return;
+    }
+   }
+   try{await this.writeWork(workspaceId,detail,local?.content??null,locale,local?.mediaHashes??null);(base?summary.updated:summary.downloaded).push(item.articleId);summary.metadataPending=summary.metadataPending.filter(id=>id!==item.articleId);}
    catch(error){if(error.code!=='local_edit_during_pull')throw error;summary.conflicts.push(item.articleId);}
   };
   // Single-detail fallback is capped at three concurrent requests and waits for
@@ -240,8 +325,10 @@ export class SyncEngine{
   const result={};
   for(const base of await this.store.list(workspaceId,locale)){
    if(base.pending){result[base.articleId]='publishing';continue;}
+   if(base.staged){const local=await this.noteFingerprint(notePath(base.articleId,locale));result[base.articleId]=!local?'missing':this.localChanges(base,local)===false?'staged_saved':'local_changed';continue;}
    const local=await this.noteFingerprint(notePath(base.articleId,locale));
-   result[base.articleId]=workState({base,localFingerprint:local?.fingerprint??null,remote:remote.get(base.articleId)?{version:remote.get(base.articleId).version}:null});
+   const changed=local?this.localChanges(base,local):false;
+   result[base.articleId]=workState({base,localFingerprint:local?(changed===false?local.fingerprint:'media-changed:'+local.fingerprint):null,remote:remote.get(base.articleId)?{version:remote.get(base.articleId).version}:null});
   }
   for(const [id,item] of remote)if(!(id in result))result[id]=workState({base:null,localFingerprint:null,remote:{version:item.version}});
   return result;
@@ -255,19 +342,18 @@ export class SyncEngine{
   const local=await this.noteFingerprint(path);
   if(!local)throw Error('This note is not an RSSD work');
   if(path!==notePath(local.work.data.id,local.work.data.locale))throw Error('The rssd-id property does not match this work file; restore it before saving');
-  const {work,fingerprint}=local,base=await this.store.get(workspaceId,work.data.id,work.data.locale);
+  const {work,fingerprint,mediaHashes,mediaBytes}=local,base=await this.store.get(workspaceId,work.data.id,work.data.locale);
+  this.assertLocalPath(base,work.data.id,work.data.locale,true);
+  if(base?.staged||base?.pending?.kind==='staged')throw Object.assign(Error('This staged draft requires its original staged save handler; local edits were kept'),{code:'staged_handler_required',retained:!!base?.pending});
   if(base?.pending)return this.recover(workspaceId,path,base);
-  if(base&&base.fingerprint===fingerprint){
+  const structured=base?.readOnly===true&&isStructuredKind(work.kind);
+  if((base?.readOnly&&!structured)||(!base?.readOnly&&work.kind!=='news'))throw Error('Structured records cannot be edited in Obsidian with a changed or unsupported kind');
+  const changed=this.localChanges(base,local);
+  if(base&&changed===false){
    const repaired=await this.repairMetadata(workspaceId,work.data.id,work.data.locale,{infer:true});
    return repaired.metadataUpdated?{state:'unchanged'}:{state:'unchanged',...repaired};
   }
-  const assets=[];
-  for(const name of work.media){
-   const bytes=await this.vault.readBinary(MEDIA_FOLDER+'/'+name);
-   if(!bytes)throw Error('The image '+name+' is missing from the vault');
-   assets.push({path:'/article-media/'+name,data:bytesToBase64(bytes)});
-  }
-  const requestKey=newRequestKey(),envelope=draftEnvelope({work,base,requestKey,assets});
+  if(!base)throw Error('Pull this work from the Center before saving it');
   // Older Centers silently replace hidden attachment alt text and nested editorial
   // metadata when saving. Their detail response cannot expose enough information
   // for the plugin to reconstruct those fields, so do not submit to them. Read the
@@ -277,10 +363,32 @@ export class SyncEngine{
    throw Object.assign(Error('The Center version changed; local edits were kept. Pull or resolve the conflict before saving'),{status:409,code:'revision_conflict',conflict:true});
   if(current?.articleId!==work.data.id||current?.data?.id!==work.data.id||(current?.data?.locale||'zh-CN')!==work.data.locale||(current?.locale&&current.locale!==work.data.locale))
    throw Object.assign(Error('The Center returned a different work; local edits were kept'),{code:'identity_conflict'});
+  if(structured)verifyStructuredDetail({work,base,detail:current});
+  else if(current.data?.record)throw Object.assign(Error('The Center work kind changed; local edits were kept'),{code:'identity_conflict',conflict:true});
   if(current?.preservesEditorialFieldsOnSave!==true)
    throw Object.assign(Error('This Center cannot confirm safe preservation of existing attachments and editorial metadata. Local edits were kept; update the Center before saving'),{code:'lossless_save_unavailable'});
+  const optional=['summary','author','category'],blank=optional.filter(key=>!work.data[key].trim());
+  if(blank.length&&(current.preservesLegacyOptionalBlanksOnSave!==true||blank.some(key=>typeof current.data?.[key]!=='string'||current.data[key].trim())))
+   throw Object.assign(Error('The Center cannot safely retain an empty manuscript property; local edits were kept'),{code:'optional_property_unavailable'});
+  if(changed===null){
+   // An older baseline can lack image hashes. Rebuild it only from the same
+   // authenticated Center revision and verify its text fingerprint first.
+   const original=noteToWork(workToNote(current,this.yaml.stringify).content,this.yaml.parse);
+   if(await workFingerprint(original.data,localMediaPaths(original.media))!==base.fingerprint)
+    throw Object.assign(Error('The original image baseline could not be verified; local edits were kept'),{code:'media_baseline_unknown'});
+   const originalHashes=await this.centerMediaHashes(current),verified={...base,mediaHashes:originalHashes};
+   if(this.localChanges(verified,local)===false){
+    const latest=await this.store.get(workspaceId,work.data.id,work.data.locale);
+    if(JSON.stringify(latest)!==JSON.stringify(base))throw Object.assign(Error('The local baseline changed; retry safely'),{code:'local_baseline_changed'});
+    await this.store.set(workspaceId,work.data.id,verified,work.data.locale);
+    const repaired=await this.repairMetadata(workspaceId,work.data.id,work.data.locale,{infer:true});
+    return repaired.metadataUpdated?{state:'unchanged'}:{state:'unchanged',...repaired};
+   }
+  }
+  const packed=await packWorkMedia(work,mediaBytes);
+  const requestKey=newRequestKey(),envelope=draftEnvelope({work:packed.work,base,requestKey,assets:packed.assets,allowEmptyOptional:blank.length>0,allowStructured:structured});
   // Keep the key before the first request so a lost answer can be recovered rather than resent.
-  await this.store.set(workspaceId,work.data.id,{...base,pending:{requestKey,fingerprint}},work.data.locale);
+  await this.store.set(workspaceId,work.data.id,{...base,pending:{requestKey,fingerprint,mediaHashes}},work.data.locale);
   let receipt;
   try{receipt=await this.client.saveDraft(workspaceId,envelope);}
   catch(error){
@@ -290,29 +398,34 @@ export class SyncEngine{
    if(error.status>=400&&error.status<500&&error.status!==408){await this.store.set(workspaceId,work.data.id,base,work.data.locale);throw error;}
    throw Object.assign(error,{retained:true});
   }
-  return this.confirm(workspaceId,work.data.id,base,fingerprint,receipt,requestKey);
+  return this.confirm(workspaceId,work.data.id,base,fingerprint,receipt,requestKey,mediaHashes);
  }
 
  async recover(workspaceId,path,base){
-  const receipt=await this.client.draftReceipt(workspaceId,base.pending.requestKey);
+  if(base.pending?.kind==='staged')throw Object.assign(Error('Recover this staged draft through its original staged handler'),{code:'staged_handler_required',retained:true});
+  let receipt;
+  try{receipt=await this.client.draftReceipt(workspaceId,base.pending.requestKey);}
+  catch(error){if(error?.status===404)throw Object.assign(Error('The earlier save is not yet confirmed; its original request is retained'),{code:'receipt_pending',retained:true});throw error;}
   if(!receipt?.revision)throw Object.assign(Error('The earlier save has not finished at the Center; try again shortly'),{retained:true});
   // The baseline is what was sent; any edit made since stays a local change.
-  return this.confirm(workspaceId,base.articleId,base,base.pending.fingerprint,receipt,base.pending.requestKey);
+  return this.confirm(workspaceId,base.articleId,base,base.pending.fingerprint,receipt,base.pending.requestKey,base.pending.mediaHashes);
  }
 
- async confirm(workspaceId,articleId,base,fingerprint,receipt,requestKey){
+ async confirm(workspaceId,articleId,base,fingerprint,receipt,requestKey,mediaHashes){
   // Never discard the pending key unless the Center receipt identifies the exact
   // request and work and advances its original base revision. A malformed or
   // mismatched response leaves the write outcome uncertain and recoverable.
   if(receipt?.requestKey!==requestKey||receipt?.articleId!==articleId||!Number.isSafeInteger(receipt?.revision)||receipt.revision<=base.version)
    throw Object.assign(Error('The Center returned an invalid save receipt; keep the original request and retry recovery'),{code:'invalid_receipt',retained:true});
   const locale=base.locale||'zh-CN',live=await this.store.get(workspaceId,articleId,locale);
-  if(live?.pending?.requestKey!==requestKey||live.pending.fingerprint!==fingerprint||live.version!==base.version)
+  if(live?.pending?.requestKey!==requestKey||live.pending.fingerprint!==fingerprint||live.version!==base.version||
+   JSON.stringify(live.pending.mediaHashes)!==JSON.stringify(mediaHashes))
    throw Object.assign(Error('The local save record changed; keep the original request for recovery'),{code:'local_baseline_changed',retained:true});
   const {pending,...rest}=live;
   // The server save is final once the new baseline is persisted. A separate
   // marker makes the display-only YAML version recoverable without replaying POST.
-  await this.store.set(workspaceId,articleId,{...rest,version:receipt.revision,fingerprint,metadataSync:{revision:receipt.revision}},locale);
+  await this.store.set(workspaceId,articleId,{...rest,version:receipt.revision,fingerprint,
+   ...(pending.mediaHashes?{mediaHashes:pending.mediaHashes}:{mediaHashes:undefined}),metadataSync:{revision:receipt.revision}},locale);
   return {state:'saved',revision:receipt.revision,...await this.repairMetadata(workspaceId,articleId,locale)};
  }
 
