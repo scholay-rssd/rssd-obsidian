@@ -14,7 +14,8 @@ Open one RSSD Center space as a vault of drafts, see each work's sync state, and
    ```
 3. In Obsidian enable the plugin, open Settings → RSSD, enter the Center address and run **Log in to the RSSD Center**. Approve the device and its spaces in your browser.
 4. Run **Pull works from the Center**. Chinese works appear in `Works/<id>.md`, English works in `Works/en/<id>.md`, and images in `article-media/`.
-5. Edit a note, then run **Save this work to the Center as a private draft**.
+5. To check whether a space can accept edits, run **Show which spaces accept saves**. A staged space can be read and pulled, but cannot save to the Center until its migration is complete; mobile is read-only.
+6. In a writable space, edit a note, then run **Save this work to the Center as a private draft**. A successful save updates the draft, not the published article.
 
 Commands: *Log in*, *Pull works*, *Save this work*, *Check sync state of all works*.
 
@@ -27,6 +28,14 @@ Commands: *Log in*, *Pull works*, *Save this work*, *Check sync state of all wor
 - A save carries the exact base version and is refused if the Center moved. The Center must explicitly confirm it preserves existing attachments and editorial metadata. It never publishes.
 - A save whose answer was lost keeps its request key and is recovered by that key, never resent.
 - Structured records (notices, history, resources) download read-only.
+- Existing Center image paths are converted to local Markdown paths and back on save. Obsidian's `![[image]]` embedding is not converted into a Center attachment. Put images in `article-media/` and use Markdown paths such as `![description](../article-media/image.png)` in Chinese works, or `![description](../../article-media/image.png)` in English works.
+
+## Interrupted pulls and saves
+
+- A pull can take time, especially when articles include images. A batch has a 120-second timeout; after a batch timeout the current pull stops rather than immediately duplicating a request that Obsidian cannot cancel. Wait for the connection to recover before running **Pull works from the Center** again. Already confirmed articles and their baselines are retained; the next pull checks them and resumes the remaining work.
+- A finished pull can still report skipped local edits, conflicts, unresolved saves or failures. Skipped local edits are preserved; conflicts need review before another save. The latest operation's private `.obsidian/plugins/rssd/last-run.json` includes its state, progress and any recorded errors. Keep this file and the plugin's settings private.
+- If the answer to a save is lost, leave the note and plugin settings in place. Run the save command again on that note: the plugin checks the original request's Center receipt instead of submitting a second draft. An unresolved receipt is not proof that the save failed or succeeded.
+- If a save succeeds but warns that its local version label could not be refreshed, the Center draft was saved. A later pull attempts a safe refresh of the `rssd-version` label while preserving note edits; do not send another save merely to repair the label. If the warning persists, inspect the note's identity properties and local changes.
 
 ## Not yet
 
