@@ -26,7 +26,10 @@ export const mediaNames=(markdown,locale='zh-CN')=>{
  const prefix=mediaPrefix(locale).replace(/\./g,'\\.');
  return [...new Set([...markdown.matchAll(new RegExp('[(\"]'+prefix+MEDIA_FOLDER+'/([A-Za-z0-9._-]+)','g'))].map(m=>m[1]))].sort();
 };
-export const notePath=(articleId,locale='zh-CN')=>WORKS_FOLDER+'/'+(checkLocale(locale)==='en'?'en/':'')+articleId+'.md';
+export const notePath=(articleId,locale='zh-CN')=>{
+ if(typeof articleId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(articleId))throw Object.assign(Error('The Center returned an invalid work ID; local notes were kept'),{code:'invalid_work_id'});
+ return WORKS_FOLDER+'/'+(checkLocale(locale)==='en'?'en/':'')+articleId+'.md';
+};
 
 /** A structured record (notice, history, resource) keeps typed fields the plugin cannot edit yet. */
 export const isReadOnlyWork=detail=>!!detail?.data?.record;
@@ -38,7 +41,11 @@ export function workToNote(detail,stringifyYaml){
  Object.assign(properties,{[IDENTITY.id]:data.id,[IDENTITY.sectionId]:data.sectionId,[IDENTITY.locale]:locale,
   [IDENTITY.kind]:data.record?.kind||'news',[IDENTITY.version]:detail.version,[IDENTITY.publishedVersion]:detail.publishedVersion??null});
  return {path:notePath(data.id,locale),content:'---\n'+stringifyYaml(properties).trimEnd()+'\n---\n'+toVaultMarkdown(data.markdown,locale),
-  media:(data.assets||[]).map(asset=>({name:asset.path.replace(/^\/article-media\//,''),data:asset.data}))};
+  media:(data.assets||[]).map(asset=>{
+   if(typeof asset?.path!=='string'||!/^\/article-media\/[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(asset.path)||typeof asset.data!=='string')
+    throw Object.assign(Error('The Center returned an invalid media path; local files were kept'),{code:'invalid_media_path'});
+   return {name:asset.path.slice('/article-media/'.length),data:asset.data};
+  })};
 }
 
 const text=value=>value instanceof Date?value.toISOString().slice(0,10):value==null?'':String(value);

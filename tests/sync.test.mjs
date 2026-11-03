@@ -118,7 +118,7 @@ test('a save whose answer is lost is recovered by its original key, never resent
  const pending=(await store.get('metho','a-one')).pending;
  assert.ok(pending.requestKey);
  // The Center did accept it before the answer was lost.
- center.state.drafts.set(pending.requestKey,{revision:2});
+ center.state.drafts.set(pending.requestKey,{articleId:'a-one',requestKey:pending.requestKey,revision:2});
  const result=await engine.save('metho','Works/a-one.md');
  assert.deepEqual(result,{state:'saved',revision:2});
  assert.equal(center.calls.filter(c=>c[0]==='saveDraft').length,1,'the request was not sent a second time');
@@ -296,7 +296,7 @@ test('recovering an uncertain prior save does not require new-save capability or
  center.state.failNext=Object.assign(Error('connection lost'),{code:'network_error'});
  await assert.rejects(engine.save('metho','Works/one.md'),error=>error.retained===true);
  const key=(await store.get('metho','one')).pending.requestKey;
- center.state.drafts.set(key,{revision:2});
+ center.state.drafts.set(key,{articleId:'one',requestKey:key,revision:2});
  center.client.work=async()=>{throw Error('must not read a new version to recover a pending request');};
  assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'saved',revision:2});
  assert.equal(center.calls.filter(x=>x[0]==='saveDraft').length,1);
@@ -347,7 +347,7 @@ test('English and Chinese versions with the same ID stay separate through pull, 
  const client={
   catalog:async(_s,options)=>{calls.push(['catalog',options.locale]);return {generation:1,items:[{articleId:'same',version:entries[options.locale].version}],next:null};},
   work:async(_s,id,locale)=>{calls.push(['work',id,locale]);return {...entries[locale],preservesEditorialFieldsOnSave:true};},
-  saveDraft:async(_s,envelope)=>{calls.push(['save',envelope]);assert.equal(envelope.data.locale,'en');assert.equal(envelope.expectedVersion,4);return {revision:5};}
+  saveDraft:async(_s,envelope)=>{calls.push(['save',envelope]);assert.equal(envelope.data.locale,'en');assert.equal(envelope.expectedVersion,4);return {articleId:envelope.data.id,requestKey:envelope.requestKey,revision:5};}
  };
  const engine=new SyncEngine({client,vault,store,yaml});
  await engine.pull('metho',{locale:'zh-CN'});await engine.pull('metho',{locale:'en'});
@@ -374,4 +374,54 @@ test('language identity changes and wrong-language Center details never overwrit
  const store=memoryStore(),other=new SyncEngine({client:{catalog:async()=>({generation:1,items:[{articleId:'two',version:1}],next:null}),work:async()=>english},vault,store,yaml});
  await assert.rejects(other.pull('metho',{locale:'en'}),error=>error.code==='identity_conflict');
  assert.equal(await vault.read('Works/en/two.md'),null);
+});
+
+
+test('a malformed save receipt retains the original request key and recovers without resubmitting',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');
+ await edit(vault,'Works/one.md','Body','Edited');const save=center.client.saveDraft;
+ center.client.saveDraft=async(...args)=>{await save(...args);return {revision:2,articleId:'other',requestKey:args[1].requestKey};};
+ await assert.rejects(engine.save('metho','Works/one.md'),error=>error.code==='invalid_receipt'&&error.retained===true);
+ const base=await store.get('metho','one'),key=base.pending.requestKey;assert.equal(base.version,1);
+ assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'saved',revision:2});
+ assert.equal(center.calls.filter(c=>c[0]==='saveDraft').length,1);assert.equal(center.calls.at(-1)[1],key);
+});
+
+test('a wrong recovery receipt cannot clear the pending request',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');
+ await edit(vault,'Works/one.md','Body','Edited');
+ center.state.failNext=Object.assign(Error('lost'),{code:'network_error',status:0});
+ await assert.rejects(engine.save('metho','Works/one.md'));const key=(await store.get('metho','one')).pending.requestKey;
+ center.state.drafts.set(key,{articleId:'one',requestKey:'another-request',revision:2});
+ await assert.rejects(engine.save('metho','Works/one.md'),error=>error.code==='invalid_receipt'&&error.retained===true);
+ assert.equal((await store.get('metho','one')).pending.requestKey,key);
+});
+
+
+test('an HTTP 408 response preserves the original write key for recovery',async()=>{
+ const {engine,vault,center,store}=setup('one');await engine.pull('metho');
+ await edit(vault,'Works/one.md','Body','Edited');
+ center.state.failNext=Object.assign(Error('gateway timeout'),{status:408,code:'http_error'});
+ await assert.rejects(engine.save('metho','Works/one.md'),error=>error.retained===true);
+ const key=(await store.get('metho','one')).pending.requestKey;assert.ok(key);
+ center.state.drafts.set(key,{articleId:'one',requestKey:key,revision:2});
+ assert.deepEqual(await engine.save('metho','Works/one.md'),{state:'saved',revision:2});
+ assert.equal(center.calls.filter(c=>c[0]==='saveDraft').length,1);
+});
+
+
+test('invalid remote identities cannot escape the vault or overwrite an existing work',async()=>{
+ const {engine,center,vault,store}=setup('one');
+ await vault.write('outside.md','keep this');
+ center.client.catalog=async()=>({generation:1,items:[{articleId:'../outside',version:1}],next:null});
+ await assert.rejects(engine.pull('metho'),error=>error.code==='invalid_work_id');
+ assert.equal(await vault.read('outside.md'),'keep this');assert.deepEqual(await store.list('metho'),[]);
+});
+
+test('invalid Center media paths are rejected before any vault write',async()=>{
+ const {engine,works,vault,store}=setup('one');
+ const work=works.get('one');work.data.assets=[{path:'/article-media/../../outside.md',data:'aGVsbG8='}];
+ await vault.write('outside.md','keep this');
+ await assert.rejects(engine.pull('metho'),error=>error.code==='invalid_media_path');
+ assert.equal(await vault.read('outside.md'),'keep this');assert.equal(await vault.read('Works/one.md'),null);assert.deepEqual(await store.list('metho'),[]);
 });

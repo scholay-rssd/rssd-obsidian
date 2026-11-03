@@ -30,7 +30,7 @@ export function stubCenter(works){
    const current=works.get(envelope.data.id);
    if(current.version!==envelope.expectedVersion)throw Object.assign(new Error('changed'),{status:409,code:'revision_conflict'});
    const next={...current,version:current.version+1,revision:current.version+1,data:{...current.data,...envelope.data}};
-   works.set(next.articleId,next);state.drafts.set(envelope.requestKey,{revision:next.version});return {revision:next.version};},
+   works.set(next.articleId,next);const receipt={articleId:next.articleId,requestKey:envelope.requestKey,revision:next.version};state.drafts.set(envelope.requestKey,receipt);return receipt;},
   draftReceipt:async(_w,key)=>{calls.push(['draftReceipt',key]);return state.drafts.get(key)||{};},
  };
  return {client,state,calls};
