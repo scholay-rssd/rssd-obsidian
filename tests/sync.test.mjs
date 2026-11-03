@@ -156,3 +156,19 @@ test('structured records are downloaded read-only and never saved',async()=>{
  await assert.rejects(engine.save('metho','Works/rec-one.md'),/Structured records/);
  assert.equal(center.calls.filter(c=>c[0]==='saveDraft').length,0);
 });
+
+test('a refused save keeps the Center reason so the message names the real cause',async()=>{
+ const {saveFailureMessage}=await import('../src/messages.mjs');
+ const {engine,vault,center,store}=setup('a-one');
+ await engine.pull('metho');
+ await edit(vault,'Works/a-one.md','Body','Edited');
+ center.state.failNext=Object.assign(new Error('Query the current website publication first'),{status:409,code:'publication_pending'});
+ const error=await engine.save('metho','Works/a-one.md').catch(e=>e);
+ assert.equal(error.conflict,true);assert.equal(error.code,'publication_pending');
+ assert.equal((await store.get('metho','a-one')).pending,undefined,'the baseline is restored');
+ assert.match(saveFailureMessage(error),/still publishing.*\[publication_pending\]$/);
+ assert.match(saveFailureMessage(Object.assign(new Error('x'),{conflict:true,code:'revision_conflict'})),/newer version.*\[revision_conflict\]$/);
+ assert.match(saveFailureMessage(Object.assign(new Error('odd'),{conflict:true,code:'something_new'})),/refused the save: odd\. \[something_new\]$/);
+ assert.match(saveFailureMessage(Object.assign(new Error('offline'),{retained:true})),/save is kept/);
+ assert.match(saveFailureMessage(Object.assign(new Error('bad date'),{status:400,code:'invalid_request'})),/Save failed: bad date \[invalid_request\]/);
+});

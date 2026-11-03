@@ -4,6 +4,7 @@ import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,string
 import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {deviceLogin} from './device-login.mjs';
 import {SyncEngine} from './sync-engine.mjs';
+import {saveFailureMessage} from './messages.mjs';
 import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER} from './sync-model.mjs';
 
 const TOKEN_SECRET='rssd-center-device-token';
@@ -97,9 +98,8 @@ export default class RssdPlugin extends Plugin{
    const result=await this.engine().save(this.settings.workspaceId,file.path);
    new Notice(result.state==='unchanged'?'Nothing to save':'Saved as a private draft (revision '+result.revision+'). It is not published.');
   }catch(error){
-   if(error.conflict)new Notice('The Center has a newer version. Your note was not changed; run "Pull works" and merge by hand.',10000);
-   else if(error.retained)new Notice(error.message+' Your save is kept; run the command again to recover it.',10000);
-   else new Notice('Save failed: '+error.message,8000);
+   console.error('RSSD save failed',error.status,error.code,error.message);
+   new Notice(saveFailureMessage(error),10000);
   }
  }
 
