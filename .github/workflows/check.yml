@@ -1,0 +1,33 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      # The plugin lives at obsidian/ in an RSSD checkout and imports its
+      # shared contracts.
+      - uses: actions/checkout@v4
+        with:
+          repository: scholay-rssd/rssd
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: obsidian
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci --no-audit --no-fund
+        working-directory: obsidian
+      - run: npm test
+        working-directory: obsidian
+      - run: npm run build
+        working-directory: obsidian

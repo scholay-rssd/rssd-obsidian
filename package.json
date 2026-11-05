@@ -2,6 +2,7 @@
   "name": "rssd-obsidian",
   "private": true,
   "version": "0.1.1",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "node esbuild.config.mjs",

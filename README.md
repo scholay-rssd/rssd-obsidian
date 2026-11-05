@@ -1,5 +1,9 @@
 # RSSD for Obsidian (stage 1)
 
+This repository is checked out at `obsidian/` inside an
+[RSSD](https://github.com/scholay-rssd/rssd) checkout and imports its shared
+`contracts/`. Run the commands below from that directory.
+
 Open one RSSD Center space as a vault of drafts, see each work's sync state, and save edits back as **private drafts**. Nothing here publishes.
 
 ## Use
@@ -7,7 +11,6 @@ Open one RSSD Center space as a vault of drafts, see each work's sync state, and
 1. Create an empty vault **outside the git repo**, one vault per space (a space is a site).
 2. Build and install:
    ```sh
-   cd obsidian
    npm install
    npm run build
    node install.mjs /path/to/vault
