@@ -11,6 +11,7 @@ import {AutoSync,startupDelay,syncLease} from './auto-sync.mjs';
 import {saveFailureMessage} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
+import {workLabel,labelText} from './titles.mjs';
 import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,notePath,noteToWork} from './sync-model.mjs';
 
 const TOKEN_SECRET='rssd-center-device-token';
@@ -18,6 +19,13 @@ const TOKEN_SECRET='rssd-center-device-token';
 export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_ORIGIN:'https://post.linkc.cloud';
 const DEFAULTS={origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true};
 const LOCALES=['zh-CN','en'];
+// Work notes show their title and date; the stable ID file name stays underneath. The inline title and the
+// header title are hidden for them because editing either one renames the file and would stop its sync.
+const TITLE_STYLE=`
+.rssd-work-note .inline-title,.rssd-work-note .view-header-title-parent,.rssd-work-note .view-header-title{display:none}
+.rssd-work-header{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:var(--font-semibold);padding:0 var(--size-2-2)}
+.rssd-work-header .rssd-date,.nav-file-title-content .rssd-date{color:var(--text-faint);font-size:var(--font-ui-smaller);margin-left:.5em;font-variant-numeric:tabular-nums}
+`;
 const http=request=>requestUrl(request);
 
 class CodeModal extends Modal{
@@ -73,6 +81,12 @@ export default class RssdPlugin extends Plugin{
   // obsidian://rssd?vault=<vault>&do=login|pull|save|status|spaces[&path=Works/x.md] lets scripts and agents drive
   // the plugin. Any app or page can open such a link, so it only works when the vault opts in.
   this.registerObsidianProtocolHandler('rssd',params=>this.automate(params));
+  this.titleStyle=document.head.createEl('style',{text:TITLE_STYLE});
+  const relabel=()=>{window.clearTimeout(this.titleTimer);this.titleTimer=window.setTimeout(()=>this.refreshTitles(),150);};
+  this.app.workspace.onLayoutReady(relabel);
+  for(const event of ['changed','resolved'])this.registerEvent(this.app.metadataCache.on(event,relabel));
+  for(const event of ['layout-change','file-open','active-leaf-change'])this.registerEvent(this.app.workspace.on(event,relabel));
+  for(const event of ['create','rename','delete'])this.registerEvent(this.app.vault.on(event,relabel));
   // First launch: one button logs in and opens the reader. Afterwards the reader opens from the ribbon.
   this.app.workspace.onLayoutReady(()=>{if(!this.token())new WelcomeModal(this.app,this).open();});
   this.autoSync=new AutoSync({
@@ -259,7 +273,37 @@ export default class RssdPlugin extends Plugin{
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
  }
- onunload(){this.autoSync?.stop();this.loginController?.abort();}
+ onunload(){this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
+ workLabel(file){return file instanceof TFile&&this.isWork(file)?workLabel(this.app.metadataCache.getFileCache(file)?.frontmatter):null;}
+ /** Paint titles and dates over ID file names in the explorer, tabs and note headers. Never renames a file. */
+ refreshTitles({restore=false}={}){
+  try{
+   for(const leaf of this.app.workspace.getLeavesOfType('file-explorer')){
+    for(const [path,item] of Object.entries(leaf.view?.fileItems||{})){
+     const el=item?.innerEl;if(!el||!path.startsWith(WORKS_FOLDER+'/'))continue;
+     const label=restore?null:this.workLabel(item.file),key=label?label.title+'\n'+label.date:'';
+     if(label){
+      if(el.dataset.rssdLabel===key&&el.querySelector('.rssd-title'))continue;
+      el.empty();el.createSpan({cls:'rssd-title',text:label.title});if(label.date)el.createSpan({cls:'rssd-date',text:label.date});
+      el.dataset.rssdLabel=key;item.selfEl?.setAttribute('aria-label',path);
+     }else if(el.dataset.rssdLabel!==undefined){delete el.dataset.rssdLabel;el.setText(item.file?.basename||path.split('/').at(-1).replace(/\.md$/,''));item.selfEl?.removeAttribute('aria-label');}
+    }
+   }
+   for(const leaf of this.app.workspace.getLeavesOfType('markdown')){
+    const view=leaf.view,file=view?.file,label=restore?null:this.workLabel(file);
+    view?.containerEl?.toggleClass('rssd-work-note',!!label);
+    const container=view?.titleContainerEl||view?.containerEl?.querySelector('.view-header-title-container');
+    let header=container?.querySelector('.rssd-work-header');
+    if(label&&container){
+     if(!header)header=container.createDiv({cls:'rssd-work-header'});
+     header.empty();header.createSpan({text:label.title});if(label.date)header.createSpan({cls:'rssd-date',text:label.date});
+     header.setAttribute('aria-label',file.path);
+    }else header?.remove();
+    const tab=leaf.tabHeaderInnerTitleEl;
+    if(tab&&label)tab.setText(labelText(label));else if(tab&&restore&&file)tab.setText(file.basename);
+   }
+  }catch(error){console.error('RSSD titles',error);}
+ }
  async pull(){
   try{
    const summary=await this.operations.run('pull',async()=>{
@@ -377,8 +421,8 @@ class WorksView extends ItemView{
    if(reason)el.createEl('p',{text:reason});
    for(const [path,state] of Object.entries(data.states)){
     const id=path.split('/').at(-1).replace(/\.md$/,'');const file=this.app.vault.getAbstractFileByPath(path);
-    const title=file?this.app.metadataCache.getFileCache(file)?.frontmatter?.title:null;
-    new Setting(el).setName(String(title||id)).setDesc((path.startsWith('Works/en/')?'English · ':'')+(STATE_LABELS[state]||state)).addButton(b=>b.setButtonText(file?'Open':'Pull first').setDisabled(!file).onClick(()=>this.app.workspace.getLeaf(false).openFile(file)));
+    const label=file?this.plugin.workLabel(file):null;
+    new Setting(el).setName(label?.title||id).setDesc([label?.date,path.startsWith('Works/en/')?'English':'',STATE_LABELS[state]||state].filter(Boolean).join(' · ')).addButton(b=>b.setButtonText(file?'Open':'Pull first').setDisabled(!file).onClick(()=>this.app.workspace.getLeaf(false).openFile(file)));
    }
   }catch(error){el.createEl('p',{text:error.message});}
  }
