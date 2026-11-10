@@ -24,7 +24,7 @@ const LOCALES=['zh-CN','en'];
 const TITLE_STYLE=`
 .rssd-work-note .inline-title,.rssd-work-note .view-header-title-parent,.rssd-work-note .view-header-title{display:none}
 .rssd-work-header{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:var(--font-semibold);padding:0 var(--size-2-2)}
-.rssd-work-header .rssd-date,.nav-file-title-content .rssd-date{color:var(--text-faint);font-size:var(--font-ui-smaller);margin-left:.5em;font-variant-numeric:tabular-nums}
+.rssd-work-header .rssd-date,.nav-file-title-content .rssd-date{color:var(--text-faint);font-size:var(--font-ui-smaller);margin-right:.5em;font-variant-numeric:tabular-nums}
 `;
 const http=request=>requestUrl(request);
 
@@ -284,7 +284,7 @@ export default class RssdPlugin extends Plugin{
      const label=restore?null:this.workLabel(item.file),key=label?label.title+'\n'+label.date:'';
      if(label){
       if(el.dataset.rssdLabel===key&&el.querySelector('.rssd-title'))continue;
-      el.empty();el.createSpan({cls:'rssd-title',text:label.title});if(label.date)el.createSpan({cls:'rssd-date',text:label.date});
+      el.empty();if(label.date)el.createSpan({cls:'rssd-date',text:label.date});el.createSpan({cls:'rssd-title',text:label.title});
       el.dataset.rssdLabel=key;item.selfEl?.setAttribute('aria-label',path);
      }else if(el.dataset.rssdLabel!==undefined){delete el.dataset.rssdLabel;el.setText(item.file?.basename||path.split('/').at(-1).replace(/\.md$/,''));item.selfEl?.removeAttribute('aria-label');}
     }
@@ -296,7 +296,7 @@ export default class RssdPlugin extends Plugin{
     let header=container?.querySelector('.rssd-work-header');
     if(label&&container){
      if(!header)header=container.createDiv({cls:'rssd-work-header'});
-     header.empty();header.createSpan({text:label.title});if(label.date)header.createSpan({cls:'rssd-date',text:label.date});
+     header.empty();if(label.date)header.createSpan({cls:'rssd-date',text:label.date});header.createSpan({text:label.title});
      header.setAttribute('aria-label',file.path);
     }else header?.remove();
     const tab=leaf.tabHeaderInnerTitleEl;
