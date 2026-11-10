@@ -1,6 +1,6 @@
 // RSSD for Obsidian, stage 1: open a space from the RSSD Center as a vault of drafts, see each work's sync
 // state, and save edits back as private drafts. Publishing is never done here.
-import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component} from 'obsidian';
+import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu} from 'obsidian';
 import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
 import {deviceLogin} from './device-login.mjs';
@@ -70,7 +70,10 @@ export default class RssdPlugin extends Plugin{
   this.registerView('rssd-reader',leaf=>new ReaderView(leaf,this));
   this.addRibbonIcon('book-open','RSSD reader',()=>this.openReader());
   this.addCommand({id:'reader',name:'Read site articles online',callback:()=>this.openReader()});
-  this.status=this.addStatusBarItem();this.setStatus('RSSD');
+  this.status=this.addStatusBarItem();this.setStatus(this.idleStatus());
+  // The status item is the quick way in: reading, works, sync and login in one menu.
+  this.status.addClass('mod-clickable');this.status.setAttribute('aria-label','RSSD');
+  this.registerDomEvent(this.status,'click',event=>this.statusMenu().showAtMouseEvent(event));
   this.addSettingTab(new RssdSettings(this.app,this));
   this.addCommand({id:'login',name:'Log in to the RSSD Center',callback:()=>this.login().catch(error=>new Notice('Login failed: '+error.message))});
   this.addCommand({id:'pull',name:'Pull works from the Center',callback:()=>this.pull()});
@@ -162,6 +165,23 @@ export default class RssdPlugin extends Plugin{
  async openWorks(){const leaf=this.app.workspace.getLeavesOfType('rssd-works')[0]||this.app.workspace.getRightLeaf(false);await leaf.setViewState({type:'rssd-works',active:true});this.app.workspace.revealLeaf(leaf);}
  isWork(file){return file.extension==='md'&&file.path.startsWith(WORKS_FOLDER+'/');}
  setStatus(text){this.status?.setText(text);}
+ idleStatus(){return this.token()?'RSSD'+(this.settings.workspaceId?' · '+this.settings.workspaceId:''):'RSSD · log in';}
+ statusMenu(){
+  const menu=new Menu(),loggedIn=!!this.token(),space=this.settings.workspaceId,active=this.app.workspace.getActiveFile();
+  const login=()=>this.login({openBrowser:true,selectSyncSpace:false}).then(()=>this.setStatus(this.idleStatus())).catch(error=>{if(error?.code!=='cancelled')new Notice('Login failed: '+error.message,10000);});
+  if(!loggedIn)menu.addItem(item=>item.setTitle('Log in to RSSD').setIcon('log-in').onClick(login));
+  menu.addItem(item=>item.setTitle('Read site articles online').setIcon('book-open').onClick(()=>this.openReader()));
+  if(loggedIn&&space){
+   menu.addItem(item=>item.setTitle('Open RSSD works').setIcon('files').onClick(()=>this.openWorks()));
+   menu.addItem(item=>item.setTitle('Pull works from the Center').setIcon('download').onClick(()=>this.pull()));
+   if(active&&this.isWork(active))menu.addItem(item=>item.setTitle('Save this work as a private draft').setIcon('upload').onClick(()=>this.save(active)));
+   menu.addItem(item=>item.setTitle('Check sync state').setIcon('refresh-cw').onClick(()=>this.refreshStates()));
+  }
+  menu.addSeparator();
+  if(loggedIn)menu.addItem(item=>item.setTitle('Log in again').setIcon('log-in').onClick(login));
+  menu.addItem(item=>item.setTitle('RSSD settings').setIcon('settings').onClick(()=>{const setting=this.app.setting;setting?.open();setting?.openTabById(this.manifest.id);}));
+  return menu;
+ }
  token(){return this.app.secretStorage.getSecret(TOKEN_SECRET);}
  saveSettings(){
   // Vault events and sync receipts may update different parts of settings at
@@ -269,7 +289,7 @@ export default class RssdPlugin extends Plugin{
    // Choosing a sync space starts downloading works into the vault; reader logins leave that to Settings.
    if(selectSyncSpace&&!space&&spaces.length===1)this.settings.workspaceId=spaces[0];
    this.settings.spaces=spaces;await this.saveSettings();
-   new Notice('Logged in to the RSSD Center');
+   new Notice('Logged in to the RSSD Center');this.setStatus(this.idleStatus());
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
  }
@@ -323,7 +343,7 @@ export default class RssdPlugin extends Plugin{
      await this.writeRun({id,action:'pull',workspaceId,state:'failed',ok:false,checked,...lastProgress,...(error.pullSummary?{partial:error.pullSummary}:{}),...diagnosticError(error)});
      throw error;
     }
-    finally{this.setStatus('RSSD');}
+    finally{this.setStatus(this.idleStatus());}
    });
    const parts=[summary.downloaded.length+' new',summary.updated.length+' updated',summary.unchanged+' unchanged'];
    if(summary.skipped.length)parts.push(summary.skipped.length+' kept (local changes)');
