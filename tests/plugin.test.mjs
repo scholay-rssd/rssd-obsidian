@@ -99,3 +99,19 @@ test('failed interactive spaces checks preserve the failure in a receipt',async(
  const p=plugin();p.client=()=>({registry:async()=>{throw Object.assign(Error('offline'),{code:'network_error'});}});
  await p.showSpaces();assert.equal(p.records.at(-1).state,'failed');assert.equal(p.records.at(-1).code,'network_error');
 });
+test('a reader login does not choose a sync space, so nothing is downloaded',async()=>{
+ const token='rssd_device_'+'c'.repeat(48);
+ response=async req=>req.url.endsWith('/auth/start')?{status:200,json:{verificationUriComplete:'https://center.example.org/device',userCode:'ABCD',deviceCode:'d',expiresIn:600,interval:5}}
+  :{status:200,json:{token,identity:{workspaceIds:['metho']}}};
+ const realTimeout=globalThis.setTimeout;globalThis.setTimeout=(fn)=>realTimeout(fn,0);
+ try{
+  const p=plugin();p.settings.workspaceId='';
+  await p.login({selectSyncSpace:false});assert.equal(p.settings.workspaceId,'');assert.equal(p.token(),token);
+  const q=plugin();q.settings.workspaceId='';await q.login();assert.equal(q.settings.workspaceId,'metho');
+ }finally{globalThis.setTimeout=realTimeout;}
+});
+test('reading uses the login Center without requiring the vault sync space',()=>{
+ const p=plugin();p.settings.boundSpace='personal';assert.throws(()=>p.client(),/bound to personal/);
+ assert.equal(p.readClient().origin,'https://center.example.org');
+ p.settings.origin='https://another.example.org';assert.throws(()=>p.readClient(),/different Center/);
+});

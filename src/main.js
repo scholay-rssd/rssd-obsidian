@@ -1,6 +1,6 @@
 // RSSD for Obsidian, stage 1: open a space from the RSSD Center as a vault of drafts, see each work's sync
 // state, and save edits back as private drafts. Publishing is never done here.
-import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView} from 'obsidian';
+import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component} from 'obsidian';
 import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
 import {deviceLogin} from './device-login.mjs';
@@ -10,10 +10,13 @@ import {canonicalPathIdentity,trackRename,trackDelete,confirmReturn} from './pat
 import {AutoSync,startupDelay,syncLease} from './auto-sync.mjs';
 import {saveFailureMessage} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
+import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
 import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,notePath,noteToWork} from './sync-model.mjs';
 
 const TOKEN_SECRET='rssd-center-device-token';
-const DEFAULTS={origin:'',deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true};
+// The Scholay Center. A build can point elsewhere with RSSD_DEFAULT_ORIGIN; the address stays editable until login.
+export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_ORIGIN:'https://post.linkc.cloud';
+const DEFAULTS={origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true};
 const LOCALES=['zh-CN','en'];
 const http=request=>requestUrl(request);
 
@@ -29,16 +32,36 @@ class CodeModal extends Modal{
  onClose(){this.contentEl.empty();this.onCancel?.();}
 }
 
+class WelcomeModal extends Modal{
+ constructor(app,plugin){super(app);this.plugin=plugin;}
+ onOpen(){
+  const {contentEl}=this;contentEl.createEl('h3',{text:'Welcome to RSSD'});
+  contentEl.createEl('p',{text:'Log in once to read your site\'s articles here. Your browser opens; sign in to RSSD and approve this device. Nothing is downloaded into the vault.'});
+  contentEl.createEl('p',{text:'Center: '+this.plugin.settings.origin,cls:'setting-item-description'});
+  new Setting(contentEl).addButton(b=>b.setButtonText('Log in to RSSD').setCta().onClick(async()=>{
+   this.close();
+   try{await this.plugin.login({openBrowser:true,selectSyncSpace:false});await this.plugin.openReader();}
+   catch(error){if(error?.code!=='cancelled')new Notice('Login failed: '+error.message,10000);}
+  })).addButton(b=>b.setButtonText('Later').onClick(()=>this.close()));
+ }
+ onClose(){this.contentEl.empty();}
+}
+
 export default class RssdPlugin extends Plugin{
  async onload(){
   this.settings=Object.assign({},DEFAULTS,await this.loadData());
   this.operations=new OperationGate();
-  this.settings.boundOrigin??=this.settings.origin;
+  // An empty address before any login takes the default Center, so a new vault needs no typing.
+  if(!this.settings.origin&&!this.token()&&!this.settings.boundSpace){this.settings.origin=DEFAULT_ORIGIN;this.settings.boundOrigin=DEFAULT_ORIGIN;}
+  if(!this.settings.boundOrigin)this.settings.boundOrigin=this.settings.origin;
   this.settings.boundSpace??=Object.keys(this.settings.baselines).find(k=>Object.keys(this.settings.baselines[k]||{}).length)||'';
   await this.saveSettings();
   this.registerView('rssd-works',leaf=>new WorksView(leaf,this));
   this.addRibbonIcon('files','RSSD works',()=>this.openWorks());
   this.addCommand({id:'works',name:'Open RSSD works',callback:()=>this.openWorks()});
+  this.registerView('rssd-reader',leaf=>new ReaderView(leaf,this));
+  this.addRibbonIcon('book-open','RSSD reader',()=>this.openReader());
+  this.addCommand({id:'reader',name:'Read site articles online',callback:()=>this.openReader()});
   this.status=this.addStatusBarItem();this.setStatus('RSSD');
   this.addSettingTab(new RssdSettings(this.app,this));
   this.addCommand({id:'login',name:'Log in to the RSSD Center',callback:()=>this.login().catch(error=>new Notice('Login failed: '+error.message))});
@@ -50,6 +73,8 @@ export default class RssdPlugin extends Plugin{
   // obsidian://rssd?vault=<vault>&do=login|pull|save|status|spaces[&path=Works/x.md] lets scripts and agents drive
   // the plugin. Any app or page can open such a link, so it only works when the vault opts in.
   this.registerObsidianProtocolHandler('rssd',params=>this.automate(params));
+  // First launch: one button logs in and opens the reader. Afterwards the reader opens from the ribbon.
+  this.app.workspace.onLayoutReady(()=>{if(!this.token())new WelcomeModal(this.app,this).open();});
   this.autoSync=new AutoSync({
    ready:()=>this.settings.autoSync!==false&&!!this.settings.origin&&!!this.settings.workspaceId&&!!this.token()&&!this.operations.active,
    lease:run=>{let locks;try{locks=globalThis.navigator?.locks;}catch{}return syncLease(locks,this.settings.origin)(run);},
@@ -108,6 +133,17 @@ export default class RssdPlugin extends Plugin{
  assertBinding(){
   if(centerOrigin(this.settings.origin)!==centerOrigin(this.settings.boundOrigin||this.settings.origin))throw Error('This login belongs to a different Center. Use a separate vault.');
   if(this.settings.boundSpace&&this.settings.workspaceId!==this.settings.boundSpace)throw Error('This vault is bound to '+this.settings.boundSpace+'. Open a separate vault for another space.');
+ }
+ async openReader(){
+  if(!this.token()){new WelcomeModal(this.app,this).open();return;}
+  const leaf=this.app.workspace.getLeavesOfType('rssd-reader')[0]||this.app.workspace.getLeaf('tab');
+  await leaf.setViewState({type:'rssd-reader',active:true});this.app.workspace.revealLeaf(leaf);
+ }
+ /** Reading needs only the login's Center, not the vault's sync space. */
+ readClient(){
+  if(centerOrigin(this.settings.origin)!==centerOrigin(this.settings.boundOrigin||this.settings.origin))throw Error('This login belongs to a different Center. Use a separate vault.');
+  const token=this.token();if(!token||!this.settings.origin)throw Error('Log in to RSSD first');
+  return createCenterClient({http,origin:this.settings.origin,token});
  }
  async openWorks(){const leaf=this.app.workspace.getLeavesOfType('rssd-works')[0]||this.app.workspace.getRightLeaf(false);await leaf.setViewState({type:'rssd-works',active:true});this.app.workspace.revealLeaf(leaf);}
  isWork(file){return file.extension==='md'&&file.path.startsWith(WORKS_FOLDER+'/');}
@@ -203,7 +239,7 @@ export default class RssdPlugin extends Plugin{
  }
 
  async login(options={}){return this.operations.run('login',async()=>{const id=crypto.randomUUID();await this.writeRun({id,action:'login',state:'running',ok:null});try{const result=await this.performLogin(options);await this.writeRun({id,action:'login',state:'completed',ok:true,result});return result;}catch(error){await this.writeRun({id,action:'login',state:'failed',ok:false,error:error.message,code:error.code||null,status:error.status||null});throw error;}});}
- async performLogin({openBrowser=false}={}){
+ async performLogin({openBrowser=false,selectSyncSpace=true}={}){
   this.assertBinding();
   const origin=centerOrigin(this.settings.origin),space=this.settings.workspaceId,controller=new AbortController();
   this.loginController=controller;let modal;
@@ -216,7 +252,8 @@ export default class RssdPlugin extends Plugin{
    createCenterClient({http,origin,token:result.token});
    this.app.secretStorage.setSecret(TOKEN_SECRET,result.token);
    this.settings.boundOrigin=origin;
-   if(!space&&spaces.length===1)this.settings.workspaceId=spaces[0];
+   // Choosing a sync space starts downloading works into the vault; reader logins leave that to Settings.
+   if(selectSyncSpace&&!space&&spaces.length===1)this.settings.workspaceId=spaces[0];
    this.settings.spaces=spaces;await this.saveSettings();
    new Notice('Logged in to the RSSD Center');
    return {loggedIn:true,spaces};
@@ -306,9 +343,11 @@ class RssdSettings extends PluginSettingTab{
   const {containerEl}=this,s=this.plugin.settings;containerEl.empty();
   new Setting(containerEl).setName('Center address').setDesc('The HTTPS address of your RSSD Center.')
    .addText(t=>t.setPlaceholder('https://center.example.org').setValue(s.origin).setDisabled(!!this.plugin.token()||!!s.boundSpace).onChange(async v=>{if(this.plugin.operations.active||this.plugin.token()||s.boundSpace)return;t.inputEl.value=v;s.origin=v.trim();s.boundOrigin=s.origin;await this.plugin.saveSettings();}));
+  new Setting(containerEl).setName('Read articles online').setDesc('Browse the site\'s articles without downloading them into this vault.')
+   .addButton(b=>b.setButtonText('Open reader').onClick(()=>this.plugin.openReader()));
   new Setting(containerEl).setName('Device name').setDesc('Shown in the Center when you approve this device.')
    .addText(t=>t.setValue(s.deviceName).onChange(async v=>{s.deviceName=v.trim();await this.plugin.saveSettings();}));
-  new Setting(containerEl).setName('Space').setDesc(s.boundSpace?'This vault is bound to '+s.boundSpace+'. Use a separate vault for another space.':'Choose an authorized space before pulling.')
+  new Setting(containerEl).setName('Sync space').setDesc(s.boundSpace?'This vault is bound to '+s.boundSpace+'. Use a separate vault for another space.':'Only for editing: choosing a space downloads its works into this vault and syncs edits as private drafts. Reading online needs no space here.')
    .addDropdown(t=>{t.addOption('','Choose a space');for(const id of new Set([s.workspaceId,...(s.spaces||[])].filter(Boolean)))t.addOption(id,id);t.setValue(s.workspaceId).setDisabled(!!s.boundSpace).onChange(async v=>{if(this.plugin.operations.active||s.boundSpace)return;s.workspaceId=v;await this.plugin.saveSettings();});});
   new Setting(containerEl).setName('Log in').setDesc(this.plugin.token()?'This device is logged in.':'Approve this device in your browser.')
    .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
@@ -342,5 +381,84 @@ class WorksView extends ItemView{
     new Setting(el).setName(String(title||id)).setDesc((path.startsWith('Works/en/')?'English · ':'')+(STATE_LABELS[state]||state)).addButton(b=>b.setButtonText(file?'Open':'Pull first').setDisabled(!file).onClick(()=>this.app.workspace.getLeaf(false).openFile(file)));
    }
   }catch(error){el.createEl('p',{text:error.message});}
+ }
+}
+
+const LOCALE_LABELS={'zh-CN':'中文',en:'English'};
+class ReaderView extends ItemView{
+ constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.items=null;this.query='';this.article=null;this.urls=[];this.seq=0;}
+ getViewType(){return 'rssd-reader';}
+ getDisplayText(){return 'RSSD reader';}
+ getIcon(){return 'book-open';}
+ async onOpen(){this.contentEl.addClass('rssd-reader');void this.load();}
+ async onClose(){this.release();}
+ release(){for(const url of this.urls)URL.revokeObjectURL(url);this.urls=[];this.articleComponent?.unload();this.articleComponent=null;}
+ get s(){return this.plugin.settings;}
+ async load(){
+  const seq=++this.seq,el=this.contentEl;this.article=null;this.release();el.empty();
+  el.createEl('p',{text:'Loading…',cls:'setting-item-description'});
+  try{
+   const client=this.plugin.readClient(),registry=await client.registry();
+   const spaces=(registry.workspaces||[]).map(w=>({id:w.id,name:w.name||w.id}));
+   if(!spaces.length)throw Error('This device is not approved for any space. Log in again and choose one.');
+   if(!spaces.some(w=>w.id===this.s.readerSpace))this.s.readerSpace=spaces.some(w=>w.id===this.s.workspaceId)?this.s.workspaceId:spaces[0].id;
+   const items=await readerCatalog(client,this.s.readerSpace,{locale:this.s.readerLocale||'zh-CN',drafts:!!this.s.readerDrafts});
+   if(seq!==this.seq)return;
+   this.spaces=spaces;this.items=items;this.renderList();
+  }catch(error){if(seq===this.seq)this.renderError(error);}
+ }
+ renderError(error){
+  const el=this.contentEl;el.empty();el.createEl('h3',{text:'RSSD reader'});el.createEl('p',{text:error.message});
+  const row=new Setting(el).addButton(b=>b.setButtonText('Try again').onClick(()=>this.load()));
+  if(error?.status===401||!this.plugin.token())row.addButton(b=>b.setButtonText('Log in').setCta().onClick(async()=>{try{await this.plugin.login({openBrowser:true,selectSyncSpace:false});await this.load();}catch(e){if(e?.code!=='cancelled')new Notice('Login failed: '+e.message,10000);}}));
+ }
+ renderList(){
+  const el=this.contentEl,s=this.s;this.article=null;this.release();el.empty();
+  const bar=new Setting(el).setName(this.spaces.find(w=>w.id===s.readerSpace)?.name||s.readerSpace);
+  if(this.spaces.length>1)bar.addDropdown(d=>{for(const w of this.spaces)d.addOption(w.id,w.name);d.setValue(s.readerSpace).onChange(async v=>{s.readerSpace=v;await this.plugin.saveSettings();void this.load();});});
+  bar.addDropdown(d=>{for(const [k,v] of Object.entries(LOCALE_LABELS))d.addOption(k,v);d.setValue(s.readerLocale||'zh-CN').onChange(async v=>{s.readerLocale=v;await this.plugin.saveSettings();void this.load();});});
+  bar.addExtraButton(b=>b.setIcon('refresh-cw').setTooltip('Refresh').onClick(()=>this.load()));
+  new Setting(el).setName('Include unpublished drafts').addToggle(t=>t.setValue(!!s.readerDrafts).onChange(async v=>{s.readerDrafts=v;await this.plugin.saveSettings();void this.load();}))
+   .addSearch(q=>{q.setPlaceholder('Search titles').setValue(this.query).onChange(v=>{this.query=v;this.renderRows(list);});});
+  const list=el.createDiv();this.renderRows(list);
+ }
+ renderRows(list){
+  list.empty();const rows=filterCatalog(this.items,this.query);
+  list.createEl('p',{text:rows.length+' of '+this.items.length+' articles',cls:'setting-item-description'});
+  for(const item of rows){
+   const meta=[item.dateLabel||String(item.lastmod||'').slice(0,10),item.category,item.publicationState==='published'?'':'draft'].filter(Boolean).join(' · ');
+   const row=new Setting(list).setName(String(item.title||item.articleId)).setDesc(meta+(item.summary?'\n'+item.summary:''));
+   row.settingEl.style.cursor='pointer';row.descEl.style.whiteSpace='pre-line';
+   row.settingEl.addEventListener('click',()=>this.open(item));
+  }
+ }
+ async open(item){
+  const seq=++this.seq,el=this.contentEl,s=this.s;this.release();el.empty();
+  el.createEl('p',{text:'Loading '+(item.title||item.articleId)+'…',cls:'setting-item-description'});
+  try{
+   const client=this.plugin.readClient(),locale=s.readerLocale||'zh-CN';
+   const detail=item.publicationState==='published'?await client.published(s.readerSpace,item.articleId,locale):await client.latest(s.readerSpace,item.articleId,locale);
+   if(seq!==this.seq)return;
+   this.article=readerArticle(detail,item);await this.renderArticle(seq);
+  }catch(error){if(seq===this.seq)this.renderError(error);}
+ }
+ async renderArticle(seq){
+  const a=this.article,el=this.contentEl;el.empty();
+  const bar=new Setting(el).addButton(b=>b.setButtonText('← All articles').onClick(()=>this.items?this.renderList():this.load()));
+  if(a.url)bar.addButton(b=>b.setButtonText(a.published?'Open on site':'Site page (not published)').onClick(()=>window.open(a.url)));
+  const body=el.createDiv({cls:'markdown-rendered markdown-preview-view'});body.style.padding='0 var(--size-4-4)';
+  body.createEl('h1',{text:a.title});
+  const meta=[a.date,a.author,a.category,a.published?'':'unpublished draft'].filter(Boolean).join(' · ');
+  if(meta)body.createEl('p',{text:meta,cls:'setting-item-description'});
+  const content=body.createDiv();
+  this.articleComponent=new Component();this.addChild(this.articleComponent);
+  await MarkdownRenderer.render(this.app,a.markdown,content,'',this.articleComponent);
+  if(seq!==this.seq)return;
+  for(const img of content.querySelectorAll('img')){
+   const src=img.getAttribute('src')||'';if(!src.startsWith(MEDIA_HOST))continue;
+   const asset=a.media[decodeURIComponent(src.slice(MEDIA_HOST.length))];if(!asset){img.removeAttribute('src');continue;}
+   const bytes=Uint8Array.from(atob(asset.data),c=>c.charCodeAt(0)),url=URL.createObjectURL(new Blob([bytes],{type:asset.type}));
+   this.urls.push(url);img.setAttribute('src',url);
+  }
  }
 }
