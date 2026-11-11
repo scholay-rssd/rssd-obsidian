@@ -88,6 +88,19 @@ test('concurrent settings writes preserve pending saves and path guards in order
  p.settings.pathRecords={'zh-CN/one':{state:'moved'}};const b=p.saveSettings();release();await Promise.all([a,b]);
  assert.equal(writes.length,2);assert.equal(writes[1].baselines.metho.one.pending.requestKey,'keep-original');assert.equal(writes[1].pathRecords['zh-CN/one'].state,'moved');
 });
+test('baseline changes are journaled and folded into the settings file when a pull ends',async()=>{
+ const p=plugin();const files=new Map(),writes=[];p.saveSettings=Plugin.prototype.saveSettings.bind(p);p.saveData=async snapshot=>{writes.push(snapshot);};
+ p.manifest={dir:'.obsidian/plugins/rssd'};p.settings.baselines={};const journal=p.manifest.dir+'/baselines.journal';
+ p.app.vault={adapter:{exists:async path=>files.has(path),read:async path=>files.get(path),append:async(path,text)=>files.set(path,(files.get(path)||'')+text),remove:async path=>files.delete(path)}};
+ const store=p.engine().store;
+ await store.set('metho','one',{articleId:'one',version:1});await store.set('metho','two',{articleId:'two',version:1},'en');await store.delete('metho','two','en');
+ assert.equal(writes.length,0);assert.equal(files.get(journal).trim().split(/\n+/).length,3);
+ assert.deepEqual(await store.get('metho','one'),{articleId:'one',version:1});assert.deepEqual(await store.list('metho','en'),[]);assert.equal(p.settings.boundSpace,'metho');
+ p.client=()=>({registry:async()=>({workspaces:[{id:'metho',writable:true,migrationState:'active'}]})});
+ p.engine=()=>({store:{list:async()=>[]},pull:async()=>({downloaded:[],unchanged:1})});
+ await p.pullAll('metho');
+ assert.equal(writes.length,1);assert.equal(writes[0].baselines.metho.one.version,1);assert.equal(files.has(journal),false);
+});
 
 test('interactive spaces checks persist a fresh scoped receipt',async()=>{
  const p=plugin();p.client=()=>({registry:async()=>({workspaces:[{id:'metho',writable:true,migrationState:'active'}]})});
@@ -114,4 +127,23 @@ test('reading uses the login Center without requiring the vault sync space',()=>
  const p=plugin();p.settings.boundSpace='personal';assert.throws(()=>p.client(),/bound to personal/);
  assert.equal(p.readClient().origin,'https://center.example.org');
  p.settings.origin='https://another.example.org';assert.throws(()=>p.readClient(),/different Center/);
+});
+test('the layout preview opens by itself once, only in a vault that edits works, and a closed panel stays closed',async()=>{
+ const make=({space='metho',leaves={},right=true}={})=>{
+  const p=plugin(),opened=[],revealed=[];p.settings.workspaceId=space;let saves=0;p.saveSettings=async()=>{saves++;};
+  const leaf={setViewState:async state=>opened.push(state)};
+  p.app.workspace={getLeavesOfType:type=>leaves[type]||[],getRightLeaf:()=>right?leaf:null,revealLeaf:l=>revealed.push(l)};
+  return {p,opened,revealed,leaf,saves:()=>saves};
+ };
+ const first=make();
+ assert.equal(await first.p.autoOpenPreview(),true);assert.deepEqual(first.opened,[{type:'rssd-preview',active:true}]);assert.deepEqual(first.revealed,[first.leaf]);
+ assert.equal(first.p.settings.previewOpened,true);assert.equal(first.saves(),1);
+ // The next start leaves the sidebar alone, even if the panel was closed in between.
+ assert.equal(await first.p.autoOpenPreview(),false);assert.equal(first.opened.length,1);assert.equal(first.saves(),1);
+ // A vault that already shows the panel (under either name) is only marked.
+ for(const type of ['rssd-preview','rssd-wechat']){const t=make({leaves:{[type]:[{}]}});assert.equal(await t.p.autoOpenPreview(),false);assert.equal(t.opened.length,0);assert.equal(t.p.settings.previewOpened,true);}
+ // A reading-only vault, a missing sidebar and mobile get nothing, and stay eligible.
+ const reader=make({space:''});assert.equal(await reader.p.autoOpenPreview(),false);assert.equal(reader.p.settings.previewOpened,undefined);
+ const noSidebar=make({right:false});assert.equal(await noSidebar.p.autoOpenPreview(),false);assert.equal(noSidebar.p.settings.previewOpened,undefined);
+ mock.Platform.isMobile=true;try{const phone=make();assert.equal(await phone.p.autoOpenPreview(),false);assert.equal(phone.opened.length,0);}finally{mock.Platform.isMobile=false;}
 });
