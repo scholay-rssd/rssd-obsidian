@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: scholay-rssd/rssd
+          # The build bundles WeChat templates and site names from the web/themes and sites submodules.
+          submodules: true
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
