@@ -4,6 +4,14 @@ This repository is checked out at `obsidian/` inside an
 [RSSD](https://github.com/scholay-rssd/rssd) checkout and imports its shared
 `contracts/`. Run the commands below from that directory.
 
+## Read articles online (no download)
+
+Install the plugin into any vault and open it. A welcome window offers **Log in to RSSD**: the browser opens, you sign in and approve the device, and the **RSSD reader** tab opens with the site's published articles. Click an article to read it rendered, with its images; nothing is written into the vault. Switch site (when the device is approved for several), language and *Include unpublished drafts* at the top. Reopen it later from the book ribbon icon or the *Read site articles online* command.
+
+The Center address defaults to `https://post.linkc.cloud`; build with `RSSD_DEFAULT_ORIGIN=https://… npm run build` for another Center. A login from the welcome window does not choose a sync space, so automatic sync stays off until someone picks a **Sync space** in Settings for editing.
+
+## Edit as drafts
+
 Open one RSSD Center space as a vault of drafts, see each work's sync state, and save edits back as **private drafts**. Nothing here publishes.
 
 ## Use
