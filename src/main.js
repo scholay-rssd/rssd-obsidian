@@ -28,9 +28,13 @@ const TOKEN_SECRET='rssd-center-device-token';
 export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_ORIGIN:'https://post.linkc.cloud';
 const DEFAULTS={origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
-// The right sidebar's RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is
-// where you choose between them.
+// The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
+// between them.
 const SIDEBAR_VIEWS=Object.freeze([['rssd-article','article'],['rssd-cards','cards'],['rssd-outline','outline'],['rssd-details','details']]);
+// Article and Cards are page-sized, so they open as tabs beside the note in the editor area; the right sidebar
+// keeps the narrow panels. Wherever a tab is moved afterwards, it is reopened there.
+const EDITOR_VIEWS=Object.freeze(['rssd-article','rssd-cards']);
+const RIGHT_VIEWS=Object.freeze(SIDEBAR_VIEWS.map(([type])=>type).filter(type=>!EDITOR_VIEWS.includes(type)));
 // Work notes show their title and date; the stable ID file name stays underneath. The inline title and the
 // header title are hidden for them because editing either one renames the file and would stop its sync.
 const TITLE_STYLE=`
@@ -652,29 +656,32 @@ export default class RssdPlugin extends Plugin{
   }catch(error){console.error('RSSD cards save',error);new Notice('Could not save the cards: '+error.message,10000);}
  }
  /**
-  * Once per vault that edits works, arrange the right sidebar: the four RSSD tabs (Article, Cards, Outline,
-  * Details) in that order, with Article in front, and none of Obsidian's link, tag, vault-properties or outline
+  * Once per vault that edits works, arrange the right sidebar: the RSSD Outline and Details tabs, with Details
+  * in front, and none of Obsidian's link, tag, vault-properties or outline
   * tabs (any of them can be reopened from the command palette). On the first arrangement, now that the
   * properties have a place of their own, the properties block at the top of each note is hidden; the vault's
-  * earlier choice is kept so it can be restored. Panels left by earlier versions are replaced.
+  * earlier choice is kept so it can be restored. Panels left by earlier versions are replaced, and the Article
+  * and Card previews that earlier versions kept in the right sidebar are closed there: they now open beside the
+  * note when asked for.
   */
  async tidySidebar(){
   const version=this.settings.layoutVersion||0;
-  if(version>=6||!this.settings.workspaceId||Platform.isMobile)return false;
+  if(version>=7||!this.settings.workspaceId||Platform.isMobile)return false;
   const workspace=this.app.workspace,created=new Set();
   if(version<5){
   // Add the new tabs before closing anything: an emptied sidebar is refilled by Obsidian with its default tabs.
-  for(const [type] of SIDEBAR_VIEWS){const leaf=workspace.getRightLeaf(false);if(!leaf)break;await leaf.setViewState({type,active:false});created.add(leaf);}
+  for(const type of RIGHT_VIEWS){const leaf=workspace.getRightLeaf(false);if(!leaf)break;await leaf.setViewState({type,active:false});created.add(leaf);}
   for(const type of ['rssd-preview','rssd-wechat',...SIDEBAR_VIEWS.map(([type])=>type)])for(const leaf of workspace.getLeavesOfType(type))if(!created.has(leaf))leaf.detach();
   for(const type of ['backlink','outgoing-link','tag','all-properties','outline'])for(const leaf of workspace.getLeavesOfType(type))if(leaf.getRoot?.()===workspace.rightSplit)leaf.detach();
-  const first=[...created][0];if(first)workspace.revealLeaf(first);
+  const front=[...created].at(-1);if(front)workspace.revealLeaf(front);
   }
+  for(const type of EDITOR_VIEWS)for(const leaf of workspace.getLeavesOfType(type))if(leaf.getRoot?.()===workspace.rightSplit)leaf.detach();
   // The Works list sits in the left sidebar, in front of the file tree.
   await this.openWorks();
   const vault=this.app.vault,before=vault.getConfig?.('propertiesInDocument');
   // Only on the first arrangement, so a vault that brought the properties back keeps them.
   if(version<2&&typeof vault.setConfig==='function'&&before!=='hidden'){this.settings.propertiesBefore=before||'visible';vault.setConfig('propertiesInDocument','hidden');}
-  this.settings.layoutVersion=6;await this.saveSettings();
+  this.settings.layoutVersion=7;await this.saveSettings();
   return true;
  }
  /**
@@ -690,11 +697,19 @@ export default class RssdPlugin extends Plugin{
   for(const type of ['backlink','outgoing-link','tag','all-properties','outline'])for(const leaf of workspace.getLeavesOfType(type))if(inRight(leaf)){leaf.detach();closed++;}
   return closed;
  }
- /** Show one of the RSSD sidebar tabs, opening it if it was closed. */
+ /** Show one of the RSSD tabs where it is, or open it: the previews beside the note, the panels in the right sidebar. */
  async openView(type){
   const workspace=this.app.workspace;let leaf=workspace.getLeavesOfType(type)[0];
-  if(!leaf){leaf=workspace.getRightLeaf(false);if(!leaf)return;await leaf.setViewState({type,active:true});}
+  if(!leaf){leaf=EDITOR_VIEWS.includes(type)?this.besideNote(type):workspace.getRightLeaf(false);if(!leaf)return;await leaf.setViewState({type,active:true});}
   workspace.revealLeaf(leaf);
+ }
+ /** A new tab for a preview: next to the other preview if that is open in the editor area, else split beside the note. */
+ besideNote(type){
+  const workspace=this.app.workspace;
+  const sibling=EDITOR_VIEWS.filter(t=>t!==type).flatMap(t=>workspace.getLeavesOfType(t)).find(leaf=>leaf.getRoot?.()===workspace.rootSplit);
+  if(sibling){workspace.setActiveLeaf(sibling,{focus:false});return workspace.getLeaf('tab');}
+  const work=this.currentWork(),note=work&&workspace.getLeavesOfType('markdown').find(leaf=>leaf.view?.file===work);
+  return note&&!Platform.isMobile?workspace.createLeafBySplit(note,'vertical'):workspace.getLeaf('tab');
  }
  openDetails(){return this.openView('rssd-details');}
  /** The work open in the editor, even while a sidebar tab has the focus. */
@@ -736,7 +751,7 @@ class RssdSettings extends PluginSettingTab{
    .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
   new Setting(containerEl).setName('Command links').setDesc('Allow local commands to drive this vault. Each request has its own receipt.').addToggle(t=>t.setValue(!!s.allowAutomation).onChange(async v=>{s.allowAutomation=v;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Automatic sync').setDesc('Periodically update from the Center and save changed works as private drafts. Conflicts and read-only spaces need attention; this never publishes.').addToggle(t=>t.setValue(s.autoSync!==false).onChange(async v=>{s.autoSync=v;await this.plugin.saveSettings();}));
-  new Setting(containerEl).setName('Right sidebar').setDesc('Keep only the RSSD tabs (Article, Cards, Outline, Details) in the right sidebar. Turn off to let Obsidian keep its backlinks, outgoing links, tags, all-properties and outline tabs there.')
+  new Setting(containerEl).setName('Right sidebar').setDesc('Keep only the RSSD tabs (Outline, Details) in the right sidebar. Turn off to let Obsidian keep its backlinks, outgoing links, tags, all-properties and outline tabs there.')
    .addToggle(t=>t.setValue(s.tidyRightSidebar!==false).onChange(async v=>{s.tidyRightSidebar=v;await this.plugin.saveSettings();if(v)this.plugin.closeDefaultTabs();}));
   new Setting(containerEl).setName('Properties in the article').setDesc('Work details are edited under Details in the RSSD panel in the right sidebar, so the properties block at the top of each note is hidden. Show it again here.')
    .addButton(b=>b.setButtonText('Show in article').onClick(async()=>{await this.plugin.restoreProperties();new Notice('The properties block is shown in notes again.');}));
