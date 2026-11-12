@@ -12,6 +12,7 @@ import {saveFailureMessage,saveManySummary} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
 import {workLabel,labelText} from './titles.mjs';
+import {cardChips,mediaName,textLength,lengthText} from './work-cards.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
 import {wechatHtml,copyRich} from './wechat.mjs';
@@ -57,7 +58,9 @@ const TITLE_STYLE=`
 .rssd-preview-host{display:block}
 .rssd-works{display:flex;flex-direction:column;padding:0!important}
 .rssd-works-top{position:sticky;top:0;z-index:2;padding:var(--size-4-2) var(--size-4-2) var(--size-4-1);background:var(--background-secondary);border-bottom:1px solid var(--background-modifier-border)}
-.rssd-works-search{width:100%;font-size:var(--font-ui-small)}
+.rssd-works-bar{display:flex;align-items:center;gap:var(--size-2-2)}
+.rssd-works-search{flex:1 1 auto;min-width:0;width:100%;font-size:var(--font-ui-small)}
+.rssd-works-layout{flex:0 0 auto}
 .rssd-works-filters{display:flex;gap:var(--size-2-2);margin-top:var(--size-4-1);flex-wrap:wrap}
 .rssd-works button.rssd-works-chip{height:auto;padding:1px 8px;border-radius:999px;border:1px solid var(--background-modifier-border);background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
 .rssd-works button.rssd-works-chip.is-active{background:var(--interactive-accent);border-color:var(--interactive-accent);color:var(--text-on-accent)}
@@ -81,6 +84,24 @@ const TITLE_STYLE=`
 .rssd-works-foot{position:sticky;bottom:0;display:flex;align-items:center;gap:var(--size-4-2);padding:var(--size-4-1) var(--size-4-2);border-top:1px solid var(--background-modifier-border);background:var(--background-secondary);color:var(--text-muted);font-size:var(--font-ui-smaller)}
 .rssd-works-pulled{flex:1 1 auto}
 .rssd-works button.rssd-works-pull{height:auto;padding:2px 10px;font-size:var(--font-ui-smaller)}
+/* Cards: the title, what needs attention, the first picture, then the date, length and picture count. The
+   open work's card also carries its actions. */
+.rssd-works-card{display:grid;grid-template-columns:minmax(0,1fr) 40px;gap:4px var(--size-4-2);margin:0 2px 6px;padding:7px 8px 6px;border:1px solid var(--background-modifier-border);border-radius:var(--radius-m);background:var(--background-primary);cursor:pointer}
+.rssd-works-card:hover{border-color:var(--background-modifier-border-hover)}
+.rssd-works-card.is-active{border-color:var(--interactive-accent)}
+.rssd-works-card-body{min-width:0}
+.rssd-works-card-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;color:var(--text-normal);font-size:var(--font-ui-small);font-weight:var(--font-medium);line-height:1.35}
+.rssd-works-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;min-height:18px}
+.rssd-works-badge{padding:0 6px;border:1px solid var(--background-modifier-border);border-radius:999px;color:var(--text-muted);font-size:var(--font-ui-smaller);line-height:16px;white-space:nowrap}
+.rssd-works-badge.is-warning{border-color:transparent;background:color-mix(in srgb,var(--color-orange) 16%,transparent);color:var(--color-orange)}
+.rssd-works-badge.is-danger{border-color:transparent;background:color-mix(in srgb,var(--color-red) 14%,transparent);color:var(--color-red)}
+.rssd-works-badge.is-site{border-color:transparent;background:color-mix(in srgb,var(--color-blue) 14%,transparent);color:var(--color-blue)}
+.rssd-works-thumb{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:40px;height:40px;border:1px solid var(--background-modifier-border);border-radius:var(--radius-s);overflow:hidden;background:var(--background-secondary);color:var(--text-faint)}
+.rssd-works-thumb img{display:block;width:100%;height:100%;object-fit:cover}
+.rssd-works-thumb svg{width:16px;height:16px}
+.rssd-works-card-meta{grid-column:1/-1;overflow:hidden;color:var(--text-faint);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}
+.rssd-works-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px;margin-top:2px;padding-top:6px;border-top:1px solid var(--background-modifier-border)}
+.rssd-works button.rssd-works-action{height:auto;padding:2px 8px;font-size:var(--font-ui-smaller)}
 .rssd-details,.rssd-outline{padding:var(--size-4-2) var(--size-4-3);font-size:var(--font-ui-small)}
 .rssd-outline-item{display:block;width:100%;text-align:left;padding:3px var(--size-2-2);border-radius:var(--radius-s);color:var(--text-muted);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rssd-outline-item:hover{background:var(--background-modifier-hover);color:var(--text-normal)}
@@ -731,7 +752,8 @@ class RssdSettings extends PluginSettingTab{
 const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not updated from the Center yet'};
 const WORKS_PAGE=60;
 class WorksView extends ItemView{
- constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.filter='all';this.lang='zh';this.collapsed=new Set();this.limits=new Map();this.states=new Map();this.timer=null;this.filling=false;}
+ constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.filter='all';this.lang='zh';this.collapsed=new Set();this.limits=new Map();this.states=new Map();this.sizes=new Map();this.shown=new Map();this.timer=null;this.filling=false;
+  this.layout=this.app.loadLocalStorage?.('rssd-works-layout')==='list'?'list':'cards';}
  getViewType(){return 'rssd-works';}
  getDisplayText(){return 'Works';}
  getIcon(){return 'library';}
@@ -741,8 +763,16 @@ class WorksView extends ItemView{
  build(){
   const el=this.contentEl;el.empty();el.addClass('rssd-works');
   const top=el.createDiv({cls:'rssd-works-top'});
-  const search=top.createEl('input',{type:'search',cls:'rssd-works-search',attr:{placeholder:'Search titles and summaries'}});
+  const bar=top.createDiv({cls:'rssd-works-bar'});
+  const search=bar.createEl('input',{type:'search',cls:'rssd-works-search',attr:{placeholder:'Search titles and summaries'}});
   search.addEventListener('input',()=>{this.query=search.value;this.render();});
+  // Cards or one line per work; remembered on this device only.
+  const layout=bar.createDiv({cls:'clickable-icon rssd-works-layout',attr:{role:'button',tabindex:'0'}});
+  const showLayout=()=>{layout.empty();setIcon(layout,this.layout==='cards'?'list':'layout-list');layout.setAttribute('aria-label',this.layout==='cards'?'Show as a list':'Show as cards');};
+  const switchLayout=()=>{this.layout=this.layout==='cards'?'list':'cards';this.app.saveLocalStorage?.('rssd-works-layout',this.layout);showLayout();this.render();};
+  layout.addEventListener('click',switchLayout);
+  layout.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();switchLayout();}});
+  showLayout();
   this.filters=top.createDiv({cls:'rssd-works-filters'});
   this.list=el.createDiv({cls:'rssd-works-list'});
   this.foot=el.createDiv({cls:'rssd-works-foot'});
@@ -751,7 +781,8 @@ class WorksView extends ItemView{
   this.registerEvent(this.app.vault.on('modify',file=>{this.states.delete(file.path);later();}));
   for(const event of ['create','delete','rename'])this.registerEvent(this.app.vault.on(event,later));
   this.registerEvent(this.app.workspace.on('file-open',()=>this.mark()));
-  this.registerInterval(window.setInterval(()=>this.renderFoot(),60000));
+  // Relative times (the last update, "Edited 12 min ago") move on by themselves.
+  this.registerInterval(window.setInterval(()=>{this.renderFoot();for(const path of this.shown.keys())if(this.states.get(path)?.state==='edited')this.refreshItem(path);},60000));
   this.app.workspace.onLayoutReady(()=>this.render());
  }
  async onClose(){window.clearTimeout(this.timer);}
@@ -762,7 +793,9 @@ class WorksView extends ItemView{
    if(!this.plugin.isWork(file))continue;
    const p=this.app.metadataCache.getFileCache(file)?.frontmatter;if(!p?.['rssd-id'])continue;
    items.push({file,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
-    section:String(p['rssd-section']||''),author:String(p.author??''),category:String(p.category??'')});
+    section:String(p['rssd-section']||''),author:String(p.author??''),category:String(p.category??''),
+    version:p['rssd-version'],publishedVersion:p['rssd-published-version'],
+    media:(this.app.metadataCache.getFileCache(file)?.embeds||[]).map(embed=>mediaName(embed.link)).filter(Boolean)});
   }
   return items;
  }
@@ -782,6 +815,13 @@ class WorksView extends ItemView{
    }
   }catch{state='synced';}
   this.states.set(file.path,{key,state});return state;
+ }
+ /** The body's length for its card, counted once per version of the note. Returns whether it changed. */
+ async measure(work){
+  const file=work.file,key=file.path+':'+file.stat.mtime;
+  if(this.sizes.get(file.path)?.key===key)return false;
+  let length=null;try{length=textLength(await this.app.vault.cachedRead(file));}catch{}
+  this.sizes.set(file.path,{key,length});return true;
  }
  sectionNames(){
   const site=wechatSite(this.plugin.settings.workspaceId);
@@ -816,7 +856,7 @@ class WorksView extends ItemView{
   const groups=new Map();
   for(const work of shown){const key=work.section||'';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(work);}
   const order=key=>names.get(key)?.order??999;
-  this.list.empty();
+  this.list.empty();this.list.toggleClass('is-cards',this.layout==='cards');this.shown.clear();
   if(!shown.length)this.list.createDiv({cls:'rssd-works-empty',text:all.length?'No works match.':'No works yet. Use Update to get them from the Center.'});
   for(const key of [...groups.keys()].sort((a,b)=>order(a)-order(b)||a.localeCompare(b))){
    // Newest first; works of the same day by title.
@@ -829,12 +869,45 @@ class WorksView extends ItemView{
    head.addEventListener('click',()=>{if(this.collapsed.has(key))this.collapsed.delete(key);else this.collapsed.add(key);this.render();});
    if(this.collapsed.has(key))continue;
    const limit=this.limits.get(key)||WORKS_PAGE;
-   for(const work of items.slice(0,limit))this.row(group,work);
+   for(const work of items.slice(0,limit))this.item(group,work);
    if(items.length>limit){const more=group.createDiv({cls:'rssd-works-more',text:'Show '+Math.min(WORKS_PAGE,items.length-limit)+' more of '+(items.length-limit)});more.addEventListener('click',()=>{this.limits.set(key,limit+WORKS_PAGE);this.render();});}
   }
   // Save takes what the Edited filter counts: the edited works of the language on screen.
   this.edited=all.filter(work=>this.states.get(work.file.path)?.state==='edited').map(work=>work.file);
   this.mark();this.renderFoot();void this.fillStates(every);
+ }
+ item(group,work){this.shown.set(work.file.path,work);return this.layout==='cards'?this.card(group,work):this.row(group,work);}
+ /** Draw one work again in place, after its state or length became known. */
+ refreshItem(path){
+  const old=this.list?.querySelector(`[data-path="${CSS.escape(path)}"]`),work=this.shown.get(path);
+  if(!old||!work)return;
+  const fresh=this.item(old.parentElement,work);old.replaceWith(fresh);
+  if(old.classList.contains('is-active'))this.mark();
+ }
+ card(group,work){
+  const card=group.createDiv({cls:'rssd-works-card'});card.dataset.path=work.file.path;
+  const state=this.states.get(work.file.path)?.state,size=this.sizes.get(work.file.path)?.length;
+  const body=card.createDiv({cls:'rssd-works-card-body'});
+  body.createDiv({cls:'rssd-works-card-title',text:work.title});
+  const badges=body.createDiv({cls:'rssd-works-badges'});
+  for(const chip of cardChips({...work,state,modified:work.file.stat.mtime})){const badge=badges.createSpan({cls:'rssd-works-badge is-'+chip.tone,text:chip.text});badge.setAttribute('aria-label',chip.title);}
+  // The first picture, read from the vault's media folder; nothing is downloaded.
+  const thumb=card.createDiv({cls:'rssd-works-thumb'}),picture=work.media[0]?this.app.vault.getAbstractFileByPath(MEDIA_FOLDER+'/'+work.media[0]):null;
+  if(picture instanceof TFile)thumb.createEl('img',{attr:{src:this.app.vault.getResourcePath(picture),alt:'',loading:'lazy',decoding:'async'}});
+  else{setIcon(thumb,'image-off');thumb.setAttribute('aria-label','No picture');}
+  const pictures=work.media.length;
+  card.createDiv({cls:'rssd-works-card-meta',text:[work.date.slice(5),size!=null?lengthText(size,work.locale):'',pictures?pictures+(pictures===1?' image':' images'):''].filter(Boolean).join(' · ')});
+  card.addEventListener('click',()=>void this.openWork(work.file));
+  return card;
+ }
+ /** Actions for the open work's card. Save appears only when there is something to save. */
+ actions(card,work){
+  const bar=card.createDiv({cls:'rssd-works-actions'}),state=this.states.get(work.file.path)?.state;
+  const add=(text,label,run)=>{const button=bar.createEl('button',{cls:'rssd-works-action',text});button.setAttribute('aria-label',label);button.addEventListener('click',event=>{event.stopPropagation();void run();});return button;};
+  if(state==='edited'&&!Platform.isMobile)add('Save','Save this work to the Center as a private draft. Nothing is published.',async()=>{await this.plugin.save(work.file);this.states.delete(work.file.path);this.render();}).addClass('mod-cta');
+  add('Preview','Preview the article layout',()=>this.plugin.openPreview());
+  add('Cards','Preview the work as cards',()=>this.plugin.openView('rssd-cards'));
+  add('Details','Edit the title, summary, author and category',()=>this.plugin.openDetails());
  }
  row(group,work){
   const row=group.createDiv({cls:'rssd-works-row'});row.dataset.path=work.file.path;
@@ -844,13 +917,19 @@ class WorksView extends ItemView{
   row.createSpan({cls:'rssd-works-title',text:work.title});
   row.setAttribute('aria-label',[work.title,work.date,WORK_STATES[state]].filter(Boolean).join(' · '));
   row.addEventListener('click',()=>void this.openWork(work.file));
+  return row;
  }
  // Not named open(): that is Obsidian's own method for starting a view, and replacing it stops the view from ever opening.
  async openWork(file){await this.app.workspace.getLeaf(false).openFile(file);this.mark();}
  /** Highlight the work open in the editor. */
  mark(){
   const current=this.plugin.currentWork()?.path;
-  for(const row of this.list?.querySelectorAll('.rssd-works-row')||[])row.toggleClass('is-active',row.dataset.path===current);
+  for(const item of this.list?.querySelectorAll('[data-path]')||[]){
+   const active=item.dataset.path===current;item.toggleClass('is-active',active);
+   if(!item.classList.contains('rssd-works-card'))continue;
+   const bar=item.querySelector('.rssd-works-actions'),work=this.shown.get(item.dataset.path);
+   if(active&&!bar&&work)this.actions(item,work);else if(!active&&bar)bar.remove();
+  }
  }
  /** Work out each work's state in the background, a few at a time, and show it as it arrives. */
  async fillStates(all){
@@ -859,7 +938,9 @@ class WorksView extends ItemView{
    for(let i=0;i<all.length;i++){
     const work=all[i],before=this.states.get(work.file.path)?.state;
     const state=await this.stateOf(work);
-    if(state!==before){changed=true;const dot=this.list.querySelector(`.rssd-works-row[data-path="${CSS.escape(work.file.path)}"] .rssd-works-dot`);if(dot){dot.className='rssd-works-dot is-'+state;dot.setAttribute('aria-label',WORK_STATES[state]);}}
+    const measured=this.layout==='cards'&&await this.measure(work);
+    if(state!==before)changed=true;
+    if(state!==before||measured)this.refreshItem(work.file.path);
     if(i%40===39)await new Promise(resolve=>window.setTimeout(resolve,0));
    }
   }finally{this.filling=false;}
