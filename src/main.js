@@ -181,11 +181,8 @@ body.rssd-one-row .mod-left-split .workspace-tab-header-container .workspace-tab
 .rssd-works-card.is-active{border-color:var(--interactive-accent)}
 .rssd-works-card-body{min-width:0}
 .rssd-works-card-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;color:var(--text-normal);font-size:var(--font-ui-small);font-weight:var(--font-medium);line-height:1.35}
-.rssd-works-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
-.rssd-works-badge{padding:0 6px;border:1px solid var(--background-modifier-border);border-radius:999px;color:var(--text-muted);font-size:var(--font-ui-smaller);line-height:16px;white-space:nowrap}
-.rssd-works-badge.is-warning{border-color:transparent;background:color-mix(in srgb,var(--color-orange) 16%,transparent);color:var(--color-orange)}
-.rssd-works-badge.is-danger{border-color:transparent;background:color-mix(in srgb,var(--color-red) 14%,transparent);color:var(--color-red)}
-.rssd-works-badge.is-site{border-color:transparent;background:color-mix(in srgb,var(--color-blue) 14%,transparent);color:var(--color-blue)}
+.rssd-works-status{cursor:help}.rssd-works-status .rssd-works-fact-icon svg{width:14px;height:14px}
+.rssd-works-status.is-warning{color:var(--color-orange)}.rssd-works-status.is-danger{color:var(--color-red)}.rssd-works-status.is-site{color:var(--color-blue)}.rssd-works-status.is-plain{color:var(--text-faint)}
 .rssd-works-facts{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
 .rssd-works-fact,.rssd-works-writer{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
 .rssd-works-fact-icon{display:flex}.rssd-works-fact-icon svg{width:12px;height:12px}
@@ -1043,7 +1040,7 @@ class WorksFilterPanel{
 const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not updated from the Center yet'};
 const WORKS_PAGE=60;
 // Where writers ({agent, model, machine}) are kept on this device. A new name makes every writer be read again after a fix.
-const WRITERS_KEY='rssd-writers-5';
+const WRITERS_KEY='rssd-writers-6';
 const FILTER_KEY='rssd-works-filter';
 class WorksView extends ItemView{
  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.limit=WORKS_PAGE;this.panel=null;this.states=new Map();
@@ -1152,7 +1149,8 @@ class WorksView extends ItemView{
    let writer=null;
    this.machineAsked.add(this.writerKey(work));
    try{const notes=await client.privateNotes(this.plugin.settings.workspaceId,work.id,Number(work.version)),found=writerOf(notes?.privateEditorial),machine=typeof notes?.firstMachine?.name==='string'?notes.firstMachine.name:'';
-    const checks=hasOpenChecks(notes?.privateEditorial);
+    // The open checks themselves, so the card can show them on hover.
+    const checks=hasOpenChecks(notes?.privateEditorial)?String(notes.privateEditorial.internalNotes.verification).trim().slice(0,600):'';
     writer=found||machine||checks?{agent:found?.agent||'',model:found?.model||'',machine,checks}:null;}
    catch(error){if(error?.status!==404){stopped=true;return;}}
    this.writers[this.writerKey(work)]=writer;added++;this.refreshItem(work.file.path);
@@ -1234,10 +1232,10 @@ class WorksView extends ItemView{
   if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
   title.appendText(work.title);
   // Most works need nothing, so the chip row is only there when there is a chip.
-  const chips=cardChips({...work,state,checks:this.writerFor(work)?.checks}),badges=chips.length?body.createDiv({cls:'rssd-works-badges'}):null;
-  for(const chip of chips){const badge=badges.createSpan({cls:'rssd-works-badge is-'+chip.tone,text:chip.text});badge.setAttribute('aria-label',chip.title);}
   // What the work is made of. Length, references and the brand line arrive with the background pass.
   const row=card.createDiv({cls:'rssd-works-facts'}),pictures=work.media.length,references=facts?.references;
+  // What needs attention leads the row as coloured icons; hovering one says what it is, in full.
+  for(const chip of cardChips({...work,state,checks:this.writerFor(work)?.checks})){const mark=row.createSpan({cls:'rssd-works-fact rssd-works-status is-'+chip.tone});setIcon(mark.createSpan({cls:'rssd-works-fact-icon'}),chip.icon);mark.setAttribute('aria-label',chip.title);}
   const fact=(icon,text,label,{missing=false,absent=false}={})=>{const el=row.createSpan({cls:'rssd-works-fact'+(missing||absent?' is-missing':'')+(absent?' is-absent':'')});setIcon(el.createSpan({cls:'rssd-works-fact-icon'}),icon);el.createSpan({text});el.setAttribute('aria-label',label);};
   fact('calendar',work.date.slice(5)||'—',work.date?'Date '+work.date:'No date',{missing:!work.date});
   if(facts?.length!=null)fact('type',lengthText(facts.length,work.locale),'Length');
