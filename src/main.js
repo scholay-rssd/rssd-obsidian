@@ -253,6 +253,8 @@ export default class RssdPlugin extends Plugin{
   // First launch: one button logs in and opens the reader. Afterwards the reader opens from the ribbon.
   // Work details have a tab of their own; the properties block in the article is hidden once they are there.
   this.addCommand({id:'details',name:'Show work details',callback:()=>this.openDetails()});
+  // The work in front is the one RSSD tabs and the next card click follow.
+  this.registerEvent(this.app.workspace.on('file-open',file=>{if(file&&this.isWork(file))this.shownWork=file;}));
   this.app.workspace.onLayoutReady(()=>{void this.tidySidebar().catch(error=>console.error('RSSD sidebar',error));});
   this.app.workspace.onLayoutReady(()=>{if(!this.token())new WelcomeModal(this.app,this).open();});
   this.autoSync=new AutoSync({
@@ -744,9 +746,33 @@ export default class RssdPlugin extends Plugin{
  openDetails(){return this.openView('rssd-details');}
  openOutline(){return this.openView('rssd-outline');}
  /** The work open in the editor, even while a sidebar tab has the focus. */
+ /**
+  * Open a work from the Works list. A click replaces: the work goes into the note tab the plug-in used last, and
+  * every RSSD tab switches to it, while whichever tab was in front (the note, Article, Cards…) stays in front.
+  * ⌘/Ctrl-click opens it in a new note tab and leaves the other note tabs alone.
+  */
+ async openWorkFile(file,{newTab=false}={}){
+  const workspace=this.app.workspace,previous=this.shownWork;this.shownWork=file;
+  if(newTab){const leaf=workspace.getLeaf('tab');await leaf.openFile(file);return leaf;}
+  const notes=workspace.getLeavesOfType('markdown').filter(leaf=>{const held=this.leafFile(leaf);return leaf.getRoot?.()===workspace.rootSplit&&held&&this.isWork(held);});
+  const leaf=notes.find(leaf=>this.leafFile(leaf)===previous)||notes.sort((a,b)=>(b.activeTime||0)-(a.activeTime||0))[0];
+  if(!leaf){const fresh=workspace.getLeaf(false);await fresh.openFile(file);return fresh;}
+  const front=workspace.getMostRecentLeaf?.(),keepFront=!!front&&front!==leaf&&EDITOR_VIEWS.includes(front.view?.getViewType?.());
+  await leaf.openFile(file,{active:!keepFront});
+  this.followWork(file);
+  return leaf;
+ }
+ /** Point every open RSSD tab at a work; ones not loaded yet take it when shown. */
+ followWork(file){
+  this.shownWork=file;
+  for(const type of EDITOR_VIEWS)for(const leaf of this.app.workspace.getLeavesOfType(type))if(typeof leaf.view?.show==='function')void leaf.view.show(file);
+  this.refreshTitles?.();
+ }
  currentWork(){
   const workspace=this.app.workspace,active=workspace.getActiveFile();
   if(active&&this.isWork(active))return active;
+  // The work last opened from the list or brought to the front, while a note tab still holds it.
+  const last=this.shownWork;if(last&&workspace.getLeavesOfType('markdown').some(leaf=>this.leafFile(leaf)===last))return last;
   const recent=workspace.getMostRecentLeaf?.()?.view?.file;if(recent&&this.isWork(recent))return recent;
   return workspace.getLeavesOfType('markdown').map(leaf=>this.leafFile(leaf)).find(file=>file&&this.isWork(file))||null;
  }
@@ -1077,7 +1103,7 @@ class WorksView extends ItemView{
    // The machine that saved the first version, by its device name.
    if(writer?.machine){const machine=line.createSpan({cls:'rssd-works-machine'});setIcon(machine.createSpan({cls:'rssd-works-fact-icon'}),'laptop');machine.createSpan({text:writer.machine});machine.setAttribute('aria-label','First written on '+writer.machine);}
   }
-  card.addEventListener('click',()=>void this.openWork(work.file));
+  card.addEventListener('click',event=>void this.openWork(work.file,{newTab:event.metaKey||event.ctrlKey}));
   return card;
  }
  /** Actions for the open work's card. Save appears only when there is something to save. */
@@ -1102,11 +1128,11 @@ class WorksView extends ItemView{
   if(sectionName){const tag=row.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);}
   row.createSpan({cls:'rssd-works-title',text:work.title});
   row.setAttribute('aria-label',[work.title,work.date,WORK_STATES[state]].filter(Boolean).join(' · '));
-  row.addEventListener('click',()=>void this.openWork(work.file));
+  row.addEventListener('click',event=>void this.openWork(work.file,{newTab:event.metaKey||event.ctrlKey}));
   return row;
  }
  // Not named open(): that is Obsidian's own method for starting a view, and replacing it stops the view from ever opening.
- async openWork(file){await this.app.workspace.getLeaf(false).openFile(file);this.mark();}
+ async openWork(file,options){await this.plugin.openWorkFile(file,options);this.mark();}
  /** Highlight the work open in the editor. */
  mark(){
   const current=this.plugin.currentWork()?.path;
