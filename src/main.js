@@ -467,8 +467,11 @@ export default class RssdPlugin extends Plugin{
      }else if(el.dataset.rssdLabel!==undefined){delete el.dataset.rssdLabel;el.setText(item.file?.basename||path.split('/').at(-1).replace(/\.md$/,''));item.selfEl?.removeAttribute('aria-label');}
     }
    }
+   // A tab Obsidian has not loaded yet (behind others after a restart) has no file on its view; its saved state
+   // still says which note it holds, so it is named now rather than when it is first shown.
+   const savedFile=leaf=>{const path=leaf.getViewState?.()?.state?.file,file=typeof path==='string'?this.app.vault.getAbstractFileByPath(path):null;return file instanceof TFile?file:null;};
    for(const leaf of this.app.workspace.getLeavesOfType('markdown')){
-    const view=leaf.view,file=view?.file,label=restore?null:this.workLabel(file);
+    const view=leaf.view,file=view?.file||savedFile(leaf),label=restore?null:this.workLabel(file);
     view?.containerEl?.toggleClass('rssd-work-note',!!label);
     const container=view?.titleContainerEl||view?.containerEl?.querySelector('.view-header-title-container');
     let header=container?.querySelector('.rssd-work-header');
@@ -479,6 +482,13 @@ export default class RssdPlugin extends Plugin{
     }else header?.remove();
     const tab=leaf.tabHeaderInnerTitleEl;
     if(tab&&label)tab.setText(labelText(label));else if(tab&&restore&&file)tab.setText(file.basename);
+   }
+   // A loaded RSSD tab names itself after the work it shows; one not loaded yet will show the open work.
+   const work=restore?null:this.workLabel(this.currentWork());
+   for(const [type,id] of SIDEBAR_VIEWS)for(const leaf of this.app.workspace.getLeavesOfType(type)){
+    if(leaf.view instanceof LayoutPreview)continue;
+    const title=tabTitle(PREVIEW_TARGETS.find(target=>target.id===id).label,work);
+    if(title)leaf.tabHeaderInnerTitleEl?.setText(title);
    }
   }catch(error){console.error('RSSD titles',error);}
  }

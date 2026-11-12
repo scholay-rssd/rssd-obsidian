@@ -162,6 +162,17 @@ test('the layout is arranged once: the Works list on the left, RSSD tabs only ne
  assert.equal(await earlier.tidySidebar(),true);assert.equal(conf.propertiesInDocument,'visible');
  const reader=plugin();reader.settings.workspaceId='';assert.equal(await reader.tidySidebar(),false);
 });
+test('tabs Obsidian has not loaded yet are named for their work too',()=>{
+ const p=plugin(),work=Object.assign(new mock.TFile(),{path:'Works/one.md',extension:'md',basename:'one'}),texts=new Map();
+ const header=name=>({setText:text=>texts.set(name,text)});
+ const note={view:{},getViewState:()=>({type:'markdown',state:{file:'Works/one.md'}}),tabHeaderInnerTitleEl:header('note')};
+ const article={view:{},tabHeaderInnerTitleEl:header('article')},details={view:{},tabHeaderInnerTitleEl:header('details')};
+ p.app.workspace={getLeavesOfType:type=>({markdown:[note],'rssd-article':[article],'rssd-details':[details]})[type]||[],getActiveFile:()=>work,getMostRecentLeaf:()=>null};
+ p.app.vault={getAbstractFileByPath:path=>path===work.path?work:null};
+ p.app.metadataCache={getFileCache:file=>file===work?{frontmatter:{title:'生存分析如何读懂未完的随访',date:'2026-10-19'}}:null};
+ p.refreshTitles();
+ assert.deepEqual(Object.fromEntries(texts),{note:'10-19 生存分析如何读懂未完的随访',article:'Article · 生存分析如何读懂未完的随访',details:'Details · 生存分析如何读懂未完的随访'});
+});
 test('the panel finds the open work even while a sidebar tab has the focus',()=>{
  const p=plugin(),work={extension:'md',path:'Works/one.md'},note={extension:'md',path:'Notes/x.md'};
  p.app.workspace={getActiveFile:()=>null,getMostRecentLeaf:()=>({view:{file:work}}),getLeavesOfType:()=>[]};
