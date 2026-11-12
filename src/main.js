@@ -467,11 +467,8 @@ export default class RssdPlugin extends Plugin{
      }else if(el.dataset.rssdLabel!==undefined){delete el.dataset.rssdLabel;el.setText(item.file?.basename||path.split('/').at(-1).replace(/\.md$/,''));item.selfEl?.removeAttribute('aria-label');}
     }
    }
-   // A tab Obsidian has not loaded yet (behind others after a restart) has no file on its view; its saved state
-   // still says which note it holds, so it is named now rather than when it is first shown.
-   const savedFile=leaf=>{const path=leaf.getViewState?.()?.state?.file,file=typeof path==='string'?this.app.vault.getAbstractFileByPath(path):null;return file instanceof TFile?file:null;};
    for(const leaf of this.app.workspace.getLeavesOfType('markdown')){
-    const view=leaf.view,file=view?.file||savedFile(leaf),label=restore?null:this.workLabel(file);
+    const view=leaf.view,file=this.leafFile(leaf),label=restore?null:this.workLabel(file);
     view?.containerEl?.toggleClass('rssd-work-note',!!label);
     const container=view?.titleContainerEl||view?.containerEl?.querySelector('.view-header-title-container');
     let header=container?.querySelector('.rssd-work-header');
@@ -712,7 +709,14 @@ export default class RssdPlugin extends Plugin{
   const workspace=this.app.workspace,active=workspace.getActiveFile();
   if(active&&this.isWork(active))return active;
   const recent=workspace.getMostRecentLeaf?.()?.view?.file;if(recent&&this.isWork(recent))return recent;
-  return workspace.getLeavesOfType('markdown').map(leaf=>leaf.view?.file).find(file=>file&&this.isWork(file))||null;
+  return workspace.getLeavesOfType('markdown').map(leaf=>this.leafFile(leaf)).find(file=>file&&this.isWork(file))||null;
+ }
+ /** The note a tab holds. A tab Obsidian has not loaded yet (behind others after a restart) has no file on its
+  * view, but its saved state still says which note it is. */
+ leafFile(leaf){
+  if(leaf?.view?.file)return leaf.view.file;
+  const path=leaf?.getViewState?.()?.state?.file,file=typeof path==='string'?this.app.vault.getAbstractFileByPath?.(path):null;
+  return file instanceof TFile?file:null;
  }
  /** Show the properties block at the top of notes again, as the vault had it before the details panel. */
  restoreProperties(){

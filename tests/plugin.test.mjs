@@ -162,12 +162,12 @@ test('the layout is arranged once: the Works list on the left, RSSD tabs only ne
  assert.equal(await earlier.tidySidebar(),true);assert.equal(conf.propertiesInDocument,'visible');
  const reader=plugin();reader.settings.workspaceId='';assert.equal(await reader.tidySidebar(),false);
 });
-test('tabs Obsidian has not loaded yet are named for their work too',()=>{
+test('tabs Obsidian has not loaded yet are named for their work too, even before any note is loaded',()=>{
  const p=plugin(),work=Object.assign(new mock.TFile(),{path:'Works/one.md',extension:'md',basename:'one'}),texts=new Map();
  const header=name=>({setText:text=>texts.set(name,text)});
  const note={view:{},getViewState:()=>({type:'markdown',state:{file:'Works/one.md'}}),tabHeaderInnerTitleEl:header('note')};
  const article={view:{},tabHeaderInnerTitleEl:header('article')},details={view:{},tabHeaderInnerTitleEl:header('details')};
- p.app.workspace={getLeavesOfType:type=>({markdown:[note],'rssd-article':[article],'rssd-details':[details]})[type]||[],getActiveFile:()=>work,getMostRecentLeaf:()=>null};
+ p.app.workspace={getLeavesOfType:type=>({markdown:[note],'rssd-article':[article],'rssd-details':[details]})[type]||[],getActiveFile:()=>null,getMostRecentLeaf:()=>({view:{}})};
  p.app.vault={getAbstractFileByPath:path=>path===work.path?work:null};
  p.app.metadataCache={getFileCache:file=>file===work?{frontmatter:{title:'生存分析如何读懂未完的随访',date:'2026-10-19'}}:null};
  p.refreshTitles();
