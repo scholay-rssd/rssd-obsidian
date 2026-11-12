@@ -39,6 +39,20 @@ test('pull downloads works and images, then reports them synced',async()=>{
  assert.deepEqual(Object.values(await engine.states('metho')),['synced','synced']);
 });
 
+test('pull takes on a website publication of the same version, edited note or not, without touching the note',async()=>{
+ const {engine,vault,store,center}=setup('a-one','b-two');
+ await engine.pull('metho');
+ assert.equal((await store.get('metho','a-one')).publishedVersion??null,null);
+ await edit(vault,'Works/a-one.md','Body','Local edit');
+ const before=await vault.read('Works/a-one.md'),list=center.client.catalog;
+ center.client.catalog=async(...args)=>{const page=await list(...args);return {...page,items:page.items.map(item=>({...item,publishedVersion:item.version}))};};
+ const summary=await engine.pull('metho');
+ assert.deepEqual(summary.skipped,['a-one'],'the edited note is still left alone');
+ assert.equal((await store.get('metho','a-one')).publishedVersion,1,'its baseline now knows the website shows version 1');
+ assert.equal((await store.get('metho','b-two')).publishedVersion,1,'an untouched note is brought up to date too');
+ assert.equal(await vault.read('Works/a-one.md'),before,'the note itself is not rewritten');
+});
+
 test('pull reports which Center work each edition belongs to, unchanged ones included',async()=>{
  const {engine,center}=setup('a-one','b-two'),list=center.client.catalog;
  center.client.catalog=async(...args)=>{const page=await list(...args);return {...page,items:page.items.map(item=>item.articleId==='a-one'?{...item,documentId:'doc-1'}:item)};};
