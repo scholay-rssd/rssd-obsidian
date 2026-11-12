@@ -949,17 +949,19 @@ class WorksView extends ItemView{
   if(this.fetchingWriters||this.layout!=='cards'||!this.plugin.settings.workspaceId)return;
   let client;try{client=this.plugin.client();}catch{return;}
   if(typeof client.privateNotes!=='function')return;
-  this.fetchingWriters=true;let added=0;
+  this.fetchingWriters=true;let added=0,stopped=false;
+  // Four reads at a time: each is a separate request, and one at a time takes minutes for a whole space.
+  const queue=[...new Set(works)].filter(work=>{const version=Number(work.version);return Number.isSafeInteger(version)&&version>=1&&this.writerFor(work)===undefined;});
+  const read=async work=>{
+   let writer=null;
+   try{const found=writerOf((await client.privateNotes(this.plugin.settings.workspaceId,work.id,Number(work.version)))?.privateEditorial);writer=found?{agent:found.agent,model:found.model}:null;}
+   catch(error){if(error?.status!==404){stopped=true;return;}}
+   this.writers[this.writerKey(work)]=writer;added++;this.refreshItem(work.file.path);
+   if(added%25===0)this.saveWriters();
+  };
   try{
-   for(const work of new Set(works)){
-    if(this.layout!=='cards')break;
-    const version=Number(work.version);if(!Number.isSafeInteger(version)||version<1||this.writerFor(work)!==undefined)continue;
-    let writer=null;
-    try{const found=writerOf((await client.privateNotes(this.plugin.settings.workspaceId,work.id,version))?.privateEditorial);writer=found?{agent:found.agent,model:found.model}:null;}
-    catch(error){if(error?.status!==404)break;}
-    this.writers[this.writerKey(work)]=writer;added++;this.refreshItem(work.file.path);
-    if(added%25===0)this.saveWriters();
-   }
+   const lane=async()=>{while(queue.length&&!stopped&&this.layout==='cards')await read(queue.shift());};
+   await Promise.all([lane(),lane(),lane(),lane()]);
   }finally{this.fetchingWriters=false;if(added)this.saveWriters();}
   // Writer filters and the panel's counts depend on the writers read in this pass.
   if(added&&(this.filterState.agents.length||this.filterState.models.length||this.panel))this.render();
