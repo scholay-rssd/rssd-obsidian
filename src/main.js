@@ -235,7 +235,7 @@ export default class RssdPlugin extends Plugin{
   this.settings.boundSpace??=Object.keys(this.settings.baselines).find(k=>Object.keys(this.settings.baselines[k]||{}).length)||'';
   await this.saveSettings();
   this.registerView('rssd-works',leaf=>new WorksView(leaf,this));
-  this.addRibbonIcon('library','Works',()=>this.openWorks());
+  // No ribbon button for the Works list: its own tab in the left sidebar opens it (and the command "Show the Works list").
   this.addCommand({id:'works',name:'Show the Works list',callback:()=>this.openWorks()});
   this.registerView('rssd-reader',leaf=>new ReaderView(leaf,this));
   this.addRibbonIcon('book-open','RSSD reader',()=>this.openReader());
