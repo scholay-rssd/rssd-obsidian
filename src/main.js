@@ -12,7 +12,7 @@ import {saveFailureMessage,saveManySummary} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
 import {workLabel,labelText,tabTitle} from './titles.mjs';
-import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel} from './work-cards.mjs';
+import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel,isBrandLine} from './work-cards.mjs';
 import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER} from './works-filter.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
@@ -38,6 +38,28 @@ const EDITOR_VIEWS=Object.freeze(SIDEBAR_VIEWS.map(([type])=>type));
 // Work notes show their title and date; the stable ID file name stays underneath. The inline title and the
 // header title are hidden for them because editing either one renames the file and would stop its sync.
 const TITLE_STYLE=`
+/* Reading mode of a work note is a proofreading view: a page-width column, Chinese typography, clear heading
+   steps, quiet citation numbers, references set apart, captions under pictures, the brand line marked, and a
+   context line under the title. Editing mode and every other note keep the theme. */
+.rssd-work-note .markdown-reading-view{--file-line-width:680px}
+.rssd-work-note .markdown-reading-view .markdown-preview-view{font-family:"PingFang SC","Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei",var(--font-text);line-height:1.8;letter-spacing:.01em}
+.rssd-work-note .markdown-reading-view p{margin-block:0 1em}
+.rssd-work-note .markdown-reading-view h1{font-size:1.65em;line-height:1.4;margin-block:.2em .4em}
+.rssd-work-note .markdown-reading-view h2{font-size:1.3em;line-height:1.5;margin-block:1.8em .6em;padding-bottom:.3em;border-bottom:1px solid var(--background-modifier-border)}
+.rssd-work-note .markdown-reading-view h3{font-size:1.1em;line-height:1.6;margin-block:1.4em .5em}
+.rssd-work-note .markdown-reading-view sup.footnote-ref{font-size:.7em}
+.rssd-work-note .markdown-reading-view sup.footnote-ref a{color:var(--text-faint);text-decoration:none}
+.rssd-work-note .markdown-reading-view section.footnotes{margin-top:2.4em;padding-top:1em;border-top:1px solid var(--background-modifier-border);color:var(--text-muted);font-size:.9em}
+.rssd-work-note .markdown-reading-view .rssd-reference-block h1,.rssd-work-note .markdown-reading-view .rssd-reference-block h2,.rssd-work-note .markdown-reading-view .rssd-reference-block h3,.rssd-work-note .markdown-reading-view .rssd-reference-block h4{margin-top:2.4em;padding-top:1em;border-top:1px solid var(--background-modifier-border);border-bottom:0;font-size:1em;color:var(--text-muted)}
+.rssd-work-note .markdown-reading-view .rssd-reference-block+div{color:var(--text-muted);font-size:.9em;line-height:1.65}
+.rssd-work-note .markdown-reading-view .rssd-reference-block+div li{margin-block:.35em}
+.rssd-work-note .markdown-reading-view img{display:block;max-width:100%;margin:1.2em auto .4em;border-radius:4px}
+.rssd-figcaption{margin:0 auto 1.2em;max-width:90%;color:var(--text-muted);font-size:.85em;line-height:1.6;text-align:center}
+.rssd-figcaption.is-missing{color:var(--text-error)}
+.rssd-brand-line{position:relative}
+.rssd-brand-line::after{content:"Brand";margin-left:6px;padding:0 5px;border-radius:3px;background:color-mix(in srgb,var(--color-green) 15%,transparent);color:var(--color-green);font-size:.75em;vertical-align:1px}
+.rssd-context{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;margin:0 0 1.8em;color:var(--text-muted);font-family:var(--font-interface);font-size:var(--font-ui-smaller);line-height:1.6}
+.rssd-context-section{padding:0 6px;border-radius:3px;background:color-mix(in srgb,var(--rssd-section,var(--text-muted)) 14%,transparent);color:var(--rssd-section,var(--text-muted))}
 .rssd-work-note .inline-title,.rssd-work-note .view-header-title-parent,.rssd-work-note .view-header-title{display:none}
 .rssd-work-header{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:var(--font-semibold);padding:0 var(--size-2-2)}
 /* Two rows: the views, then the chosen output's styles, its status, refresh and its action. */
@@ -284,6 +306,8 @@ export default class RssdPlugin extends Plugin{
   // First launch: one button logs in and opens the reader. Afterwards the reader opens from the ribbon.
   // Work details have a tab of their own; the properties block in the article is hidden once they are there.
   this.addCommand({id:'details',name:'Show work details',callback:()=>this.openDetails()});
+  // Reading mode of a work note: context line, captions, reference list and brand line (see the reading styles).
+  this.registerMarkdownPostProcessor((el,ctx)=>this.decorateReading(el,ctx));
   // The work in front is the one RSSD tabs and the next card click follow.
   this.registerEvent(this.app.workspace.on('file-open',file=>{if(file&&this.isWork(file))this.shownWork=file;}));
   this.app.workspace.onLayoutReady(()=>{void this.tidySidebar().catch(error=>console.error('RSSD sidebar',error));});
@@ -362,6 +386,37 @@ export default class RssdPlugin extends Plugin{
   return createCenterClient({http,origin:this.settings.origin,token});
  }
  /** Show the Works list in the left sidebar (one left by an earlier version elsewhere is moved there). */
+ /** Marks a work note's reading view as a proofreading view. Runs on each rendered block; never edits the note. */
+ decorateReading(el,ctx){
+  const file=ctx?.sourcePath?this.app.vault.getAbstractFileByPath(ctx.sourcePath):null;
+  if(!(file instanceof TFile)||!this.isWork(file))return;
+  const front=this.app.metadataCache.getFileCache(file)?.frontmatter||{},origin=wechatSite(this.settings.workspaceId)?.origin||'';
+  // Under the title: section, date and who wrote it, as on the work's card.
+  const title=el.querySelector('h1');
+  if(title&&!el.querySelector('.rssd-context')){
+   const line=createDiv({cls:'rssd-context'}),sectionId=String(front['rssd-section']||'');
+   const site=wechatSite(this.settings.workspaceId),section=(SITE_SECTIONS[site?.id]||[]).find(item=>item.id===sectionId);
+   if(section){const tag=line.createSpan({cls:'rssd-context-section',text:section.name}),accent=this.sectionAccentOf(sectionId);if(accent)tag.style.setProperty('--rssd-section',accent);}
+   const date=fieldText(front.date);if(date)line.createSpan({text:date});
+   let writer=null;try{const kept=this.app.loadLocalStorage?.(WRITERS_KEY)||{};writer=kept[this.settings.workspaceId+':'+String(front['rssd-locale']||'zh-CN')+':'+String(front['rssd-id']||'')+':'+front['rssd-version']]||null;}catch{}
+   const label=writerLabel(writer);if(label)line.createSpan({text:label+(writer?.machine?' · '+writer.machine:'')});
+   title.after(line);
+  }
+  // A caption under each picture, from its alt text; a missing one is shown as missing.
+  for(const img of el.querySelectorAll('img')){
+   const holder=img.closest('.image-embed,.internal-embed')||img;if(holder.nextElementSibling?.classList.contains('rssd-figcaption'))continue;
+   const alt=String(img.getAttribute('alt')||'').trim(),named=alt&&!/\.(png|jpe?g|webp|gif|svg)$/i.test(alt);
+   holder.after(createDiv({cls:'rssd-figcaption'+(named?'':' is-missing'),text:named?alt:'No caption'}));
+  }
+  // The reference heading sets the list after it apart.
+  const heading=el.querySelector('h1,h2,h3,h4,h5,h6');
+  if(heading&&/^(参考文献|参考资料|References|Bibliography|Sources)$/i.test(heading.textContent.trim()))el.addClass('rssd-reference-block');
+  // The site's brand line, wherever it is mounted.
+  for(const node of el.querySelectorAll('li,p')){
+   const link=node.querySelector(':scope > a, :scope > p:first-child > a');
+   if(link&&isBrandLine('['+link.textContent+']('+link.getAttribute('href')+')',origin)&&node.textContent.trim().startsWith(link.textContent.trim()))node.addClass('rssd-brand-line');
+  }
+ }
  /** Show one of Obsidian's own sidebar tabs (Files, Search), or open it with its own command if it was closed. */
  revealCore(type,command){
   const leaf=this.app.workspace.getLeavesOfType(type)[0];
