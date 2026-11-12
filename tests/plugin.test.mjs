@@ -102,6 +102,18 @@ test('baseline changes are journaled and folded into the settings file when a pu
  assert.equal(writes.length,1);assert.equal(writes[0].baselines.metho.one.version,1);assert.equal(files.has(journal),false);
 });
 
+test('a pull that changes nothing still records when it happened',async()=>{
+ const p=plugin(),writes=[];p.saveSettings=Plugin.prototype.saveSettings.bind(p);p.saveData=async snapshot=>{writes.push(snapshot);};
+ p.manifest={dir:'.obsidian/plugins/rssd'};p.app.vault={adapter:{exists:async()=>false,read:async()=>null,append:async()=>{},remove:async()=>{}}};
+ p.client=()=>({registry:async()=>({workspaces:[{id:'metho',writable:true,migrationState:'active'}]})});
+ p.engine=()=>({store:{list:async()=>[]},pull:async()=>({downloaded:[],unchanged:3})});
+ const before=Date.now();await p.pullAll('metho');
+ assert.equal(writes.length,1);assert.ok(writes[0].lastPullAt>=before);
+ // A pull that fails is not recorded as a pull.
+ p.engine=()=>({store:{list:async()=>[]},pull:async()=>{throw Object.assign(Error('offline'),{code:'network_error'});}});
+ await assert.rejects(p.pullAll('metho'),{code:'network_error'});assert.equal(writes.length,1);
+});
+
 test('interactive spaces checks persist a fresh scoped receipt',async()=>{
  const p=plugin();p.client=()=>({registry:async()=>({workspaces:[{id:'metho',writable:true,migrationState:'active'}]})});
  await p.showSpaces();const r=p.records.at(-1);
