@@ -47,6 +47,14 @@ const TITLE_STYLE=`
 /* Theme tabs are small squares in the section's own colour: tinted when idle, solid and raised when chosen.
    --rssd-accent is set from the open work's section. */
 .rssd-preview-controls{--rssd-accent:var(--interactive-accent);position:sticky;top:0;z-index:3;background:var(--background-primary)}
+/* In the status bar the controls are a compact row; another tab's controls take their place when it comes to the front. */
+.rssd-preview-slot{display:flex;align-items:center;padding:0 4px}
+.rssd-preview-slot .rssd-preview-controls{position:static;gap:var(--size-2-2);padding:0;border:0;background:none}
+.rssd-preview-slot .rssd-preview-controls button.rssd-preview-tab{height:18px;min-width:18px;padding:0 6px;font-size:var(--font-ui-smaller)}
+.rssd-preview-slot .rssd-preview-controls button.rssd-preview-tab.is-number{width:18px;padding:0}
+.rssd-preview-slot .rssd-preview-controls button.rssd-preview-tab.is-active{transform:none}
+.rssd-preview-slot .rssd-preview-controls .rssd-preview-info{display:none}
+.rssd-preview-slot button.rssd-preview-icon{padding:2px}.rssd-preview-slot button.rssd-preview-icon svg{width:14px;height:14px}
 .rssd-preview-controls button.rssd-preview-tab{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;height:24px;min-width:24px;padding:0 8px;margin:0;border:0;border-radius:5px;background:color-mix(in srgb,var(--rssd-accent) 12%,transparent);box-shadow:inset 0 -1px 0 color-mix(in srgb,var(--rssd-accent) 22%,transparent);color:var(--rssd-accent);font-size:var(--font-ui-smaller);font-weight:var(--font-semibold);line-height:1;white-space:nowrap;cursor:pointer;transition:background .12s,box-shadow .12s,transform .12s}
 .rssd-preview-controls button.rssd-preview-tab.is-number{width:24px;padding:0;font-variant-numeric:tabular-nums}
 .rssd-preview-controls button.rssd-preview-tab:hover{background:color-mix(in srgb,var(--rssd-accent) 22%,transparent)}
@@ -221,6 +229,9 @@ export default class RssdPlugin extends Plugin{
   this.registerView('rssd-reader',leaf=>new ReaderView(leaf,this));
   this.addRibbonIcon('book-open','RSSD reader',()=>this.openReader());
   this.addCommand({id:'reader',name:'Read site articles online',callback:()=>this.openReader()});
+  // The front Article or Cards tab shows its styles, refresh and copy here, in the status bar, rather than across
+  // its top (desktop; mobile has no status bar and keeps them at the top).
+  if(!Platform.isMobile){this.previewSlot=this.addStatusBarItem();this.previewSlot.addClass('rssd-preview-slot');this.previewSlot.hide();}
   this.status=this.addStatusBarItem();this.setStatus(this.idleStatus());
   // The status item is the quick way in: reading, works, sync and login in one menu.
   this.status.addClass('mod-clickable');this.status.setAttribute('aria-label','RSSD');
@@ -1237,7 +1248,7 @@ class LayoutPreview extends ItemView{
    tab.addEventListener('click',()=>{if(style.id===this.style)return;this.style=style.id;this.drawTabs();void this.show(this.file,{force:true});});
   }
   // Outline and details have no styles, status or action; the controls row belongs to the outputs.
-  const output=!this.target.panel;this.controls.toggle(output);
+  const output=!this.target.panel;this.controls.toggle(output&&(!this.plugin.previewSlot||this.docked));
   if(output){setIcon(this.actionButton,this.target.actionIcon);this.actionButton.setAttribute('aria-label',this.target.copyLabel);}
  }
  getViewType(){return this.type;}
@@ -1247,6 +1258,7 @@ class LayoutPreview extends ItemView{
  async onOpen(){
   const el=this.contentEl;el.empty();el.style.padding='0';
   this.controls=el.createDiv({cls:'rssd-preview-controls'});
+  if(this.plugin.previewSlot){this.registerEvent(this.app.workspace.on('active-leaf-change',()=>this.dock()));this.app.workspace.onLayoutReady(()=>this.dock());}
   this.styleTabs=this.controls.createDiv({cls:'rssd-preview-styles'});
   const actions=this.controls.createDiv({cls:'rssd-preview-actions'});
   this.iconButton(actions,'refresh-cw','Refresh').addEventListener('click',()=>this.show(this.file,{force:true}));
@@ -1278,7 +1290,16 @@ class LayoutPreview extends ItemView{
  onResize(){this.catchUp();}
  /** Draw what a hidden tab put off, once the tab is on screen. */
  catchUp(){if(this.waiting&&this.containerEl.isShown?.()!==false){const file=this.pendingFile;this.waiting=false;this.pendingFile=null;void this.show(file,{force:true});}}
- async onClose(){window.clearTimeout(this.timer);window.clearTimeout(this.loadingTimer);this.details.seq++;this.seq++;this.abort?.abort();this.release();}
+ /** Put this tab's controls in the status bar while it is the tab in front, and take them back when it is not. */
+ dock(){
+  const slot=this.plugin.previewSlot;if(!slot||!this.controls||this.target.panel)return;
+  const front=this.app.workspace.getMostRecentLeaf?.()===this.leaf;
+  if(front&&!this.docked){slot.empty();slot.append(this.controls);this.docked=true;this.controls.show();}
+  else if(!front&&this.docked){if(slot.contains(this.controls))this.controls.remove();this.docked=false;}
+  slot.toggle(slot.childElementCount>0);
+ }
+ async onClose(){window.clearTimeout(this.timer);window.clearTimeout(this.loadingTimer);this.details.seq++;this.seq++;this.abort?.abort();this.release();
+  if(this.docked){this.controls.remove();this.docked=false;const slot=this.plugin.previewSlot;slot?.toggle(slot.childElementCount>0);}}
  /**
   * Show or hide the loading cover. It appears only when building takes longer than a moment, so a quick
   * refresh does not flicker; the action button waits until the result it would copy or save is ready.
