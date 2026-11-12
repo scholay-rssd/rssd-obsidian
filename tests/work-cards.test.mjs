@@ -81,10 +81,18 @@ test('the writer is the agent and model of the newest completed writing run',()=
  assert.deepEqual(writerOf({modelSignatures:[run('Codex','write','2026-11-02T02:37:00Z',{modelId:'gpt-6.1-terra[max]',modelName:'6.1 Terra (max)'}),run('Cursor','revise','2026-11-03T00:00:00Z',{modelId:'default[]',modelName:'Auto'})]}),
   {agent:'Codex',model:'6.1 Terra',label:'Codex · 6.1 Terra'},'a later revision does not make another agent the writer');
  assert.equal(writerOf({modelSignatures:[run('Codex','write','2026-11-01T00:00:00Z',{modelId:'gpt-6.1-terra[max]'}),run('Claude','write','2026-11-02T00:00:00Z',{modelName:'Opus 5.5'})]}).label,'Claude · Opus 5.5','the newest write wins');
- assert.equal(writerOf({modelSignatures:[run('Codex','write','2026-11-01T00:00:00Z',{modelId:'gpt-6.1-terra[max]'})]}).label,'Codex · gpt-6.1-terra','a model id stands in for a missing name');
  assert.equal(writerOf({modelSignatures:[run('Cursor','write','2026-11-05T12:54:00Z',{modelId:'default[]',modelName:'Auto'})]}).label,'Cursor · Auto');
- assert.equal(writerOf({modelSignatures:[run('Antigravity Gemini 3.8 Flash','write','2026-11-11T00:00:00Z',{modelName:'Gemini 3.8 Flash (High)'})]}).label,'Antigravity Gemini 3.8 Flash','a model already in the agent\'s name is not repeated');
  assert.equal(writerOf({modelSignatures:[run('Cursor','organize','2026-11-05T12:54:00Z',{modelId:'default[]'})]}).label,'Cursor','with no write, the newest run; no model when none was recorded');
  assert.equal(writerOf({modelSignatures:[{...run('Codex','write','2026-11-01T00:00:00Z'),status:'interrupted'}]}),null,'an interrupted run wrote nothing');
  for(const empty of [null,undefined,{},{modelSignatures:'x'},{modelSignatures:[]}])assert.equal(writerOf(empty),null);
+});
+test('one model is named one way, however the record wrote it',()=>{
+ const one=(agentName,extra)=>writerOf({modelSignatures:[{runId:'r',agentId:'a',agentName,action:'write',startedAt:'2026-11-11T00:00:00Z',status:'completed',modelId:null,...extra}]});
+ assert.equal(one('Codex',{modelId:'gpt-6.1-terra[max]'}).label,'Codex · 6.1 Terra','an id reads like the name');
+ assert.equal(one('Codex',{modelName:'6.1 Terra (max)'}).label,'Codex · 6.1 Terra');
+ assert.equal(one('Antigravity',{modelId:'gemini-3.8-flash-high'}).label,'Antigravity · Gemini 3.8 Flash','the reasoning level is not part of the model');
+ assert.equal(one('Antigravity Gemini 3.8 Flash High',{modelName:'Gemini 3.8 Flash (High)'}).label,'Antigravity · Gemini 3.8 Flash','an agent name that carries the model is split');
+ assert.equal(one('Antigravity Claude Opus 5.5 High',{modelId:'claude-opus-5-5'}).label,'Antigravity · Claude Opus 5.5','dashed version numbers read as 5.5');
+ assert.equal(one('Antigravity',{}).label,'Antigravity');
+ assert.equal(one('Gemini 3.8 Flash',{modelName:'Gemini 3.8 Flash'}).label,'Gemini 3.8 Flash','an agent named only by its model is not split into nothing');
 });

@@ -9,7 +9,7 @@ const works=[
  work('c',{section:'methods',date:'2026-10-20'}),
  work('d',{section:'frontiers',date:'2026-11-01',locale:'en'}),
 ];
-const writers={a:'Codex · 6.1 Terra',b:'Cursor · Auto',c:null,d:'Codex · 6.1 Terra'},states={a:'edited',b:'synced',c:'conflict',d:'synced'};
+const writers={a:{agent:'Codex',model:'6.1 Terra'},b:{agent:'Cursor',model:'Auto'},c:null,d:{agent:'Codex',model:'6.1 Terra'}},states={a:'edited',b:'synced',c:'conflict',d:'synced'};
 const context=w=>({state:states[w.id],writer:writers[w.id]});
 const ids=filter=>works.filter(w=>matches(w,filter,context(w))).map(w=>w.id);
 
@@ -19,16 +19,18 @@ test('an empty filter lists every work of the language on screen',()=>{
  assert.equal(narrowedBy(emptyFilter('en')),0,'the language is a choice of list, not a narrowing');
 });
 
-test('several sections or writers may be chosen, and any of them matches',()=>{
+test('several sections, agents or models may be chosen, and any of them matches',()=>{
  assert.deepEqual(ids({...emptyFilter(),sections:['methods','statistics']}),['a','b','c']);
  assert.deepEqual(ids({...emptyFilter(),sections:['statistics']}),['b']);
- assert.deepEqual(ids({...emptyFilter(),writers:['Codex · 6.1 Terra','Cursor · Auto']}),['a','b']);
- assert.deepEqual(ids({...emptyFilter(),writers:[NO_WRITER]}),['c'],'works with no recorded writer can be listed on their own');
+ assert.deepEqual(ids({...emptyFilter(),agents:['Codex','Cursor']}),['a','b']);
+ assert.deepEqual(ids({...emptyFilter(),models:['6.1 Terra']}),['a']);
+ assert.deepEqual(ids({...emptyFilter(),agents:[NO_WRITER]}),['c'],'works with no recorded writer can be listed on their own');
+ assert.deepEqual(ids({...emptyFilter(),models:[NO_WRITER]}),['c']);
 });
 
 test('facets combine: every chosen facet must match',()=>{
- const filter={...emptyFilter(),status:'edited',sections:['methods'],writers:['Codex · 6.1 Terra']};
- assert.deepEqual(ids(filter),['a']);assert.equal(narrowedBy(filter),3);
+ const filter={...emptyFilter(),status:'edited',sections:['methods'],agents:['Codex'],models:['6.1 Terra']};
+ assert.deepEqual(ids(filter),['a']);assert.equal(narrowedBy(filter),4);
  assert.deepEqual(ids({...emptyFilter(),status:'edited'}),['a','c'],'a conflict counts as edited');
  assert.deepEqual(ids({...emptyFilter(),status:'check'}),['b']);
 });
@@ -50,7 +52,7 @@ test('each option is counted with every other facet applied but its own',()=>{
  const counts=facetCounts(works,{...emptyFilter(),sections:['methods'],status:'edited'},context);
  assert.deepEqual(counts.status,{all:2,edited:2,check:0},'status counts ignore the status choice but keep the section');
  assert.deepEqual(Object.fromEntries(counts.sections),{methods:2},'a section with no edited work has no count');
- assert.deepEqual(Object.fromEntries(counts.writers),{'Codex · 6.1 Terra':1,[NO_WRITER]:1});
+ assert.deepEqual(Object.fromEntries(counts.agents),{Codex:1,[NO_WRITER]:1});assert.deepEqual(Object.fromEntries(counts.models),{'6.1 Terra':1,[NO_WRITER]:1});
  assert.deepEqual(counts.locale,{'zh-CN':2,en:0});
  assert.equal(counts.dates,2,'what the whole filter lists');
  const plain=facetCounts(works,emptyFilter(),context,'');
@@ -60,18 +62,19 @@ test('each option is counted with every other facet applied but its own',()=>{
 test('stored or hand-built filters are cleaned, and an inverted range is put the right way round',()=>{
  assert.deepEqual(normalizeFilter(null),emptyFilter());
  assert.deepEqual(normalizeFilter({status:'nope',locale:'fr',sections:['a','a',3],writers:'x',from:'2026-11-10',to:'2026-11-01'}),
-  {status:'all',locale:'zh-CN',sections:['a'],writers:[],from:'2026-11-01',to:'2026-11-10'});
+  {status:'all',locale:'zh-CN',sections:['a'],agents:[],models:[],from:'2026-11-01',to:'2026-11-10'});
  assert.deepEqual(normalizeFilter({from:'11/01/2026'}).from,'');
 });
 
 test('chosen values show as chips that each remove only themselves',()=>{
- const filter={...emptyFilter(),status:'check',sections:['methods','statistics'],writers:[NO_WRITER],from:'2026-11-01',to:'2026-11-10'};
+ const filter={...emptyFilter(),status:'check',sections:['methods','statistics'],agents:[NO_WRITER],models:['6.1 Terra'],from:'2026-11-01',to:'2026-11-10'};
  const chips=activeChips(filter,{sectionName:id=>({methods:'方法百科',statistics:'统计之美'})[id]});
- assert.deepEqual(chips.map(c=>c.text),['To check','方法百科','统计之美','Writer not recorded','11-01 – 11-10']);
+ assert.deepEqual(chips.map(c=>c.text),['To check','方法百科','统计之美','No agent recorded','6.1 Terra','11-01 – 11-10']);
  assert.deepEqual(withoutChip(filter,chips[1]).sections,['statistics']);
  assert.equal(withoutChip(filter,chips[0]).status,'all');
- assert.deepEqual([withoutChip(filter,chips[4]).from,withoutChip(filter,chips[4]).to],['','']);
- assert.deepEqual(toggled(toggled(emptyFilter(),'writers','Cursor · Auto'),'writers','Codex · 6.1 Terra').writers,['Cursor · Auto','Codex · 6.1 Terra']);
+ assert.deepEqual([withoutChip(filter,chips[5]).from,withoutChip(filter,chips[5]).to],['','']);
+ assert.deepEqual(withoutChip(filter,chips[4]).models,[]);
+ assert.deepEqual(toggled(toggled(emptyFilter(),'models','Auto'),'models','6.1 Terra').models,['Auto','6.1 Terra']);
  assert.deepEqual(toggled({...emptyFilter(),sections:['methods']},'sections','methods').sections,[]);
 });
 

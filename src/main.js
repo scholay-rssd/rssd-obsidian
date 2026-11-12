@@ -12,7 +12,7 @@ import {saveFailureMessage,saveManySummary} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
 import {workLabel,labelText,tabTitle} from './titles.mjs';
-import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf} from './work-cards.mjs';
+import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel} from './work-cards.mjs';
 import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER} from './works-filter.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
@@ -72,8 +72,8 @@ const TITLE_STYLE=`
 .rssd-works button.rssd-works-tag{display:inline-flex;align-items:center;gap:2px;height:auto;max-width:100%;padding:0 4px 0 8px;border:1px solid var(--background-modifier-border);border-radius:999px;background:var(--background-primary);box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
 .rssd-works-tag>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rssd-works-tag-x{display:flex}.rssd-works-tag-x svg{width:12px;height:12px}
 .rssd-works button.rssd-works-clear{height:auto;padding:0 6px;border:0;background:none;box-shadow:none;color:var(--text-faint);font-size:var(--font-ui-smaller);cursor:pointer}
-.rssd-works-section{padding:0 6px;border-radius:999px;background:color-mix(in srgb,var(--rssd-section,var(--text-muted)) 14%,transparent);color:var(--rssd-section,var(--text-muted));white-space:nowrap}
-.rssd-works-row-section{flex:0 0 auto;color:var(--text-faint);font-size:var(--font-ui-smaller)}
+.rssd-works-section{display:inline-block;margin-right:5px;padding:0 5px;border-radius:3px;background:color-mix(in srgb,var(--rssd-section,var(--text-muted)) 14%,transparent);color:var(--rssd-section,var(--text-muted));font-size:var(--font-ui-smaller);font-weight:var(--font-normal);line-height:1.5;vertical-align:1px;white-space:nowrap}
+.rssd-works-row .rssd-works-section{flex:0 0 auto;margin-right:0}
 /* The filter panel floats under the filter button. */
 .rssd-filter-panel{position:fixed;z-index:var(--layer-menu);width:300px;max-height:min(70vh,560px);overflow-y:auto;padding:0 var(--size-4-3);border:1px solid var(--background-modifier-border);border-radius:var(--radius-m);background:var(--background-primary);box-shadow:var(--shadow-l);font-size:var(--font-ui-small)}
 .rssd-filter-group{padding:var(--size-4-2) 0;border-bottom:1px solid var(--background-modifier-border)}
@@ -105,7 +105,7 @@ const TITLE_STYLE=`
 .rssd-works button.rssd-works-pull{height:auto;padding:2px 10px;font-size:var(--font-ui-smaller)}
 /* Cards: the title, what needs attention, the first picture, then the date, length and picture count. The
    open work's card also carries its actions. */
-.rssd-works-card{display:grid;grid-template-columns:minmax(0,1fr) 40px;gap:4px var(--size-4-2);margin:0 2px 6px;padding:7px 8px 6px;border:1px solid var(--background-modifier-border);border-radius:var(--radius-m);background:var(--background-primary);cursor:pointer}
+.rssd-works-card{display:grid;grid-template-columns:minmax(0,1fr);gap:4px;margin:0 2px 6px;padding:7px 8px 6px;border:1px solid var(--background-modifier-border);border-radius:var(--radius-s);background:var(--background-primary);cursor:pointer}
 .rssd-works-card:hover{border-color:var(--background-modifier-border-hover)}
 .rssd-works-card.is-active{border-color:var(--interactive-accent)}
 .rssd-works-card-body{min-width:0}
@@ -115,10 +115,7 @@ const TITLE_STYLE=`
 .rssd-works-badge.is-warning{border-color:transparent;background:color-mix(in srgb,var(--color-orange) 16%,transparent);color:var(--color-orange)}
 .rssd-works-badge.is-danger{border-color:transparent;background:color-mix(in srgb,var(--color-red) 14%,transparent);color:var(--color-red)}
 .rssd-works-badge.is-site{border-color:transparent;background:color-mix(in srgb,var(--color-blue) 14%,transparent);color:var(--color-blue)}
-.rssd-works-thumb{grid-row:span 2;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:40px;height:40px;border:1px solid var(--background-modifier-border);border-radius:var(--radius-s);overflow:hidden;background:var(--background-secondary);color:var(--text-faint)}
-.rssd-works-thumb img{display:block;width:100%;height:100%;object-fit:cover}
-.rssd-works-thumb svg{width:16px;height:16px}
-.rssd-works-facts{grid-column:1;align-self:end;display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
+.rssd-works-facts{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
 .rssd-works-fact,.rssd-works-writer{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
 .rssd-works-fact-icon{display:flex}.rssd-works-fact-icon svg{width:12px;height:12px}
 .rssd-works-fact.is-missing,.rssd-works-writer.is-missing{color:var(--text-faint)}
@@ -827,10 +824,12 @@ class WorksFilterPanel{
   // Sections in the site's order, then any the site does not name.
   const sectionIds=[...new Set([...names.keys(),...c.sections.keys(),...f.sections])];
   options(group('Section'),'sections',sectionIds.map(id=>({value:id,name:names.get(id)?.name||id||'No section',count:c.sections.get(id)||0})));
-  // Writers, most works first; works whose writer is not recorded last.
-  const writers=group('Writer'),labels=[...new Set([...c.writers.keys(),...f.writers])].filter(v=>v!==NO_WRITER).sort((a,b)=>(c.writers.get(b)||0)-(c.writers.get(a)||0)||a.localeCompare(b));
-  options(writers,'writers',[...labels.map(v=>({value:v,name:v,count:c.writers.get(v)||0})),{value:NO_WRITER,name:'Not recorded',count:c.writers.get(NO_WRITER)||0}]);
-  if(view.fetchingWriters)writers.createDiv({cls:'rssd-filter-note',text:'Still reading writers from the Center…'});
+  // Agents and models, most works first; works whose writer is not recorded last.
+  for(const [facet,title] of [['agents','Agent'],['models','Model']]){
+   const box=group(title),count=c[facet],values=[...new Set([...count.keys(),...f[facet]])].filter(v=>v!==NO_WRITER).sort((a,b)=>(count.get(b)||0)-(count.get(a)||0)||a.localeCompare(b));
+   options(box,facet,[...values.map(v=>({value:v,name:v,count:count.get(v)||0})),{value:NO_WRITER,name:'Not recorded',count:count.get(NO_WRITER)||0}]);
+   if(view.fetchingWriters)box.createDiv({cls:'rssd-filter-note',text:'Still reading writers from the Center…'});
+  }
   const dates=group('Date'),grid=dates.createDiv({cls:'rssd-filter-dates'});
   for(const [key,label] of [['from','From'],['to','To']]){
    grid.createSpan({text:label});const input=grid.createEl('input',{type:'date'});input.value=f[key];input.dataset.key='date:'+key;
@@ -850,8 +849,8 @@ class WorksFilterPanel{
 
 const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not updated from the Center yet'};
 const WORKS_PAGE=60;
-// Where writer labels are kept on this device. A new name makes every label be read again after a wording fix.
-const WRITERS_KEY='rssd-writers-2';
+// Where writers ({agent, model}) are kept on this device. A new name makes every writer be read again after a fix.
+const WRITERS_KEY='rssd-writers-3';
 const FILTER_KEY='rssd-works-filter';
 class WorksView extends ItemView{
  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.limit=WORKS_PAGE;this.panel=null;this.states=new Map();
@@ -942,7 +941,7 @@ class WorksView extends ItemView{
   return {document:work=>documents[work.locale]?.[work.id],has:(locale,document)=>!!document&&!!present[locale]?.has(document)};
  }
  writerKey(work){return this.plugin.settings.workspaceId+':'+work.locale+':'+work.id+':'+work.version;}
- /** The writer's label, null when the Center has no record, undefined while not yet read. */
+ /** The writer as {agent, model}, null when the Center has no record, undefined while not yet read. */
  writerFor(work){const key=this.writerKey(work);return Object.hasOwn(this.writers,key)?this.writers[key]:undefined;}
  /** Read who wrote each work from the Center's private writing record, one work at a time, the ones on screen
   * first. Read only; a lost connection stops the pass and the next drawing resumes it. */
@@ -956,14 +955,14 @@ class WorksView extends ItemView{
     if(this.layout!=='cards')break;
     const version=Number(work.version);if(!Number.isSafeInteger(version)||version<1||this.writerFor(work)!==undefined)continue;
     let writer=null;
-    try{writer=writerOf((await client.privateNotes(this.plugin.settings.workspaceId,work.id,version))?.privateEditorial)?.label||null;}
+    try{const found=writerOf((await client.privateNotes(this.plugin.settings.workspaceId,work.id,version))?.privateEditorial);writer=found?{agent:found.agent,model:found.model}:null;}
     catch(error){if(error?.status!==404)break;}
     this.writers[this.writerKey(work)]=writer;added++;this.refreshItem(work.file.path);
     if(added%25===0)this.saveWriters();
    }
   }finally{this.fetchingWriters=false;if(added)this.saveWriters();}
   // Writer filters and the panel's counts depend on the writers read in this pass.
-  if(added&&(this.filterState.writers.length||this.panel))this.render();
+  if(added&&(this.filterState.agents.length||this.filterState.models.length||this.panel))this.render();
  }
  saveWriters(){try{this.app.saveLocalStorage?.(WRITERS_KEY,this.writers);}catch{}}
  sectionNames(){
@@ -1029,18 +1028,15 @@ class WorksView extends ItemView{
   const card=group.createDiv({cls:'rssd-works-card'});card.dataset.path=work.file.path;
   const state=this.states.get(work.file.path)?.state,facts=this.facts.get(work.file.path);
   const body=card.createDiv({cls:'rssd-works-card-body'});
-  body.createDiv({cls:'rssd-works-card-title',text:work.title});
+  // The section's label leads the title, in the section's colour.
+  const title=body.createDiv({cls:'rssd-works-card-title'}),sectionName=this.sectionName(work.section);
+  if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
+  title.appendText(work.title);
   // Most works need nothing, so the chip row is only there when there is a chip.
   const chips=cardChips({...work,state}),badges=chips.length?body.createDiv({cls:'rssd-works-badges'}):null;
   for(const chip of chips){const badge=badges.createSpan({cls:'rssd-works-badge is-'+chip.tone,text:chip.text});badge.setAttribute('aria-label',chip.title);}
-  // The first picture, read from the vault's media folder; nothing is downloaded.
-  const thumb=card.createDiv({cls:'rssd-works-thumb'}),picture=work.media[0]?this.app.vault.getAbstractFileByPath(MEDIA_FOLDER+'/'+work.media[0]):null;
-  if(picture instanceof TFile)thumb.createEl('img',{attr:{src:this.app.vault.getResourcePath(picture),alt:'',loading:'lazy',decoding:'async'}});
-  else{setIcon(thumb,'image-off');thumb.setAttribute('aria-label','No picture');}
   // What the work is made of. Length, references and the brand line arrive with the background pass.
   const row=card.createDiv({cls:'rssd-works-facts'}),pictures=work.media.length,references=facts?.references;
-  const sectionName=this.sectionName(work.section);
-  if(sectionName){const tag=row.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
   const fact=(icon,text,label,{missing=false,absent=false}={})=>{const el=row.createSpan({cls:'rssd-works-fact'+(missing||absent?' is-missing':'')+(absent?' is-absent':'')});setIcon(el.createSpan({cls:'rssd-works-fact-icon'}),icon);el.createSpan({text});el.setAttribute('aria-label',label);};
   fact('calendar',work.date.slice(5)||'—',work.date?'Date '+work.date:'No date',{missing:!work.date});
   if(facts?.length!=null)fact('type',lengthText(facts.length,work.locale),'Length');
@@ -1049,8 +1045,8 @@ class WorksView extends ItemView{
   if(facts?.brand!=null)fact(facts.brand?'badge-check':'badge','Brand',facts.brand?'The site\'s brand line is mounted':'No brand line',{absent:!facts.brand});
   const other=work.locale==='en'?'zh-CN':'en',doc=this.pairs?.document(work);
   if(doc){const has=this.pairs.has(other,doc),name=other==='en'?'English':'Chinese';fact('languages',other==='en'?'EN':'中',(has?'Has a ':'No ')+name+' edition',{absent:!has});}
-  const writer=this.writerFor(work);
-  if(writer!==undefined){const line=card.createDiv({cls:'rssd-works-writer'+(writer?'':' is-missing')});setIcon(line.createSpan({cls:'rssd-works-fact-icon'}),'bot');line.createSpan({text:writer||'Writer not recorded'});line.setAttribute('aria-label',writer?'Written by '+writer:'The Center has no record of the agent that wrote this');}
+  const writer=this.writerFor(work),label=writerLabel(writer);
+  if(writer!==undefined){const line=card.createDiv({cls:'rssd-works-writer'+(label?'':' is-missing')});setIcon(line.createSpan({cls:'rssd-works-fact-icon'}),'bot');line.createSpan({text:label||'Writer not recorded'});line.setAttribute('aria-label',label?'Written by '+label:'The Center has no record of the agent that wrote this');}
   card.addEventListener('click',()=>void this.openWork(work.file));
   return card;
  }
@@ -1072,8 +1068,9 @@ class WorksView extends ItemView{
   const state=this.states.get(work.file.path)?.state;
   const dot=row.createSpan({cls:'rssd-works-dot'+(state?' is-'+state:'')});if(state)dot.setAttribute('aria-label',WORK_STATES[state]);
   row.createSpan({cls:'rssd-works-date',text:work.date.slice(5)});
+  const sectionName=this.sectionName(work.section);
+  if(sectionName){const tag=row.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);}
   row.createSpan({cls:'rssd-works-title',text:work.title});
-  const sectionName=this.sectionName(work.section);if(sectionName)row.createSpan({cls:'rssd-works-row-section',text:sectionName});
   row.setAttribute('aria-label',[work.title,work.date,WORK_STATES[state]].filter(Boolean).join(' · '));
   row.addEventListener('click',()=>void this.openWork(work.file));
   return row;
