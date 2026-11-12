@@ -122,7 +122,10 @@ const TITLE_STYLE=`
 .rssd-works button.rssd-works-pull.is-failed{color:var(--color-red);animation:rssd-shake .4s ease-in-out}
 .rssd-works-pulled.is-fresh{animation:rssd-fade .6s ease-out}
 /* Update and Save in the sidebar's tab bar: icons with a count badge, a thin bar under them while busy. */
-.rssd-works-headbar{position:relative;display:flex;align-items:center;-webkit-app-region:no-drag}
+/* The left sidebar's tab icons are hidden: the ribbon switches between Files, Search and Works. */
+body.rssd-one-row .mod-left-split .workspace-tab-header-container-inner{display:none}
+body.rssd-one-row .mod-left-split .workspace-tab-header-container .workspace-tab-header-spacer{flex:1 1 auto}
+.rssd-works-headbar{position:relative;display:flex;align-items:center;margin-left:var(--size-2-2);-webkit-app-region:no-drag}
 .rssd-works-headbar-body{display:flex;align-items:center;gap:2px}
 .rssd-works-headbar .rssd-works-progress{top:auto;bottom:-3px}
 .rssd-works-headbar button.rssd-works-headbutton{position:relative;height:auto;padding:var(--size-2-2);border:0;background:none;box-shadow:none}
@@ -235,7 +238,11 @@ export default class RssdPlugin extends Plugin{
   this.settings.boundSpace??=Object.keys(this.settings.baselines).find(k=>Object.keys(this.settings.baselines[k]||{}).length)||'';
   await this.saveSettings();
   this.registerView('rssd-works',leaf=>new WorksView(leaf,this));
-  // No ribbon button for the Works list: its own tab in the left sidebar opens it (and the command "Show the Works list").
+  // One place to switch the left sidebar: the ribbon has Files, Search and Works (the sidebar's own tab icons are
+  // hidden on desktop), then the reader; the sidebar's top row keeps only Update and Save.
+  this.addRibbonIcon('folder-closed','Files',()=>this.revealCore('file-explorer','file-explorer:open'));
+  this.addRibbonIcon('search','Search',()=>this.revealCore('search','global-search:open'));
+  this.addRibbonIcon('library','Works',()=>this.openWorks());
   this.addCommand({id:'works',name:'Show the Works list',callback:()=>this.openWorks()});
   this.registerView('rssd-reader',leaf=>new ReaderView(leaf,this));
   this.addRibbonIcon('book-open','RSSD reader',()=>this.openReader());
@@ -266,7 +273,9 @@ export default class RssdPlugin extends Plugin{
   // obsidian://rssd?vault=<vault>&do=login|pull|save|status|spaces[&path=Works/x.md] lets scripts and agents drive
   // the plugin. Any app or page can open such a link, so it only works when the vault opts in.
   this.registerObsidianProtocolHandler('rssd',params=>this.automate(params));
-  this.titleStyle=document.head.createEl('style',{text:TITLE_STYLE});
+  // Update and Save live in the Works view, so it is loaded even while Files or Search is the tab shown.
+  this.app.workspace.onLayoutReady(()=>{for(const leaf of this.app.workspace.getLeavesOfType('rssd-works'))void leaf.loadIfDeferred?.();});
+  this.titleStyle=document.head.createEl('style',{text:TITLE_STYLE});if(!Platform.isMobile)document.body.addClass('rssd-one-row');
   const relabel=()=>{window.clearTimeout(this.titleTimer);this.titleTimer=window.setTimeout(()=>this.refreshTitles(),150);};
   this.app.workspace.onLayoutReady(relabel);
   for(const event of ['changed','resolved'])this.registerEvent(this.app.metadataCache.on(event,relabel));
@@ -353,6 +362,12 @@ export default class RssdPlugin extends Plugin{
   return createCenterClient({http,origin:this.settings.origin,token});
  }
  /** Show the Works list in the left sidebar (one left by an earlier version elsewhere is moved there). */
+ /** Show one of Obsidian's own sidebar tabs (Files, Search), or open it with its own command if it was closed. */
+ revealCore(type,command){
+  const leaf=this.app.workspace.getLeavesOfType(type)[0];
+  if(leaf){this.app.workspace.revealLeaf(leaf);return;}
+  this.app.commands?.executeCommandById?.(command);
+ }
  async openWorks(){
   const workspace=this.app.workspace;let leaf=workspace.getLeavesOfType('rssd-works').find(l=>l.getRoot?.()===workspace.leftSplit);
   if(!leaf){for(const old of workspace.getLeavesOfType('rssd-works'))old.detach();leaf=workspace.getLeftLeaf(false);if(!leaf)return;await leaf.setViewState({type:'rssd-works',active:true});}
@@ -512,7 +527,7 @@ export default class RssdPlugin extends Plugin{
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
  }
- onunload(){this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
+ onunload(){document.body.removeClass('rssd-one-row');this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
  workLabel(file){return file instanceof TFile&&this.isWork(file)?workLabel(this.app.metadataCache.getFileCache(file)?.frontmatter):null;}
  /** Paint titles and dates over ID file names in the explorer, tabs and note headers. Never renames a file. */
  refreshTitles({restore=false}={}){
@@ -965,7 +980,7 @@ class WorksView extends ItemView{
   for(const event of ['create','delete','rename'])this.registerEvent(this.app.vault.on(event,later));
   this.registerEvent(this.app.workspace.on('file-open',()=>this.mark()));
   this.registerInterval(window.setInterval(()=>this.renderFoot(),60000));
-  // The tab-bar buttons show only while the Works tab is the one shown in its sidebar.
+  // Placed again when the layout changes, as the sidebar's top row may be rebuilt.
   for(const event of ['active-leaf-change','layout-change'])this.registerEvent(this.app.workspace.on(event,()=>this.placeHeadbar()));
   this.app.workspace.onLayoutReady(()=>this.render());
  }
@@ -1192,7 +1207,8 @@ class WorksView extends ItemView{
   this.flashTimer=window.setTimeout(()=>{this.flash=null;this.renderFoot();},2600);
  }
  /**
-  * Put Update and Save in the sidebar's own tab bar, beside the tab icons, while the Works tab is the one shown.
+  * Put Update and Save at the left of the sidebar's top row, whichever of its tabs is shown (the tab icons
+  * themselves are hidden; the ribbon switches between Files, Search and Works).
   * Returns whether they are there; where the tab bar cannot be found (mobile, an unusual layout) the footer stays.
   */
  placeHeadbar(){
@@ -1201,9 +1217,8 @@ class WorksView extends ItemView{
   if(!this.headbar||!container.contains(this.headbar)){
    this.headbar?.remove();
    this.headbar=createDiv({cls:'rssd-works-headbar'});this.headBody=this.headbar.createDiv({cls:'rssd-works-headbar-body'});this.headProgress=this.headbar.createDiv({cls:'rssd-works-progress'});
-   const spacer=container.querySelector(':scope > .workspace-tab-header-spacer');if(spacer)spacer.after(this.headbar);else container.append(this.headbar);
+   container.prepend(this.headbar);
   }
-  this.headbar.toggle(this.leaf.tabHeaderEl.classList.contains('is-active'));
   return true;
  }
  renderFoot(){
