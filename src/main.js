@@ -165,7 +165,7 @@ export default class RssdPlugin extends Plugin{
   this.registerDomEvent(this.status,'click',event=>this.statusMenu().showAtMouseEvent(event));
   this.addSettingTab(new RssdSettings(this.app,this));
   this.addCommand({id:'login',name:'Log in to the RSSD Center',callback:()=>this.login().catch(error=>new Notice('Login failed: '+error.message))});
-  this.addCommand({id:'pull',name:'Pull works from the Center',callback:()=>this.pull()});
+  this.addCommand({id:'pull',name:'Update works from the Center',callback:()=>this.pull()});
   this.addCommand({id:'save',name:'Save this work to the Center as a private draft',checkCallback:checking=>{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)this.save(file);return true;}});
   this.addCommand({id:'copy-article',name:'Copy this work as a formatted article',checkCallback:checking=>{
@@ -285,7 +285,7 @@ export default class RssdPlugin extends Plugin{
   menu.addItem(item=>item.setTitle('Read site articles online').setIcon('book-open').onClick(()=>this.openReader()));
   if(loggedIn&&space){
    menu.addItem(item=>item.setTitle('Works list').setIcon('library').onClick(()=>this.openWorks()));
-   menu.addItem(item=>item.setTitle('Pull works from the Center').setIcon('download').onClick(()=>this.pull()));
+   menu.addItem(item=>item.setTitle('Update works from the Center').setIcon('download').onClick(()=>this.pull()));
    if(active&&this.isWork(active))menu.addItem(item=>item.setTitle('Save this work as a private draft').setIcon('upload').onClick(()=>this.save(active)));
    menu.addItem(item=>item.setTitle('Check sync state').setIcon('refresh-cw').onClick(()=>this.refreshStates()));
   }
@@ -462,11 +462,11 @@ export default class RssdPlugin extends Plugin{
   try{
    const summary=await this.operations.run('pull',async()=>{
     let checked=0,lastProgress;const id=crypto.randomUUID(),workspaceId=this.settings.workspaceId;
-    this.setStatus('RSSD: pulling…');
+    this.setStatus('RSSD: updating…');
     await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked});
     try{
      const result=await this.pullAll(workspaceId,{onProgress:async({articleId,summary,locale})=>{
-      this.setStatus('RSSD: pulling… '+(++checked)+' works');
+      this.setStatus('RSSD: updating… '+(++checked)+' works');
       lastProgress={articleId,locale,partial:summary};
       await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked,articleId,locale,partial:summary});
      }});
@@ -484,11 +484,11 @@ export default class RssdPlugin extends Plugin{
    if(summary.conflicts.length)parts.push(summary.conflicts.length+' in conflict');
    if(summary.pending?.length)parts.push(summary.pending.length+' waiting for save recovery');
    if(summary.metadataPending?.length)parts.push(summary.metadataPending.length+' local version labels need refresh');
-   if(summary.failed?.length)parts.push(summary.failed.length+' failed; pull again to retry');
+   if(summary.failed?.length)parts.push(summary.failed.length+' failed; update again to retry');
    const incomplete=['failed','conflicts','pending','metadataPending'].some(key=>summary[key]?.length);
-   new Notice((incomplete?'Pull incomplete: ':'Pull finished: ')+parts.join(', '));
+   new Notice((incomplete?'Update incomplete: ':'Update finished: ')+parts.join(', '));
    if(summary.conflicts.length)new Notice('Conflicts were not changed: '+summary.conflicts.join(', '),10000);
-  }catch(error){new Notice('Pull failed: '+error.message);}
+  }catch(error){new Notice('Update failed: '+error.message);}
  }
 
  client(){
@@ -714,13 +714,13 @@ class RssdSettings extends PluginSettingTab{
   new Setting(containerEl).setName('Log in').setDesc(this.plugin.token()?'This device is logged in.':'Approve this device in your browser.')
    .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
   new Setting(containerEl).setName('Command links').setDesc('Allow local commands to drive this vault. Each request has its own receipt.').addToggle(t=>t.setValue(!!s.allowAutomation).onChange(async v=>{s.allowAutomation=v;await this.plugin.saveSettings();}));
-  new Setting(containerEl).setName('Automatic sync').setDesc('Periodically pull and save changed works as private drafts. Conflicts and read-only spaces need attention; this never publishes.').addToggle(t=>t.setValue(s.autoSync!==false).onChange(async v=>{s.autoSync=v;await this.plugin.saveSettings();}));
+  new Setting(containerEl).setName('Automatic sync').setDesc('Periodically update from the Center and save changed works as private drafts. Conflicts and read-only spaces need attention; this never publishes.').addToggle(t=>t.setValue(s.autoSync!==false).onChange(async v=>{s.autoSync=v;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Right sidebar').setDesc('Keep only the RSSD tabs (Article, Cards, Outline, Details) in the right sidebar. Turn off to let Obsidian keep its backlinks, outgoing links, tags, all-properties and outline tabs there.')
    .addToggle(t=>t.setValue(s.tidyRightSidebar!==false).onChange(async v=>{s.tidyRightSidebar=v;await this.plugin.saveSettings();if(v)this.plugin.closeDefaultTabs();}));
   new Setting(containerEl).setName('Properties in the article').setDesc('Work details are edited under Details in the RSSD panel in the right sidebar, so the properties block at the top of each note is hidden. Show it again here.')
    .addButton(b=>b.setButtonText('Show in article').onClick(async()=>{await this.plugin.restoreProperties();new Notice('The properties block is shown in notes again.');}));
-  new Setting(containerEl).setName('Pull works').setDesc('Download new and changed works into '+WORKS_FOLDER+'/ (images go to '+MEDIA_FOLDER+'/). Notes with local changes are never overwritten.')
-   .addButton(b=>b.setButtonText('Pull').onClick(()=>this.plugin.pull()));
+  new Setting(containerEl).setName('Update works').setDesc('Download new and changed works into '+WORKS_FOLDER+'/ (images go to '+MEDIA_FOLDER+'/). Notes with local changes are never overwritten.')
+   .addButton(b=>b.setButtonText('Update').onClick(()=>this.plugin.pull()));
  }
 }
 
@@ -728,7 +728,7 @@ class RssdSettings extends PluginSettingTab{
 // one row per work, Chinese and English editions shown one language at a time (an English edition is a work of
 // its own in the Center, with no link back to its original that the list could rely on). Read from the vault alone, so it is instant and works
 // offline; "edited" means changed since the last sync with the Center.
-const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not pulled from the Center yet'};
+const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not updated from the Center yet'};
 const WORKS_PAGE=60;
 class WorksView extends ItemView{
  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.filter='all';this.lang='zh';this.collapsed=new Set();this.limits=new Map();this.states=new Map();this.timer=null;this.filling=false;}
@@ -817,7 +817,7 @@ class WorksView extends ItemView{
   for(const work of shown){const key=work.section||'';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(work);}
   const order=key=>names.get(key)?.order??999;
   this.list.empty();
-  if(!shown.length)this.list.createDiv({cls:'rssd-works-empty',text:all.length?'No works match.':'No works yet. Pull them from the Center.'});
+  if(!shown.length)this.list.createDiv({cls:'rssd-works-empty',text:all.length?'No works match.':'No works yet. Use Update to get them from the Center.'});
   for(const key of [...groups.keys()].sort((a,b)=>order(a)-order(b)||a.localeCompare(b))){
    // Newest first; works of the same day by title.
    const items=groups.get(key).sort((a,b)=>b.date.localeCompare(a.date)||a.title.localeCompare(b.title));
@@ -869,20 +869,22 @@ class WorksView extends ItemView{
  renderFoot(){
   if(!this.foot)return;this.foot.empty();
   const at=this.plugin.settings.lastPullAt,minutes=at?Math.round((Date.now()-at)/60000):null;
-  this.foot.createSpan({cls:'rssd-works-pulled',text:at?'Last pull '+(minutes<1?'just now':minutes<60?minutes+' min ago':minutes<1440?Math.round(minutes/60)+' h ago':Math.round(minutes/1440)+' d ago'):'Not pulled yet'});
-  const edited=this.saving?[]:this.edited||[];
-  if(this.saving||(edited.length&&!Platform.isMobile)){
-   const save=this.foot.createEl('button',{cls:'rssd-works-pull rssd-works-save mod-cta',text:this.saving||'Save '+edited.length});
-   save.setAttribute('aria-label',this.saving?'Saving to the Center':'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.');
-   save.disabled=!!this.saving;
-   save.addEventListener('click',async()=>{
-    const files=[...edited];if(!files.length)return;
-    this.saving='Saving…';this.renderFoot();
-    try{await this.plugin.saveEdited(files,{onProgress:(done,total)=>{this.saving='Saving '+done+'/'+total;this.renderFoot();}});}
-    finally{this.saving=null;for(const file of files)this.states.delete(file.path);this.render();}
-   });
-  }
-  const pull=this.foot.createEl('button',{cls:'rssd-works-pull',text:'Pull'});pull.addEventListener('click',async()=>{pull.disabled=true;try{await this.plugin.pull();}finally{pull.disabled=false;this.render();}});
+  this.foot.createSpan({cls:'rssd-works-pulled',text:at?'Updated '+(minutes<1?'just now':minutes<60?minutes+' min ago':minutes<1440?Math.round(minutes/60)+' h ago':Math.round(minutes/1440)+' d ago'):'Not updated yet'});
+  // Two directions, always both shown: Update brings the Center's versions down, Save sends edits up as
+  // private drafts. Save is greyed out while there is nothing to save, and on mobile, which is read-only.
+  const update=this.foot.createEl('button',{cls:'rssd-works-pull',text:'Update'});update.setAttribute('aria-label','Get the latest versions from the Center');
+  update.disabled=!!this.saving;
+  update.addEventListener('click',async()=>{update.disabled=true;try{await this.plugin.pull();}finally{update.disabled=false;this.render();}});
+  const edited=this.saving?[]:this.edited||[],mobile=Platform.isMobile;
+  const save=this.foot.createEl('button',{cls:'rssd-works-pull rssd-works-save'+(edited.length&&!mobile?' mod-cta':''),text:this.saving||(edited.length?'Save '+edited.length:'Save')});
+  save.setAttribute('aria-label',this.saving?'Saving to the Center':mobile?'Saving is not available on mobile':edited.length?'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.':'Nothing to save: no work on screen is edited');
+  save.disabled=!!this.saving||!edited.length||mobile;
+  save.addEventListener('click',async()=>{
+   const files=[...edited];if(!files.length)return;
+   this.saving='Saving…';this.renderFoot();
+   try{await this.plugin.saveEdited(files,{onProgress:(done,total)=>{this.saving='Saving '+done+'/'+total;this.renderFoot();}});}
+   finally{this.saving=null;for(const file of files)this.states.delete(file.path);this.render();}
+  });
  }
 }
 
@@ -1088,7 +1090,7 @@ class WorkDetails{
   if(!work)return 'This note is not linked to a Center work.';
   try{
    const engine=this.plugin.engine(),space=this.plugin.settings.workspaceId,base=await engine.store.get(space,work.data.id,work.data.locale);
-   if(!base)return 'Not pulled from the Center yet.';
+   if(!base)return 'Not updated from the Center yet.';
    if(base.pending)return 'Saving to the Center…';
    return await engine.hasLocalChanges(space,file.path)?'Edited since the last sync; saved as a private draft automatically.':'Unchanged since the last sync.';
   }catch(error){return 'Sync state unavailable: '+error.message;}

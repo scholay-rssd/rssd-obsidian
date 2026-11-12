@@ -220,3 +220,13 @@ test('saving the edited works keeps going past a refused work and stops when the
   assert.equal(await p.saveEdited([file('one')]),null);assert.deepEqual(seen,[]);assert.match(notices.at(-1),/busy: pull/);
  }finally{mock.Notice=Original;}
 });
+
+test('the visible wording says Update for bringing works down, never Pull',async()=>{
+ const {readFileSync,readdirSync}=await import('node:fs');
+ for(const name of readdirSync(new URL('../src/',import.meta.url)).filter(name=>/\.m?js$/.test(name))){
+  const source=readFileSync(new URL('../src/'+name,import.meta.url),'utf8');
+  // Quoted text only; class names such as rssd-works-pulled and the internal `pull` action are not shown.
+  const shown=[...source.matchAll(/'([^'\n]*)'/g)].map(match=>match[1]).filter(text=>/(?<![-\w])(Pull|pulling|pulled|pull again|the pull)\b/.test(text));
+  assert.deepEqual(shown,[],name+' still shows the old wording');
+ }
+});

@@ -24,31 +24,33 @@ Open one RSSD Center space as a vault of drafts, see each work's sync state, and
    node install.mjs /path/to/vault
    ```
 3. In Obsidian enable the plugin, open Settings → RSSD, enter the Center address and run **Log in to the RSSD Center**. Approve the device and its spaces in your browser.
-4. Run **Pull works from the Center**. Chinese works appear in `Works/<id>.md`, English works in `Works/en/<id>.md`, and images in `article-media/`.
-5. Automatic sync is on by default. While Obsidian and the vault are open, it checks for remote changes periodically and saves edits to linked works as private drafts after a short delay. It discovers offline edits after reopening. Use Settings → RSSD → **Automatic sync** to turn it off. The manual pull and save commands remain available.
+4. Run **Update works from the Center**. Chinese works appear in `Works/<id>.md`, English works in `Works/en/<id>.md`, and images in `article-media/`.
+5. Automatic sync is on by default. While Obsidian and the vault are open, it checks for remote changes periodically and saves edits to linked works as private drafts after a short delay. It discovers offline edits after reopening. Use Settings → RSSD → **Automatic sync** to turn it off. The manual update and save commands remain available.
 6. Active spaces save to Center private drafts. When the Center advertises staged-draft support, a staged space saves an independent private migration draft based on its imported snapshot; the original site still owns publication, and later legacy changes can require reconciliation. Neither kind of save publishes. Mobile is read-only.
 
-Commands: *Log in*, *Pull works*, *Save this work*, *Check sync state of all works*.
+Commands: *Log in*, *Update works*, *Save this work*, *Check sync state of all works*.
+
+**Update** brings the Center's latest versions down into the vault, and **Save** sends edits up as private drafts. Internally an update is still a *pull*: the command id and the `pull` action for command links are unchanged, so existing hotkeys and links keep working.
 
 ## Rules (from the RSSD business spec)
 
 - The Center is the source of truth. Do not run Obsidian Sync, iCloud or Git on this vault.
 - A note is identified by its `rssd-id` property, never by its file name. Do not edit `rssd-*` properties.
-- A pull never overwrites a note with local changes; a conflict is reported and the note is left as written.
-- The Center sends bounded batches when supported; the plugin falls back to limited individual reads. Interrupted pulls retain completed work and report failures for retry.
+- An update never overwrites a note with local changes; a conflict is reported and the note is left as written.
+- The Center sends bounded batches when supported; the plugin falls back to limited individual reads. Interrupted updates retain completed work and report failures for retry.
 - A save carries the exact base version and is refused if the Center moved. The Center must explicitly confirm it preserves existing attachments and editorial metadata. It never publishes.
 - A save whose answer was lost keeps its request key and is recovered by that key, never resent.
 - Structured records (`year`, `history`, `openSource`) require a Center that explicitly supports safe private drafts. Only the title and the prose inside their existing named sections are editable; the first Markdown H1 must match the title. Other properties, section names and source fields must remain unchanged. Invalid edits stay local and are reported.
 - Referenced images are detected by their bytes and uploaded by content hash. Supported syntax is a relative Markdown path under `article-media/` or an explicit `![[article-media/name.png|alt]]` embed. Ambiguous `![[image.png]]`, files in other directories and unreferenced hidden-attachment replacement cannot be safely synchronized. A work may reference at most 12 PNG, JPEG or WebP images totaling 2 MiB.
 - New unlinked notes, local renames and local deletions do not create, rename or delete Center works. Moved or missing linked notes are reported and are not silently recreated. Return the original note to its linked path to resume syncing.
 
-## Interrupted pulls and saves
+## Interrupted updates and saves
 
-- A pull can take time, especially when articles include images. A batch can wait up to 300 seconds for the same request; after that the current pull stops rather than duplicating a request that Obsidian cannot cancel. Wait for the connection to recover before running **Pull works from the Center** again. Already confirmed articles and their baselines are retained; the next pull checks them and resumes the remaining work.
-- A finished pull can still report skipped local edits, conflicts, unresolved saves or failures. Skipped local edits are preserved; conflicts need review before another save. The latest operation's private `.obsidian/plugins/rssd/last-run.json` includes its state, progress and any recorded errors. Keep this file and the plugin's settings private.
+- An update can take time, especially when articles include images. A batch can wait up to 300 seconds for the same request; after that the current update stops rather than duplicating a request that Obsidian cannot cancel. Wait for the connection to recover before running **Update works from the Center** again. Already confirmed articles and their baselines are retained; the next update checks them and resumes the remaining work.
+- A finished update can still report skipped local edits, conflicts, unresolved saves or failures. Skipped local edits are preserved; conflicts need review before another save. The latest operation's private `.obsidian/plugins/rssd/last-run.json` includes its state, progress and any recorded errors. Keep this file and the plugin's settings private.
 - If the answer to a save is lost, leave the note and plugin settings in place. Run the save command again on that note: the plugin checks the original request's Center receipt instead of submitting a second draft. An unresolved receipt is not proof that the save failed or succeeded.
 - Sync records are kept in the plugin settings (`data.json`) together with a small `baselines.journal` beside it. The journal holds the newest changes until they are folded into the settings file, so keep, back up and restore the two files together; the journal is absent when there is nothing to fold in.
-- If a save succeeds but warns that its local version label could not be refreshed, the Center draft was saved. A later pull attempts a safe refresh of the `rssd-version` label while preserving note edits; do not send another save merely to repair the label. If the warning persists, inspect the note's identity properties and local changes.
+- If a save succeeds but warns that its local version label could not be refreshed, the Center draft was saved. A later update attempts a safe refresh of the `rssd-version` label while preserving note edits; do not send another save merely to repair the label. If the warning persists, inspect the note's identity properties and local changes.
 
 ## Formatted article and layout preview
 
@@ -90,7 +92,7 @@ See [product scope and remaining work](../docs/obsidian-product.md).
 
 ## Works list
 
-The left sidebar's **Works** tab lists every work of the space, grouped by the site's sections and newest first by the work's own date. Chinese works and English editions are listed one language at a time with the **中文 | English** switch (an English edition is a separate work in the Center, with no link to its original that the list could pair on). Search covers titles and summaries; **Edited** shows works changed since the last sync with the Center, and **To check** those still missing an author or category. The dot on each row is the work's local state: green synced, orange edited, blue saving, red conflict, grey not pulled yet. The footer shows the last pull and a **Pull** button. When works in the language on screen are edited, a **Save** button beside it saves them to the Center as private drafts one after another, the same save as the command for one work; nothing is published. A refused work (for example a conflict) is marked red and the rest continue; a space that refuses saves or a lost connection stops the batch. Everything is read from the vault, so the list is instant and works offline; whether the Center has a newer version still comes from a pull. Obsidian's file tree stays available as another tab.
+The left sidebar's **Works** tab lists every work of the space, grouped by the site's sections and newest first by the work's own date. Chinese works and English editions are listed one language at a time with the **中文 | English** switch (an English edition is a separate work in the Center, with no link to its original that the list could pair on). Search covers titles and summaries; **Edited** shows works changed since the last sync with the Center, and **To check** those still missing an author or category. The dot on each row is the work's local state: green synced, orange edited, blue saving, red conflict, grey not updated from the Center yet. The footer shows when the space was last updated, then two buttons: **Update** gets the Center's latest versions, and **Save** sends the edited works in the language on screen to the Center as private drafts, one after another, using the same save as the one-work command. Nothing is published. Save shows the count (for example "Save 3") and is greyed out while nothing is edited, or on mobile. A refused work (for example a conflict) is marked red and the rest continue; a space that refuses saves or a lost connection stops the batch. Everything is read from the vault, so the list is instant and works offline; whether the Center has a newer version still comes from an update. Obsidian's file tree stays available as another tab.
 
 ## Output themes
 

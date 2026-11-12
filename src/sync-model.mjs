@@ -168,7 +168,7 @@ const fail=message=>{throw Error(message);};
 /** The exact-base private save the Center expects. Problems are reported before anything is sent. */
 export function draftEnvelope({work,base,requestKey,assets,allowEmptyOptional=false,allowStructured=false}){
  const {data}=work;
- if(!base)fail('Pull this work from the Center before saving it');
+ if(!base)fail('Update this work from the Center before saving it');
  if(base.readOnly||work.kind!=='news')if(!allowStructured||!base.readOnly||!isStructuredKind(work.kind))fail('Structured records cannot be edited in Obsidian yet');
  if(data.id!==base.articleId)fail('The rssd-id property was changed; restore it before saving');
  if(data.sectionId!==base.sectionId||data.locale!==base.locale)fail('The section or language of a work cannot be changed here');
