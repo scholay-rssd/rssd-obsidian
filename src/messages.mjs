@@ -18,3 +18,12 @@ export function saveFailureMessage(error){
  if(error?.retained)return error.message+' Your save is kept; run the command again to recover it.';
  return 'Save failed: '+(error?.message||'unknown error')+(code?' ['+code+']':'');
 }
+/** One notice for a save of several works: how many were saved, and the first reason any could not be. */
+export function saveManySummary({saved=[],unchanged=[],failed=[]}){
+ const works=n=>n+(n===1?' work':' works');
+ const parts=[];
+ if(saved.length)parts.push('Saved '+works(saved.length)+' as private drafts. They are not published.');
+ if(unchanged.length)parts.push(works(unchanged.length)+' had nothing to save.');
+ if(failed.length){const first=failed[0];parts.push(works(failed.length)+' could not be saved. '+(first.file?.basename?first.file.basename+': ':'')+saveFailureMessage(first.error));}
+ return parts.join(' ')||'Nothing to save';
+}

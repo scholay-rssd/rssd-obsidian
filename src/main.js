@@ -8,7 +8,7 @@ import {SyncEngine} from './sync-engine.mjs';
 import {StagedSyncEngine} from './staged-sync-engine.mjs';
 import {canonicalPathIdentity,trackRename,trackDelete,confirmReturn} from './path-guard.mjs';
 import {AutoSync,startupDelay,syncLease} from './auto-sync.mjs';
-import {saveFailureMessage} from './messages.mjs';
+import {saveFailureMessage,saveManySummary} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
 import {workLabel,labelText} from './titles.mjs';
@@ -523,6 +523,29 @@ export default class RssdPlugin extends Plugin{
    new Notice(saveFailureMessage(error),10000);
   }
  }
+ /** Save several works one after another as private drafts, as one operation. A refused work does not stop
+  * the rest, but a space that refuses every save or a lost connection does. Never publishes. */
+ async saveEdited(files,{onProgress=()=>{}}={}){
+  const outcome={saved:[],unchanged:[],failed:[]};
+  try{
+   await this.operations.run('save',async()=>{
+    for(const [index,file] of files.entries()){
+     onProgress(index+1,files.length);
+     try{
+      const result=await this.saveWork(this.settings.workspaceId,file.path);this.autoSync?.unblock(file.path);
+      (result?.state==='unchanged'?outcome.unchanged:outcome.saved).push(file);
+     }catch(error){
+      console.error('RSSD save failed',file.path,error?.status,error?.code,error?.message);outcome.failed.push({file,error});
+      // Show it the way automatic sync does, so the list marks it as needing attention.
+      if(error?.conflict||error?.status===409)this.autoSync?.blocked?.add(file.path);
+      if(['forbidden','migration_staged','network_error'].includes(error?.code))break;
+     }
+    }
+   });
+  }catch(error){new Notice(error?.code==='operation_busy'?error.message:saveFailureMessage(error),10000);return null;}
+  new Notice(saveManySummary(outcome),outcome.failed.length?15000:6000);
+  return outcome;
+ }
 
  /** A work as a styled article for pasting into a rich-text editor (the WeChat official-account editor is
   * the one it is tuned for). Reads the note; changes nothing. */
@@ -807,6 +830,8 @@ class WorksView extends ItemView{
    for(const work of items.slice(0,limit))this.row(group,work);
    if(items.length>limit){const more=group.createDiv({cls:'rssd-works-more',text:'Show '+Math.min(WORKS_PAGE,items.length-limit)+' more of '+(items.length-limit)});more.addEventListener('click',()=>{this.limits.set(key,limit+WORKS_PAGE);this.render();});}
   }
+  // Save takes what the Edited filter counts: the edited works of the language on screen.
+  this.edited=all.filter(work=>this.states.get(work.file.path)?.state==='edited').map(work=>work.file);
   this.mark();this.renderFoot();void this.fillStates(every);
  }
  row(group,work){
@@ -843,6 +868,18 @@ class WorksView extends ItemView{
   if(!this.foot)return;this.foot.empty();
   const at=this.plugin.settings.lastPullAt,minutes=at?Math.round((Date.now()-at)/60000):null;
   this.foot.createSpan({cls:'rssd-works-pulled',text:at?'Last pull '+(minutes<1?'just now':minutes<60?minutes+' min ago':minutes<1440?Math.round(minutes/60)+' h ago':Math.round(minutes/1440)+' d ago'):'Not pulled yet'});
+  const edited=this.saving?[]:this.edited||[];
+  if(this.saving||(edited.length&&!Platform.isMobile)){
+   const save=this.foot.createEl('button',{cls:'rssd-works-pull rssd-works-save mod-cta',text:this.saving||'Save '+edited.length});
+   save.setAttribute('aria-label',this.saving?'Saving to the Center':'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.');
+   save.disabled=!!this.saving;
+   save.addEventListener('click',async()=>{
+    const files=[...edited];if(!files.length)return;
+    this.saving='Saving…';this.renderFoot();
+    try{await this.plugin.saveEdited(files,{onProgress:(done,total)=>{this.saving='Saving '+done+'/'+total;this.renderFoot();}});}
+    finally{this.saving=null;for(const file of files)this.states.delete(file.path);this.render();}
+   });
+  }
   const pull=this.foot.createEl('button',{cls:'rssd-works-pull',text:'Pull'});pull.addEventListener('click',async()=>{pull.disabled=true;try{await this.plugin.pull();}finally{pull.disabled=false;this.render();}});
  }
 }

@@ -184,3 +184,27 @@ test('no view replaces Obsidian\'s own lifecycle methods',async()=>{
   for(const reserved of ['open','close','load','unload','setState','getState'])
    assert.doesNotMatch(body,new RegExp('^ (async )?'+reserved+'\\(','m'),name+' replaces '+reserved+'()');
 });
+
+test('saving the edited works keeps going past a refused work and stops when the space or connection fails',async()=>{
+ const notices=[],Original=mock.Notice;mock.Notice=class{constructor(message){notices.push(message);}};
+ try{
+  const p=plugin(),blocked=new Set(),unblocked=[],seen=[],progress=[];
+  p.autoSync={blocked,unblock:path=>unblocked.push(path)};
+  const file=name=>({path:'Works/'+name+'.md',basename:name});
+  const answers={one:{state:'saved'},two:{state:'unchanged'},three:Object.assign(Error('newer'),{status:409,conflict:true,code:'revision_conflict'}),
+   four:{state:'saved'},five:Object.assign(Error('offline'),{code:'network_error'}),six:{state:'saved'}};
+  p.saveWork=async(space,path)=>{assert.equal(space,'metho');const name=path.slice(6,-3);seen.push(name);const answer=answers[name];if(answer instanceof Error)throw answer;return answer;};
+  const outcome=await p.saveEdited(['one','two','three','four','five','six'].map(file),{onProgress:(done,total)=>progress.push(done+'/'+total)});
+  assert.deepEqual(seen,['one','two','three','four','five'],'a lost connection stops the batch');
+  assert.deepEqual(outcome.saved.map(f=>f.basename),['one','four']);assert.deepEqual(outcome.unchanged.map(f=>f.basename),['two']);
+  assert.deepEqual(outcome.failed.map(f=>f.file.basename),['three','five']);
+  assert.deepEqual([...blocked],['Works/three.md'],'a conflict is marked the way automatic sync marks it');
+  assert.deepEqual(unblocked,['Works/one.md','Works/two.md','Works/four.md']);
+  assert.deepEqual(progress,['1/6','2/6','3/6','4/6','5/6']);
+  assert.equal(p.operations.active,null);
+  assert.match(notices.at(-1),/^Saved 2 works as private drafts\. They are not published\. 1 work had nothing to save\. 2 works could not be saved\. three: The Center has a newer version/);
+  // Another operation in progress refuses the whole batch before anything is sent.
+  seen.length=0;p.operations.active='pull';
+  assert.equal(await p.saveEdited([file('one')]),null);assert.deepEqual(seen,[]);assert.match(notices.at(-1),/busy: pull/);
+ }finally{mock.Notice=Original;}
+});
