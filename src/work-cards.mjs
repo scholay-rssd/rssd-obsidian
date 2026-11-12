@@ -94,5 +94,6 @@ export function writerOf(privateEditorial){
   .sort((a,b)=>String(b.startedAt??'').localeCompare(String(a.startedAt??'')));
  const run=runs.find(r=>r.action==='write')||runs[0];if(!run)return null;
  const agent=run.agentName.trim(),model=modelLabel(run);
- return {agent,model,label:model?agent+' · '+model:agent};
+ // Some agents carry their model in their own name; it is not repeated.
+ return {agent,model,label:model&&!agent.toLowerCase().includes(model.toLowerCase())?agent+' · '+model:agent};
 }

@@ -83,6 +83,7 @@ test('the writer is the agent and model of the newest completed writing run',()=
  assert.equal(writerOf({modelSignatures:[run('Codex','write','2026-11-01T00:00:00Z',{modelId:'gpt-6.1-terra[max]'}),run('Claude','write','2026-11-02T00:00:00Z',{modelName:'Opus 5.5'})]}).label,'Claude · Opus 5.5','the newest write wins');
  assert.equal(writerOf({modelSignatures:[run('Codex','write','2026-11-01T00:00:00Z',{modelId:'gpt-6.1-terra[max]'})]}).label,'Codex · gpt-6.1-terra','a model id stands in for a missing name');
  assert.equal(writerOf({modelSignatures:[run('Cursor','write','2026-11-05T12:54:00Z',{modelId:'default[]',modelName:'Auto'})]}).label,'Cursor · Auto');
+ assert.equal(writerOf({modelSignatures:[run('Antigravity Gemini 3.8 Flash','write','2026-11-11T00:00:00Z',{modelName:'Gemini 3.8 Flash (High)'})]}).label,'Antigravity Gemini 3.8 Flash','a model already in the agent\'s name is not repeated');
  assert.equal(writerOf({modelSignatures:[run('Cursor','organize','2026-11-05T12:54:00Z',{modelId:'default[]'})]}).label,'Cursor','with no write, the newest run; no model when none was recorded');
  assert.equal(writerOf({modelSignatures:[{...run('Codex','write','2026-11-01T00:00:00Z'),status:'interrupted'}]}),null,'an interrupted run wrote nothing');
  for(const empty of [null,undefined,{},{modelSignatures:'x'},{modelSignatures:[]}])assert.equal(writerOf(empty),null);
