@@ -31,7 +31,7 @@ const LOCALES=['zh-CN','en'];
 // The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
 // between them.
 const SIDEBAR_VIEWS=Object.freeze([['rssd-article','article'],['rssd-cards','cards'],['rssd-outline','outline'],['rssd-details','details']]);
-// Article and Cards are page-sized, so they open as tabs beside the note in the editor area; the right sidebar
+// Article and Cards open as tabs in the note's own tab bar, where each has the full width; the right sidebar
 // keeps the narrow panels. Wherever a tab is moved afterwards, it is reopened there.
 const EDITOR_VIEWS=Object.freeze(['rssd-article','rssd-cards']);
 const RIGHT_VIEWS=Object.freeze(SIDEBAR_VIEWS.map(([type])=>type).filter(type=>!EDITOR_VIEWS.includes(type)));
@@ -668,12 +668,12 @@ export default class RssdPlugin extends Plugin{
   * tabs (any of them can be reopened from the command palette). On the first arrangement, now that the
   * properties have a place of their own, the properties block at the top of each note is hidden; the vault's
   * earlier choice is kept so it can be restored. Panels left by earlier versions are replaced, and the Article
-  * and Card previews that earlier versions kept in the right sidebar are closed there: they now open beside the
-  * note when asked for.
+  * and Card previews that earlier versions kept in the right sidebar, or in a pane of their own beside the note,
+  * are closed there once: they now open as tabs next to the note when asked for.
   */
  async tidySidebar(){
   const version=this.settings.layoutVersion||0;
-  if(version>=7||!this.settings.workspaceId||Platform.isMobile)return false;
+  if(version>=8||!this.settings.workspaceId||Platform.isMobile)return false;
   const workspace=this.app.workspace,created=new Set();
   if(version<5){
   // Add the new tabs before closing anything: an emptied sidebar is refilled by Obsidian with its default tabs.
@@ -682,13 +682,17 @@ export default class RssdPlugin extends Plugin{
   for(const type of ['backlink','outgoing-link','tag','all-properties','outline'])for(const leaf of workspace.getLeavesOfType(type))if(leaf.getRoot?.()===workspace.rightSplit)leaf.detach();
   const front=[...created].at(-1);if(front)workspace.revealLeaf(front);
   }
-  for(const type of EDITOR_VIEWS)for(const leaf of workspace.getLeavesOfType(type))if(leaf.getRoot?.()===workspace.rightSplit)leaf.detach();
+  for(const type of EDITOR_VIEWS)for(const leaf of workspace.getLeavesOfType(type)){
+   if(leaf.getRoot?.()===workspace.rightSplit){leaf.detach();continue;}
+   // Version 7 split them into a pane of their own; one that shares a tab bar with a note is already in place.
+   if(version<8&&leaf.getRoot?.()===workspace.rootSplit&&leaf.parent&&!workspace.getLeavesOfType('markdown').some(note=>note.parent===leaf.parent))leaf.detach();
+  }
   // The Works list sits in the left sidebar, in front of the file tree.
   await this.openWorks();
   const vault=this.app.vault,before=vault.getConfig?.('propertiesInDocument');
   // Only on the first arrangement, so a vault that brought the properties back keeps them.
   if(version<2&&typeof vault.setConfig==='function'&&before!=='hidden'){this.settings.propertiesBefore=before||'visible';vault.setConfig('propertiesInDocument','hidden');}
-  this.settings.layoutVersion=7;await this.saveSettings();
+  this.settings.layoutVersion=8;await this.saveSettings();
   return true;
  }
  /**
@@ -704,19 +708,20 @@ export default class RssdPlugin extends Plugin{
   for(const type of ['backlink','outgoing-link','tag','all-properties','outline'])for(const leaf of workspace.getLeavesOfType(type))if(inRight(leaf)){leaf.detach();closed++;}
   return closed;
  }
- /** Show one of the RSSD tabs where it is, or open it: the previews beside the note, the panels in the right sidebar. */
+ /** Show one of the RSSD tabs where it is, or open it: the previews next to the note, the panels in the right sidebar. */
  async openView(type){
   const workspace=this.app.workspace;let leaf=workspace.getLeavesOfType(type)[0];
-  if(!leaf){leaf=EDITOR_VIEWS.includes(type)?this.besideNote(type):workspace.getRightLeaf(false);if(!leaf)return;await leaf.setViewState({type,active:true});}
+  if(!leaf){leaf=EDITOR_VIEWS.includes(type)?this.previewTab(type):workspace.getRightLeaf(false);if(!leaf)return;await leaf.setViewState({type,active:true});}
   workspace.revealLeaf(leaf);
  }
- /** A new tab for a preview: next to the other preview if that is open in the editor area, else split beside the note. */
- besideNote(type){
+ /** A new tab for a preview in the note's own tab bar: next to the other preview if that is open in the editor
+  * area, else next to the note. */
+ previewTab(type){
   const workspace=this.app.workspace;
   const sibling=EDITOR_VIEWS.filter(t=>t!==type).flatMap(t=>workspace.getLeavesOfType(t)).find(leaf=>leaf.getRoot?.()===workspace.rootSplit);
-  if(sibling){workspace.setActiveLeaf(sibling,{focus:false});return workspace.getLeaf('tab');}
   const work=this.currentWork(),note=work&&workspace.getLeavesOfType('markdown').find(leaf=>leaf.view?.file===work);
-  return note&&!Platform.isMobile?workspace.createLeafBySplit(note,'vertical'):workspace.getLeaf('tab');
+  const beside=sibling||note;if(beside)workspace.setActiveLeaf(beside,{focus:false});
+  return workspace.getLeaf('tab');
  }
  openDetails(){return this.openView('rssd-details');}
  /** The work open in the editor, even while a sidebar tab has the focus. */
