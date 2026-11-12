@@ -13,6 +13,7 @@ import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
 import {workLabel,labelText,tabTitle} from './titles.mjs';
 import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel,isBrandLine} from './work-cards.mjs';
+import {internalNotes,hasOpenChecks,runHistory,rowNotes,anchorMatches} from './private-notes.mjs';
 import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER} from './works-filter.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
@@ -58,6 +59,14 @@ const TITLE_STYLE=`
 .rssd-figcaption.is-missing{color:var(--text-error)}
 .rssd-brand-line{position:relative}
 .rssd-brand-line::after{content:"Brand";margin-left:6px;padding:0 5px;border-radius:3px;background:color-mix(in srgb,var(--color-green) 15%,transparent);color:var(--color-green);font-size:.75em;vertical-align:1px}
+.rssd-row-note-mark{display:inline-flex;margin-left:4px;color:var(--color-orange);cursor:pointer;vertical-align:-2px}.rssd-row-note-mark svg{width:14px;height:14px}
+.rssd-row-note-box{margin:.2em 0 1em;padding:6px 10px;border-left:3px solid var(--color-orange);border-radius:0;background:color-mix(in srgb,var(--color-orange) 8%,transparent);font-family:var(--font-interface);font-size:var(--font-ui-small);line-height:1.6}
+.rssd-row-note-label{color:var(--text-muted);font-size:var(--font-ui-smaller)}.rssd-row-note-text{white-space:pre-wrap}
+.rssd-details-private{margin:var(--size-4-3) 0;padding-top:var(--size-4-2);border-top:1px solid var(--background-modifier-border)}
+.rssd-details-private-item{margin:6px 0}.rssd-details-private-label{color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-details-private-text{white-space:pre-wrap;font-size:var(--font-ui-small);line-height:1.6}
+.rssd-details-private-item.is-checks{padding:6px 8px;border-left:3px solid var(--color-orange);background:color-mix(in srgb,var(--color-orange) 8%,transparent)}
+.rssd-details-runs>summary{cursor:pointer;color:var(--text-muted);font-size:var(--font-ui-smaller);margin-top:6px}
 .rssd-context{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;margin:0 0 1.8em;color:var(--text-muted);font-family:var(--font-interface);font-size:var(--font-ui-smaller);line-height:1.6}
 .rssd-context-section{padding:0 6px;border-radius:3px;background:color-mix(in srgb,var(--rssd-section,var(--text-muted)) 14%,transparent);color:var(--rssd-section,var(--text-muted))}
 .rssd-work-note .inline-title,.rssd-work-note .view-header-title-parent,.rssd-work-note .view-header-title{display:none}
@@ -386,6 +395,23 @@ export default class RssdPlugin extends Plugin{
   return createCenterClient({http,origin:this.settings.origin,token});
  }
  /** Show the Works list in the left sidebar (one left by an earlier version elsewhere is moved there). */
+ /** A work's private Center record ({privateEditorial, firstMachine}), read once per version and kept for the
+  * session. Null when the Center has none. Read only. */
+ privateRecord(file){
+  const front=this.app.metadataCache.getFileCache(file)?.frontmatter||{},version=Number(front['rssd-version']);
+  const key=this.settings.workspaceId+':'+String(front['rssd-locale']||'zh-CN')+':'+String(front['rssd-id']||'')+':'+version;
+  this.privateRecords??=new Map();
+  if(!this.privateRecords.has(key)){
+   const read=(async()=>{
+    if(!front['rssd-id']||!Number.isSafeInteger(version)||version<1)return null;
+    try{return await this.client().privateNotes(this.settings.workspaceId,String(front['rssd-id']),version);}
+    catch(error){if(error?.status===404)return null;this.privateRecords.delete(key);throw error;}
+   })();
+   read.then(value=>{read.value=value;},()=>{});
+   this.privateRecords.set(key,read);
+  }
+  return this.privateRecords.get(key);
+ }
  /** Marks a work note's reading view as a proofreading view. Runs on each rendered block; never edits the note. */
  decorateReading(el,ctx){
   const file=ctx?.sourcePath?this.app.vault.getAbstractFileByPath(ctx.sourcePath):null;
@@ -411,11 +437,36 @@ export default class RssdPlugin extends Plugin{
   // The reference heading sets the list after it apart.
   const heading=el.querySelector('h1,h2,h3,h4,h5,h6');
   if(heading&&/^(参考文献|参考资料|References|Bibliography|Sources)$/i.test(heading.textContent.trim()))el.addClass('rssd-reference-block');
+  // Notes pinned to a paragraph, heading or picture: a mark that opens them in place. The record is read in the
+  // background; the view is drawn again once it arrives.
+  const pending=this.privateRecord(file);
+  if(!('value' in pending)){if(!pending.redrawing){pending.redrawing=true;pending.then(()=>this.redrawReading(file),()=>{});}}
+  else for(const row of rowNotes(pending.value?.privateEditorial)){
+   if(!row.anchor)continue;
+   const candidates=row.anchor.type==='image'?[...el.querySelectorAll('img')]:[...el.querySelectorAll('p,li,h1,h2,h3,h4,h5,h6')];
+   for(const node of candidates){
+    const text=row.anchor.type==='image'?node.getAttribute('alt'):node.textContent;
+    if(!anchorMatches(row.anchor.text,text)||node.dataset.rssdRowNote)continue;node.dataset.rssdRowNote='1';
+    const holder=node.tagName==='IMG'?(node.closest('.image-embed,.internal-embed')||node):node;
+    const mark=(holder===node&&node.tagName!=='IMG'?node:holder.parentElement).createSpan({cls:'rssd-row-note-mark'});setIcon(mark,'message-square');
+    if(holder!==node||node.tagName==='IMG')holder.after(mark);
+    mark.setAttribute('aria-label',row.notes.map(n=>n.label+'：'+n.text).join('\n'));
+    const box=createDiv({cls:'rssd-row-note-box'});box.hide();
+    for(const note of row.notes){box.createDiv({cls:'rssd-row-note-label',text:note.label});box.createDiv({cls:'rssd-row-note-text',text:note.text});}
+    (node.tagName==='IMG'?mark:holder).after(box);
+    mark.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();box.toggle(!box.isShown());});
+    break;
+   }
+  }
   // The site's brand line, wherever it is mounted.
   for(const node of el.querySelectorAll('li,p')){
    const link=node.querySelector(':scope > a, :scope > p:first-child > a');
    if(link&&isBrandLine('['+link.textContent+']('+link.getAttribute('href')+')',origin)&&node.textContent.trim().startsWith(link.textContent.trim()))node.addClass('rssd-brand-line');
   }
+ }
+ /** Draw a work's reading views again, for marks that need the private record. */
+ redrawReading(file){
+  for(const leaf of this.app.workspace.getLeavesOfType('markdown'))if(leaf.view?.file===file)leaf.view.previewMode?.rerender?.(true);
  }
  /** Show one of Obsidian's own sidebar tabs (Files, Search), or open it with its own command if it was closed. */
  revealCore(type,command){
@@ -992,7 +1043,7 @@ class WorksFilterPanel{
 const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not updated from the Center yet'};
 const WORKS_PAGE=60;
 // Where writers ({agent, model, machine}) are kept on this device. A new name makes every writer be read again after a fix.
-const WRITERS_KEY='rssd-writers-4';
+const WRITERS_KEY='rssd-writers-5';
 const FILTER_KEY='rssd-works-filter';
 class WorksView extends ItemView{
  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.limit=WORKS_PAGE;this.panel=null;this.states=new Map();
@@ -1101,7 +1152,8 @@ class WorksView extends ItemView{
    let writer=null;
    this.machineAsked.add(this.writerKey(work));
    try{const notes=await client.privateNotes(this.plugin.settings.workspaceId,work.id,Number(work.version)),found=writerOf(notes?.privateEditorial),machine=typeof notes?.firstMachine?.name==='string'?notes.firstMachine.name:'';
-    writer=found||machine?{agent:found?.agent||'',model:found?.model||'',machine}:null;}
+    const checks=hasOpenChecks(notes?.privateEditorial);
+    writer=found||machine||checks?{agent:found?.agent||'',model:found?.model||'',machine,checks}:null;}
    catch(error){if(error?.status!==404){stopped=true;return;}}
    this.writers[this.writerKey(work)]=writer;added++;this.refreshItem(work.file.path);
    if(added%25===0)this.saveWriters();
@@ -1182,7 +1234,7 @@ class WorksView extends ItemView{
   if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
   title.appendText(work.title);
   // Most works need nothing, so the chip row is only there when there is a chip.
-  const chips=cardChips({...work,state}),badges=chips.length?body.createDiv({cls:'rssd-works-badges'}):null;
+  const chips=cardChips({...work,state,checks:this.writerFor(work)?.checks}),badges=chips.length?body.createDiv({cls:'rssd-works-badges'}):null;
   for(const chip of chips){const badge=badges.createSpan({cls:'rssd-works-badge is-'+chip.tone,text:chip.text});badge.setAttribute('aria-label',chip.title);}
   // What the work is made of. Length, references and the brand line arrive with the background pass.
   const row=card.createDiv({cls:'rssd-works-facts'}),pictures=work.media.length,references=facts?.references;
@@ -1517,6 +1569,21 @@ class WorkDetails{
    const checks=checkSource({...work.data,kind:work.kind,media:work.media}).warnings;
    if(checks.length){const box=el.createDiv({cls:'rssd-details-checks'});box.createDiv({cls:'rssd-details-label',text:'To check'});for(const check of checks)box.createDiv({cls:'rssd-details-check',text:check.message});}
   }
+  // The private record: internal notes (what still needs checking first) and every run. Read only.
+  const privateBox=el.createDiv({cls:'rssd-details-private'});privateBox.createDiv({cls:'rssd-details-label',text:'Internal notes'});
+  const waiting=privateBox.createDiv({cls:'rssd-details-note',text:'Reading from the Center…'});
+  this.plugin.privateRecord(file).then(record=>{
+   if(seq!==this.seq)return;waiting.remove();
+   const notes=internalNotes(record?.privateEditorial),runs=runHistory(record?.privateEditorial);
+   if(!notes.length)privateBox.createDiv({cls:'rssd-details-note',text:'No internal notes.'});
+   for(const note of notes){const item=privateBox.createDiv({cls:'rssd-details-private-item'+(note.key==='verification'?' is-checks':'')});item.createDiv({cls:'rssd-details-private-label',text:note.label});item.createDiv({cls:'rssd-details-private-text',text:note.text});}
+   const rows=rowNotes(record?.privateEditorial).length;if(rows)privateBox.createDiv({cls:'rssd-details-note',text:rows+(rows===1?' note is':' notes are')+' pinned to paragraphs; reading mode marks them.'});
+   if(runs.length){
+    const history=privateBox.createEl('details',{cls:'rssd-details-runs'});history.createEl('summary',{text:'Runs ('+runs.length+')'});
+    for(const run of runs){const row=history.createDiv({cls:'rssd-details-row'});row.createSpan({cls:'rssd-details-key',text:run.at.slice(5,16).replace('T',' ')+' · '+run.action});row.createSpan({cls:'rssd-details-value',text:run.label+(run.status&&run.status!=='completed'?' ('+run.status+')':'')});}
+   }
+   if(record?.firstMachine?.name)privateBox.createDiv({cls:'rssd-details-note',text:'First written on '+record.firstMachine.name+'.'});
+  },error=>{if(seq!==this.seq)return;waiting.setText('Internal notes unavailable: '+(error?.message||error));});
   const link=el.createEl('details',{cls:'rssd-details-link'});link.createEl('summary',{text:'Center link'});
   const state=link.createDiv({cls:'rssd-details-state',text:'Checking…'});
   for(const [key,label] of IDENTITY_FIELDS){const row=link.createDiv({cls:'rssd-details-row'});row.createSpan({cls:'rssd-details-key',text:label});row.createSpan({cls:'rssd-details-value',text:fieldText(properties[key])||'—'});}
