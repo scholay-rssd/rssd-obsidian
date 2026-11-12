@@ -102,6 +102,8 @@ export function createCenterClient({http,origin,token}){
   published:(workspaceId,articleId,locale)=>request(editorial(workspaceId,'published/'+encodeURIComponent(articleId)+'?'+query({locale,media:'referenced'}))),
   /** The newest Center edition (drafts included) for reading only. */
   latest:(workspaceId,articleId,locale)=>request(editorial(workspaceId,'cloud/'+encodeURIComponent(articleId)+'?'+query({locale,media:'referenced'}))),
+  /** The private writing record kept with an edition: notes and the agents and models that ran. Read only. */
+  privateNotes:(workspaceId,articleId,revision)=>request(editorial(workspaceId,'source-archives/private-notes/'+encodeURIComponent(articleId)+(revision?'?'+query({revision}):''))),
   stagedSite:site,
   stagedList:(workspaceId,locale,options={})=>request(editorial(workspaceId,'staged-drafts?'+query({locale,...options}))),
   stagedWork:(workspaceId,articleId,locale)=>boundedDetail(workspaceId,editorial(workspaceId,'staged-drafts/'+encodeURIComponent(articleId)+'?'+query({locale}))),

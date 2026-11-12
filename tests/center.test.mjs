@@ -109,6 +109,14 @@ test('batch details get a longer bounded timeout than ordinary requests',async()
  }finally{globalThis.setTimeout=realSetTimeout;}
 });
 
+test('the private writing record is read for one edition, never written',async()=>{
+ const seen=[],client=createCenterClient({origin:'https://center.example.org',token:TOKEN,http:async req=>{seen.push(req);return reply(200,{articleId:'center-1',revision:3,privateEditorial:{modelSignatures:[]}});}});
+ assert.equal((await client.privateNotes('metho','center-1',3)).revision,3);
+ await client.privateNotes('metho','a b');
+ assert.deepEqual(seen.map(r=>[r.method,r.url]),[['GET','https://center.example.org/api/rssd/v1/editorial/metho/source-archives/private-notes/center-1?revision=3'],
+  ['GET','https://center.example.org/api/rssd/v1/editorial/metho/source-archives/private-notes/a%20b']]);
+});
+
 test('uncertain POST failures are never retried',async()=>{
  let attempts=0;
  await assert.rejects(centerRequest(async()=>{attempts++;throw Error('offline');},'https://center.example.org','/drafts',{

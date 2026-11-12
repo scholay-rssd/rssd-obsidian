@@ -149,6 +149,8 @@ export class SyncEngine{
   const transport={batchRequests:0,batchWorks:0,batchDelivered:0,batchRequestErrors:0,batchUnsupported:0,
    batchOverLimit:0,batchItemFailures:0,singleRequests:0,fallbackSingles:0,retrySingles:0};
   const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],metadataPending:[],failed:[],unchanged:0,removedFromCenter:[],transport};
+  // Which Center work each edition belongs to, so a Chinese work and its English edition can be paired.
+  summary.documents={};
   const seen=new Set(),retry=[];
   let batchAvailable=typeof this.client.workBatch==='function',failedBatches=0;
   const failure=(item,error)=>({articleId:item.articleId,code:error.code||'network_error',
@@ -275,6 +277,7 @@ export class SyncEngine{
     const group=items.slice(offset,offset+BATCH_SIZE),entries=[];
     for(const item of group){
      seen.add(item.articleId);
+     if(typeof item.documentId==='string'&&item.documentId)summary.documents[item.articleId]=item.documentId;
      try{const prepared=await prepare(item);if(prepared)entries.push(prepared);}
      catch(error){throw attach(item,error);}
     }

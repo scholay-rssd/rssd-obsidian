@@ -12,7 +12,7 @@ import {saveFailureMessage,saveManySummary} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
 import {workLabel,labelText} from './titles.mjs';
-import {cardChips,mediaName,textLength,lengthText} from './work-cards.mjs';
+import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf} from './work-cards.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
 import {wechatHtml,copyRich} from './wechat.mjs';
@@ -103,7 +103,12 @@ const TITLE_STYLE=`
 .rssd-works-thumb{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:40px;height:40px;border:1px solid var(--background-modifier-border);border-radius:var(--radius-s);overflow:hidden;background:var(--background-secondary);color:var(--text-faint)}
 .rssd-works-thumb img{display:block;width:100%;height:100%;object-fit:cover}
 .rssd-works-thumb svg{width:16px;height:16px}
-.rssd-works-card-meta{grid-column:1/-1;overflow:hidden;color:var(--text-faint);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}
+.rssd-works-facts{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
+.rssd-works-fact,.rssd-works-writer{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+.rssd-works-fact-icon{display:flex}.rssd-works-fact-icon svg{width:12px;height:12px}
+.rssd-works-fact.is-missing,.rssd-works-writer.is-missing{color:var(--text-faint)}
+.rssd-works-fact.is-absent>span:last-child{text-decoration:line-through}
+.rssd-works-writer{grid-column:1/-1;min-width:0;overflow:hidden;color:var(--text-muted);font-size:var(--font-ui-smaller);text-overflow:ellipsis}
 .rssd-works-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px;margin-top:2px;padding-top:6px;border-top:1px solid var(--background-modifier-border)}
 .rssd-works button.rssd-works-action{height:auto;padding:2px 8px;font-size:var(--font-ui-smaller)}
 .rssd-details,.rssd-outline{padding:var(--size-4-2) var(--size-4-3);font-size:var(--font-ui-small)}
@@ -384,6 +389,8 @@ export default class RssdPlugin extends Plugin{
    for(const key of ['downloaded','updated','skipped','conflicts','pending','metadataPending','removedFromCenter'])summary[key].push(...(result[key]||[]).map(id=>locale==='zh-CN'?id:locale+'/'+id));
    summary.failed.push(...(result.failed||[]).map(item=>({...item,locale})));summary.unchanged+=result.unchanged||0;
    summary.transportByLocale[locale]=result.transport;
+   // A complete catalog replaces this language's pairing record; kept for the Works list's edition marks.
+   ((this.settings.documents??={})[space]??={})[locale]=result.documents||{};
    if(!info.writable&&info.migrationState==='staged'){
     const overlay=await new StagedSyncEngine({engine}).pull(space,{locale});
     for(const key of ['updated','conflicts','pending'])for(const id of overlay[key]||[]){const name=locale==='zh-CN'?id:locale+'/'+id;if(!summary[key].includes(name))summary[key].push(name);}
@@ -767,7 +774,9 @@ class RssdSettings extends PluginSettingTab{
 const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not updated from the Center yet'};
 const WORKS_PAGE=60;
 class WorksView extends ItemView{
- constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.filter='all';this.lang='zh';this.collapsed=new Set();this.limits=new Map();this.states=new Map();this.sizes=new Map();this.shown=new Map();this.timer=null;this.filling=false;
+ constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.filter='all';this.lang='zh';this.collapsed=new Set();this.limits=new Map();this.states=new Map();this.facts=new Map();this.shown=new Map();this.timer=null;this.filling=false;this.fetchingWriters=false;
+  // Who wrote each edition, read from the Center once per version and kept on this device.
+  this.writers=(()=>{try{const kept=this.app.loadLocalStorage?.('rssd-writers');return kept&&typeof kept==='object'?kept:{};}catch{return {};}})();
   this.layout=this.app.loadLocalStorage?.('rssd-works-layout')==='list'?'list':'cards';}
  getViewType(){return 'rssd-works';}
  getDisplayText(){return 'Works';}
@@ -796,8 +805,7 @@ class WorksView extends ItemView{
   this.registerEvent(this.app.vault.on('modify',file=>{this.states.delete(file.path);later();}));
   for(const event of ['create','delete','rename'])this.registerEvent(this.app.vault.on(event,later));
   this.registerEvent(this.app.workspace.on('file-open',()=>this.mark()));
-  // Relative times (the last update, "Edited 12 min ago") move on by themselves.
-  this.registerInterval(window.setInterval(()=>{this.renderFoot();for(const path of this.shown.keys())if(this.states.get(path)?.state==='edited')this.refreshItem(path);},60000));
+  this.registerInterval(window.setInterval(()=>this.renderFoot(),60000));
   this.app.workspace.onLayoutReady(()=>this.render());
  }
  async onClose(){window.clearTimeout(this.timer);}
@@ -831,13 +839,43 @@ class WorksView extends ItemView{
   }catch{state='synced';}
   this.states.set(file.path,{key,state});return state;
  }
- /** The body's length for its card, counted once per version of the note. Returns whether it changed. */
+ /** What the body holds (length, references, the site's brand line), read once per version of the note.
+  * Returns whether it changed. */
  async measure(work){
   const file=work.file,key=file.path+':'+file.stat.mtime;
-  if(this.sizes.get(file.path)?.key===key)return false;
-  let length=null;try{length=textLength(await this.app.vault.cachedRead(file));}catch{}
-  this.sizes.set(file.path,{key,length});return true;
+  if(this.facts.get(file.path)?.key===key)return false;
+  let facts=null;try{facts=noteFacts(await this.app.vault.cachedRead(file),{origin:wechatSite(this.plugin.settings.workspaceId)?.origin});}catch{}
+  this.facts.set(file.path,{key,...facts});return true;
  }
+ /** For each edition, whether the Center has the same work in the other language; known after an Update. */
+ editionIndex(){
+  const documents=this.plugin.settings.documents?.[this.plugin.settings.workspaceId];if(!documents)return null;
+  const present=Object.fromEntries(Object.entries(documents).map(([locale,ids])=>[locale,new Set(Object.values(ids||{}))]));
+  return {document:work=>documents[work.locale]?.[work.id],has:(locale,document)=>!!document&&!!present[locale]?.has(document)};
+ }
+ writerKey(work){return this.plugin.settings.workspaceId+':'+work.locale+':'+work.id+':'+work.version;}
+ /** The writer's label, null when the Center has no record, undefined while not yet read. */
+ writerFor(work){const key=this.writerKey(work);return Object.hasOwn(this.writers,key)?this.writers[key]:undefined;}
+ /** Read who wrote each work from the Center's private writing record, one work at a time, the ones on screen
+  * first. Read only; a lost connection stops the pass and the next drawing resumes it. */
+ async fillWriters(works){
+  if(this.fetchingWriters||this.layout!=='cards'||!this.plugin.settings.workspaceId)return;
+  let client;try{client=this.plugin.client();}catch{return;}
+  if(typeof client.privateNotes!=='function')return;
+  this.fetchingWriters=true;let added=0;
+  try{
+   for(const work of new Set(works)){
+    if(this.layout!=='cards')break;
+    const version=Number(work.version);if(!Number.isSafeInteger(version)||version<1||this.writerFor(work)!==undefined)continue;
+    let writer=null;
+    try{writer=writerOf((await client.privateNotes(this.plugin.settings.workspaceId,work.id,version))?.privateEditorial)?.label||null;}
+    catch(error){if(error?.status!==404)break;}
+    this.writers[this.writerKey(work)]=writer;added++;this.refreshItem(work.file.path);
+    if(added%25===0)this.saveWriters();
+   }
+  }finally{this.fetchingWriters=false;if(added)this.saveWriters();}
+ }
+ saveWriters(){try{this.app.saveLocalStorage?.('rssd-writers',this.writers);}catch{}}
  sectionNames(){
   const site=wechatSite(this.plugin.settings.workspaceId);
   return new Map((SITE_SECTIONS[site?.id]||[]).map((section,index)=>[section.id,{name:section.name,order:index}]));
@@ -867,7 +905,7 @@ class WorksView extends ItemView{
   }
   const shown=all.filter(work=>(!q||[work.title,work.summary].some(text=>text.toLowerCase().includes(q)))&&
    (this.filter==='all'||(this.filter==='edited'&&edited(work))||(this.filter==='check'&&toCheck(work))));
-  this.contentEl.toggleClass('is-english',this.lang==='en');
+  this.contentEl.toggleClass('is-english',this.lang==='en');this.pairs=this.editionIndex();
   const groups=new Map();
   for(const work of shown){const key=work.section||'';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(work);}
   const order=key=>names.get(key)?.order??999;
@@ -889,7 +927,7 @@ class WorksView extends ItemView{
   }
   // Save takes what the Edited filter counts: the edited works of the language on screen.
   this.edited=all.filter(work=>this.states.get(work.file.path)?.state==='edited').map(work=>work.file);
-  this.mark();this.renderFoot();void this.fillStates(every);
+  this.mark();this.renderFoot();void this.fillStates(every);void this.fillWriters([...this.shown.values(),...all]);
  }
  item(group,work){this.shown.set(work.file.path,work);return this.layout==='cards'?this.card(group,work):this.row(group,work);}
  /** Draw one work again in place, after its state or length became known. */
@@ -901,17 +939,27 @@ class WorksView extends ItemView{
  }
  card(group,work){
   const card=group.createDiv({cls:'rssd-works-card'});card.dataset.path=work.file.path;
-  const state=this.states.get(work.file.path)?.state,size=this.sizes.get(work.file.path)?.length;
+  const state=this.states.get(work.file.path)?.state,facts=this.facts.get(work.file.path);
   const body=card.createDiv({cls:'rssd-works-card-body'});
   body.createDiv({cls:'rssd-works-card-title',text:work.title});
   const badges=body.createDiv({cls:'rssd-works-badges'});
-  for(const chip of cardChips({...work,state,modified:work.file.stat.mtime})){const badge=badges.createSpan({cls:'rssd-works-badge is-'+chip.tone,text:chip.text});badge.setAttribute('aria-label',chip.title);}
+  for(const chip of cardChips({...work,state})){const badge=badges.createSpan({cls:'rssd-works-badge is-'+chip.tone,text:chip.text});badge.setAttribute('aria-label',chip.title);}
   // The first picture, read from the vault's media folder; nothing is downloaded.
   const thumb=card.createDiv({cls:'rssd-works-thumb'}),picture=work.media[0]?this.app.vault.getAbstractFileByPath(MEDIA_FOLDER+'/'+work.media[0]):null;
   if(picture instanceof TFile)thumb.createEl('img',{attr:{src:this.app.vault.getResourcePath(picture),alt:'',loading:'lazy',decoding:'async'}});
   else{setIcon(thumb,'image-off');thumb.setAttribute('aria-label','No picture');}
-  const pictures=work.media.length;
-  card.createDiv({cls:'rssd-works-card-meta',text:[work.date.slice(5),size!=null?lengthText(size,work.locale):'',pictures?pictures+(pictures===1?' image':' images'):''].filter(Boolean).join(' · ')});
+  // What the work is made of. Length, references and the brand line arrive with the background pass.
+  const row=card.createDiv({cls:'rssd-works-facts'}),pictures=work.media.length,references=facts?.references;
+  const fact=(icon,text,label,{missing=false,absent=false}={})=>{const el=row.createSpan({cls:'rssd-works-fact'+(missing||absent?' is-missing':'')+(absent?' is-absent':'')});setIcon(el.createSpan({cls:'rssd-works-fact-icon'}),icon);el.createSpan({text});el.setAttribute('aria-label',label);};
+  fact('calendar',work.date.slice(5)||'—',work.date?'Date '+work.date:'No date',{missing:!work.date});
+  if(facts?.length!=null)fact('type',lengthText(facts.length,work.locale),'Length');
+  fact('image',String(pictures),pictures?pictures+(pictures===1?' image':' images'):'No images',{missing:!pictures});
+  if(references!=null)fact('quote',String(references),references?references+(references===1?' reference':' references'):'No references',{missing:!references});
+  if(facts?.brand!=null)fact(facts.brand?'badge-check':'badge','Brand',facts.brand?'The site\'s brand line is mounted':'No brand line',{absent:!facts.brand});
+  const other=work.locale==='en'?'zh-CN':'en',doc=this.pairs?.document(work);
+  if(doc){const has=this.pairs.has(other,doc),name=other==='en'?'English':'Chinese';fact('languages',other==='en'?'EN':'中',(has?'Has a ':'No ')+name+' edition',{absent:!has});}
+  const writer=this.writerFor(work);
+  if(writer!==undefined){const line=card.createDiv({cls:'rssd-works-writer'+(writer?'':' is-missing')});setIcon(line.createSpan({cls:'rssd-works-fact-icon'}),'bot');line.createSpan({text:writer||'Writer not recorded'});line.setAttribute('aria-label',writer?'Written by '+writer:'The Center has no record of the agent that wrote this');}
   card.addEventListener('click',()=>void this.openWork(work.file));
   return card;
  }
@@ -964,8 +1012,8 @@ class WorksView extends ItemView{
  }
  renderFoot(){
   if(!this.foot)return;this.foot.empty();
-  const at=this.plugin.settings.lastPullAt,minutes=at?Math.round((Date.now()-at)/60000):null;
-  this.foot.createSpan({cls:'rssd-works-pulled',text:at?'Updated '+(minutes<1?'just now':minutes<60?minutes+' min ago':minutes<1440?Math.round(minutes/60)+' h ago':Math.round(minutes/1440)+' d ago'):'Not updated yet'});
+  const at=this.plugin.settings.lastPullAt;
+  this.foot.createSpan({cls:'rssd-works-pulled',text:at?'Updated '+agoText(at):'Not updated yet'});
   // Two directions, always both shown: Update brings the Center's versions down, Save sends edits up as
   // private drafts. Save is greyed out while there is nothing to save, and on mobile, which is read-only.
   const update=this.foot.createEl('button',{cls:'rssd-works-pull',text:'Update'});update.setAttribute('aria-label','Get the latest versions from the Center');
