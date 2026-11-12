@@ -157,7 +157,7 @@ test('invalid notes are reported before anything is sent',()=>{
  const work=(overrides={},kind='news')=>({kind,media:[],data:{id:'a-one',title:'T',summary:'S',date:'2026-11-03',author:'A',category:'C',sectionId:'frontiers',locale:'zh-CN',markdown:'x',...overrides}});
  const key='obsidian-0123456789abcdef';
  assert.ok(draftEnvelope({work:work(),base,requestKey:key,assets:[]}));
- assert.throws(()=>draftEnvelope({work:work(),base:null,requestKey:key,assets:[]}),/Pull this work/);
+ assert.throws(()=>draftEnvelope({work:work(),base:null,requestKey:key,assets:[]}),/Update this work/);
  assert.throws(()=>draftEnvelope({work:work({id:'other'}),base,requestKey:key,assets:[]}),/rssd-id/);
  assert.throws(()=>draftEnvelope({work:work({sectionId:'x'}),base,requestKey:key,assets:[]}),/cannot be changed/);
  assert.throws(()=>draftEnvelope({work:work({title:' '}),base,requestKey:key,assets:[]}),/title property is empty/);

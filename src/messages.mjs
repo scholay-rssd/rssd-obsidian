@@ -2,11 +2,11 @@
 // only `revision_conflict` means someone else changed the work. Every message ends with the Center's code so a
 // report can name the real cause.
 const REASONS={
- revision_conflict:'The Center has a newer version of this work. Your note was not changed; run "Pull works" and merge by hand.',
+ revision_conflict:'The Center has a newer version of this work. Your note was not changed; run "Update works" and merge by hand.',
  publication_pending:'The Center is still publishing this work. Wait a minute and save again.',
  identity_conflict:'The Center says this work\'s section, language or type differs from your note. Do not change the rssd-* properties.',
  source_conflict:'The Center cannot find the original this translation is based on.',
- stale_revision:'A newer edition exists at the Center. Run "Pull works" first.',
+ stale_revision:'A newer edition exists at the Center. Run "Update works" first.',
  migration_staged:'This space is still migrating; its original site writer owns it, so the Center refuses saves until the cutover is complete. Your note was not changed.',
 };
 export function saveFailureMessage(error){

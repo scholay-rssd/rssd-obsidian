@@ -40,7 +40,7 @@ async function* catalogPages(client,workspaceId,locale){
    throw Object.assign(Error('The Center catalog exceeds the page limit'),{code:'invalid_catalog'});
   }catch(error){
    if(error?.code!=='catalog_changed')throw error;
-   if(restart===MAX_CATALOG_RESTARTS)throw Object.assign(Error('The Center catalog changed repeatedly; try pulling again when it is stable'),{code:'catalog_changed'});
+   if(restart===MAX_CATALOG_RESTARTS)throw Object.assign(Error('The Center catalog changed repeatedly; try updating again when it is stable'),{code:'catalog_changed'});
   }
  }
 }
@@ -111,11 +111,11 @@ export class SyncEngine{
   const note=workToNote(detail,this.yaml.stringify);
   const mediaHashes=await this.centerMediaHashes(detail);
   for(const item of note.media)await this.vault.writeBinary(MEDIA_FOLDER+'/'+item.name,base64ToBytes(item.data));
-  if(await this.vault.read(note.path)!==expectedContent)throw Object.assign(Error('The note changed while pulling; local edits were kept'),{code:'local_edit_during_pull'});
+  if(await this.vault.read(note.path)!==expectedContent)throw Object.assign(Error('The note changed while updating; local edits were kept'),{code:'local_edit_during_pull'});
   if(expectedMediaHashes){
    const latest=await this.noteFingerprint(note.path);
    if(!latest||JSON.stringify(latest.mediaHashes)!==JSON.stringify(expectedMediaHashes))
-    throw Object.assign(Error('An image changed while pulling; local edits were kept'),{code:'local_edit_during_pull'});
+    throw Object.assign(Error('An image changed while updating; local edits were kept'),{code:'local_edit_during_pull'});
   }
   await this.vault.write(note.path,note.content,{expectedContent});
   if(expectedMediaHashes){
@@ -127,7 +127,7 @@ export class SyncEngine{
     // If an image changed during the write, restore the original note only if
     // nobody has edited the newly written note in the meantime.
     try{await this.vault.write(note.path,expectedContent,{expectedContent:note.content});}catch{}
-    throw Object.assign(Error('An image changed while pulling; local edits were kept'),{code:'local_edit_during_pull'});
+    throw Object.assign(Error('An image changed while updating; local edits were kept'),{code:'local_edit_during_pull'});
    }
   }
   const written=noteToWork(note.content,this.yaml.parse);
@@ -298,7 +298,7 @@ export class SyncEngine{
     // so do not launch batches indefinitely while the connection is down.
     const allNetworkFailures=outcomes.every(x=>x.status==='rejected'&&x.reason?.retryableDetail);
     failedBatches=allNetworkFailures?failedBatches+1:0;
-    if(failedBatches>=2)throw attach(entries[0].item,Object.assign(Error('Center connection failed repeatedly; retry the pull when it is available'),{code:'network_error'}));
+    if(failedBatches>=2)throw attach(entries[0].item,Object.assign(Error('Center connection failed repeatedly; retry the update when it is available'),{code:'network_error'}));
    }
   }
   // Re-evaluate the note and baseline on retry: a user may have edited it while
@@ -353,14 +353,14 @@ export class SyncEngine{
    const repaired=await this.repairMetadata(workspaceId,work.data.id,work.data.locale,{infer:true});
    return repaired.metadataUpdated?{state:'unchanged'}:{state:'unchanged',...repaired};
   }
-  if(!base)throw Error('Pull this work from the Center before saving it');
+  if(!base)throw Error('Update this work from the Center before saving it');
   // Older Centers silently replace hidden attachment alt text and nested editorial
   // metadata when saving. Their detail response cannot expose enough information
   // for the plugin to reconstruct those fields, so do not submit to them. Read the
   // current revision first and require the server's explicit preservation guarantee.
   const current=await this.client.work(workspaceId,work.data.id,work.data.locale);
   if(current?.version!==base.version||(current?.publishedVersion??null)!==(base.publishedVersion??null))
-   throw Object.assign(Error('The Center version changed; local edits were kept. Pull or resolve the conflict before saving'),{status:409,code:'revision_conflict',conflict:true});
+   throw Object.assign(Error('The Center version changed; local edits were kept. Update or resolve the conflict before saving'),{status:409,code:'revision_conflict',conflict:true});
   if(current?.articleId!==work.data.id||current?.data?.id!==work.data.id||(current?.data?.locale||'zh-CN')!==work.data.locale||(current?.locale&&current.locale!==work.data.locale))
    throw Object.assign(Error('The Center returned a different work; local edits were kept'),{code:'identity_conflict'});
   if(structured)verifyStructuredDetail({work,base,detail:current});
@@ -432,7 +432,7 @@ export class SyncEngine{
  /** Best-effort version-label repair; never turns a confirmed Center save into
   * a failed or retried POST. The entire latest note is compare-and-swapped. */
  async repairMetadata(workspaceId,articleId,locale,{infer=false}={}){
-  const warning={metadataUpdated:false,metadataWarning:'The local version label could not be safely updated; pull again after resolving local changes.'};
+  const warning={metadataUpdated:false,metadataWarning:'The local version label could not be safely updated; update again after resolving local changes.'};
   try{
    const path=notePath(articleId,locale);
    for(let attempt=0;attempt<2;attempt++){
