@@ -14,23 +14,24 @@ test('relative times read like the footer',()=>{
  assert.equal(agoText(now+5*min,now),'just now','a clock a little ahead never shows a negative time');
 });
 
-test('a work that matches the Center and is live says so with one plain chip',()=>{
- assert.deepEqual(cardChips({...work,state:'synced'},now),[{text:'Live',tone:'plain',title:'Matches the Center, and the site shows this version'}]);
- assert.deepEqual(texts(cardChips({...work,state:undefined},now)),[],'nothing is claimed before the state is known');
+test('a work with nothing to attend to has no chip, whatever the website shows',()=>{
+ for(const site of [{version:2,publishedVersion:2},{version:3,publishedVersion:2},{version:1,publishedVersion:null},{version:1,publishedVersion:''}])
+  assert.deepEqual(cardChips({...work,...site,state:'synced'}),[]);
+ assert.deepEqual(texts(cardChips({...work,state:undefined})),[],'nothing is claimed before the state is known');
 });
 
 test('a card names what needs attention, most urgent first',()=>{
- assert.deepEqual(texts(cardChips({...work,state:'edited',version:3},now)),['Edited','Site shows v2, draft v3'],'when it was edited is not the card\'s business');
- assert.deepEqual(texts(cardChips({...work,state:'synced',publishedVersion:null,author:' '},now)),['Never published','No author']);
- assert.deepEqual(texts(cardChips({...work,state:'synced',publishedVersion:'',category:''},now)),['Never published','No category'],'an empty property is never published, not version 0');
- assert.deepEqual(cardChips({...work,state:'synced',author:'',category:''},now),[{text:'No author or category',tone:'danger',title:'Add the author and category in the work details'}],'one chip when both are missing');
- assert.deepEqual(texts(cardChips({...work,state:'conflict'},now)),['Conflict']);
- assert.deepEqual(texts(cardChips({...work,state:'saving'},now)),['Saving…']);
- assert.equal(cardChips({...work,state:'edited'},now)[0].tone,'warning');
+ assert.deepEqual(texts(cardChips({...work,state:'edited',version:3,publishedVersion:2})),['Edited'],'when it was edited is not the card\'s business');
+ assert.deepEqual(texts(cardChips({...work,state:'edited',author:' '})),['Edited','No author']);
+ assert.deepEqual(texts(cardChips({...work,state:'synced',category:''})),['No category']);
+ assert.deepEqual(cardChips({...work,state:'synced',author:'',category:''}),[{text:'No author or category',tone:'danger',title:'Add the author and category in the work details'}],'one chip when both are missing');
+ assert.deepEqual(texts(cardChips({...work,state:'conflict'})),['Conflict']);
+ assert.deepEqual(texts(cardChips({...work,state:'saving'})),['Saving…']);
+ assert.equal(cardChips({...work,state:'edited'})[0].tone,'warning');
 });
 
-test('a note not yet updated from the Center makes no claim about the site',()=>{
- assert.deepEqual(texts(cardChips({...work,state:'unlinked',publishedVersion:null},now)),['Not linked']);
+test('a note not yet updated from the Center says so',()=>{
+ assert.deepEqual(texts(cardChips({...work,state:'unlinked',publishedVersion:null})),['Not linked']);
 });
 
 test('only pictures in the media folder become thumbnails',()=>{

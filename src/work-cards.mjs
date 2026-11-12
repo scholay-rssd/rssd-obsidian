@@ -1,6 +1,6 @@
 // What a card in the Works list says about a work. Pure: the view passes in what it read from the vault and the
 // Center, so the wording and the rules are tested without Obsidian. The chips speak up only about what needs
-// attention (a work that matches the Center and is live on the site carries one plain chip); the facts beneath
+// attention (a work with nothing to attend to has none); the facts beneath
 // describe the work itself: date, length, pictures, references, the site's brand line, editions and who wrote it.
 
 /** "just now", "12 min ago", "3 h ago", "2 d ago". */
@@ -9,29 +9,21 @@ export function agoText(at,now=Date.now()){
  return minutes<1?'just now':minutes<60?minutes+' min ago':minutes<1440?Math.round(minutes/60)+' h ago':Math.round(minutes/1440)+' d ago';
 }
 
-const count=value=>value===''||value==null?null:Number.isSafeInteger(Number(value))?Number(value):null;
-
 /**
  * Chips for one work, most urgent first. Each is {text, tone, title}; tone is warning, danger, site or plain.
  * `state` is the local sync state (synced, edited, saving, conflict, unlinked) or undefined while unknown. When a
- * work was edited is left out: the card describes the work, and the Save button says what is waiting.
- * Version numbers come from the note as of the last update or save: `version` is the Center's latest draft and
- * `publishedVersion` the one on the site (empty when it was never published).
+ * work was edited is left out: the card describes the work, and the Save button says what is waiting. What the
+ * website shows is left out too; a work with nothing to attend to has no chip.
  */
-export function cardChips({state,author,category,version,publishedVersion}){
- const chips=[],saved=count(version),live=count(publishedVersion);
+export function cardChips({state,author,category}){
+ const chips=[];
  if(state==='edited')chips.push({text:'Edited',tone:'warning',title:'Changed since the last sync; not saved to the Center yet'});
  else if(state==='saving')chips.push({text:'Saving…',tone:'site',title:'Saving to the Center'});
  else if(state==='conflict')chips.push({text:'Conflict',tone:'danger',title:'Conflict: needs attention'});
  else if(state==='unlinked')chips.push({text:'Not linked',tone:'plain',title:'Not updated from the Center yet'});
- if(saved!=null&&state!=='unlinked'){
-  if(live==null)chips.push({text:'Never published',tone:'site',title:'The site does not show this work yet'});
-  else if(saved>live)chips.push({text:'Site shows v'+live+', draft v'+saved,tone:'site',title:'The Center has a newer draft than the version on the site'});
- }
  // Many works miss both; one chip says so without filling the card with red.
  const missing=[!String(author??'').trim()&&'author',!String(category??'').trim()&&'category'].filter(Boolean);
  if(missing.length)chips.push({text:'No '+missing.join(' or '),tone:'danger',title:'Add the '+missing.join(' and ')+' in the work details'});
- if(!chips.length&&state==='synced')chips.push({text:live!=null?'Live':'Synced',tone:'plain',title:live!=null?'Matches the Center, and the site shows this version':'Matches the Center'});
  return chips;
 }
 
