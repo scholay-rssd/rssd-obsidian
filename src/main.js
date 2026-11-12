@@ -100,7 +100,25 @@ const TITLE_STYLE=`
 .rssd-works-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rssd-works-more,.rssd-works-empty{padding:4px 6px;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
 .rssd-works-empty{cursor:default;padding:var(--size-4-3) var(--size-4-2)}
-.rssd-works-foot{position:sticky;bottom:0;display:flex;align-items:center;gap:var(--size-4-2);padding:var(--size-4-1) var(--size-4-2);border-top:1px solid var(--background-modifier-border);background:var(--background-secondary);color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-works-foot{position:sticky;bottom:0;padding:var(--size-4-1) var(--size-4-2);border-top:1px solid var(--background-modifier-border);background:var(--background-secondary);color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-works-foot-body{display:flex;align-items:center;gap:var(--size-4-2)}
+/* The footer's stages: a bar along its top edge (sliding while updating, filling while saving), a spinning icon
+   on the busy button, then a short check-mark pop when done or a shake when something was not saved. */
+.rssd-works-progress{position:absolute;left:0;top:-1px;height:2px;width:0;background:var(--interactive-accent);opacity:0;transition:width .35s ease,opacity .4s ease}
+.rssd-works-progress.is-active{opacity:1}
+.rssd-works-progress.is-sliding{width:30%;animation:rssd-slide 1.2s ease-in-out infinite}
+.rssd-works button.rssd-works-pull{display:inline-flex;align-items:center;gap:4px}
+.rssd-works-pull-icon{display:flex}.rssd-works-pull-icon svg{width:12px;height:12px}
+.rssd-works-pull.is-busy .rssd-works-pull-icon svg{animation:rssd-spin .9s linear infinite}
+.rssd-works button.rssd-works-pull.is-done{color:var(--color-green);animation:rssd-pop .45s ease-out}
+.rssd-works button.rssd-works-pull.is-failed{color:var(--color-red);animation:rssd-shake .4s ease-in-out}
+.rssd-works-pulled.is-fresh{animation:rssd-fade .6s ease-out}
+@keyframes rssd-slide{from{left:-30%}to{left:100%}}
+@keyframes rssd-spin{to{transform:rotate(360deg)}}
+@keyframes rssd-pop{0%{transform:scale(.92);opacity:.5}60%{transform:scale(1.06)}100%{transform:scale(1);opacity:1}}
+@keyframes rssd-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+@keyframes rssd-fade{from{opacity:.2}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.rssd-works-foot *{animation:none!important;transition:none!important}}
 .rssd-works-pulled{flex:1 1 auto}
 .rssd-works button.rssd-works-pull{height:auto;padding:2px 10px;font-size:var(--font-ui-smaller)}
 /* Cards: the title, what needs attention, the first picture, then the date, length and picture count. The
@@ -538,7 +556,9 @@ export default class RssdPlugin extends Plugin{
    const incomplete=['failed','conflicts','pending','metadataPending'].some(key=>summary[key]?.length);
    new Notice((incomplete?'Update incomplete: ':'Update finished: ')+parts.join(', '));
    if(summary.conflicts.length)new Notice('Conflicts were not changed: '+summary.conflicts.join(', '),10000);
-  }catch(error){new Notice('Update failed: '+error.message);}
+   // The footer shows how it went: 'done', 'incomplete' or 'failed'.
+   return incomplete?'incomplete':'done';
+  }catch(error){new Notice('Update failed: '+error.message);return 'failed';}
  }
 
  client(){
@@ -887,7 +907,7 @@ class WorksView extends ItemView{
   showLayout();
   this.active=top.createDiv({cls:'rssd-works-active'});
   this.list=el.createDiv({cls:'rssd-works-list'});
-  this.foot=el.createDiv({cls:'rssd-works-foot'});
+  this.foot=el.createDiv({cls:'rssd-works-foot'});this.progress=this.foot.createDiv({cls:'rssd-works-progress'});this.footBody=this.foot.createDiv({cls:'rssd-works-foot-body'});
   const later=()=>{window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.render(),300);};
   this.registerEvent(this.app.metadataCache.on('changed',file=>{this.states.delete(file.path);later();}));
   this.registerEvent(this.app.vault.on('modify',file=>{this.states.delete(file.path);later();}));
@@ -1113,24 +1133,45 @@ class WorksView extends ItemView{
   // Counts depend on the states; refresh them once the pass is complete.
   if(changed)this.render();
  }
+ /** Show a finished stage on its button for a moment ("Saved 12", "2 not saved", "Updated"), then the usual footer. */
+ flashFoot(target,kind,text){
+  window.clearTimeout(this.flashTimer);this.flash={target,kind,text};this.renderFoot();
+  this.flashTimer=window.setTimeout(()=>{this.flash=null;this.renderFoot();},2600);
+ }
  renderFoot(){
-  if(!this.foot)return;this.foot.empty();
-  const at=this.plugin.settings.lastPullAt;
-  this.foot.createSpan({cls:'rssd-works-pulled',text:at?'Updated '+agoText(at):'Not updated yet'});
+  if(!this.foot)return;const body=this.footBody;body.empty();
+  const at=this.plugin.settings.lastPullAt,fresh=at&&this.seenPullAt&&at!==this.seenPullAt;this.seenPullAt=at;
+  body.createSpan({cls:'rssd-works-pulled'+(fresh?' is-fresh':''),text:at?'Updated '+agoText(at):'Not updated yet'});
+  // The bar slides while updating and fills while saving.
+  const saving=this.saving,share=saving?.total?saving.done/saving.total:0;
+  this.progress.toggleClass('is-active',!!(this.updating||saving));this.progress.toggleClass('is-sliding',!!this.updating&&!saving);
+  this.progress.style.width=saving?Math.max(4,share*100)+'%':this.updating?'':'0';
+  const button=(cls,icon,text,state)=>{const b=body.createEl('button',{cls:'rssd-works-pull '+cls+(state?' is-'+state:'')});if(icon)setIcon(b.createSpan({cls:'rssd-works-pull-icon'}),icon);b.createSpan({text});return b;};
+  const flash=target=>this.flash?.target===target?this.flash:null;
   // Two directions, always both shown: Update brings the Center's versions down, Save sends edits up as
   // private drafts. Save is greyed out while there is nothing to save, and on mobile, which is read-only.
-  const update=this.foot.createEl('button',{cls:'rssd-works-pull',text:'Update'});update.setAttribute('aria-label','Get the latest versions from the Center');
-  update.disabled=!!this.saving;
-  update.addEventListener('click',async()=>{update.disabled=true;try{await this.plugin.pull();}finally{update.disabled=false;this.render();}});
-  const edited=this.saving?[]:this.edited||[],mobile=Platform.isMobile;
-  const save=this.foot.createEl('button',{cls:'rssd-works-pull rssd-works-save'+(edited.length&&!mobile?' mod-cta':''),text:this.saving||(edited.length?'Save '+edited.length:'Save')});
-  save.setAttribute('aria-label',this.saving?'Saving to the Center':mobile?'Saving is not available on mobile':edited.length?'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.':'Nothing to save: no work on screen is edited');
-  save.disabled=!!this.saving||!edited.length||mobile;
+  const done=flash('update'),update=this.updating?button('','loader-2','Updating…','busy'):done?button('',done.kind==='done'?'check':'x',done.text,done.kind):button('','','Update');
+  update.setAttribute('aria-label','Get the latest versions from the Center');
+  update.disabled=!!saving||!!this.updating;
+  update.addEventListener('click',async()=>{
+   this.updating=true;this.renderFoot();let outcome='failed';
+   try{outcome=await this.plugin.pull()||'done';}
+   finally{this.updating=false;this.render();this.flashFoot('update',outcome==='done'?'done':'failed',outcome==='done'?'Updated':outcome==='incomplete'?'Incomplete':'Not updated');}
+  });
+  const edited=saving?[]:this.edited||[],mobile=Platform.isMobile,result=flash('save');
+  const label=saving?(saving.total?'Saving '+saving.done+'/'+saving.total:'Saving…'):result?result.text:edited.length?'Save '+edited.length:'Save';
+  const save=button('rssd-works-save'+(edited.length&&!mobile&&!result?' mod-cta':''),saving?'loader-2':result?(result.kind==='done'?'check':'x'):'',label,saving?'busy':result?.kind);
+  save.setAttribute('aria-label',saving?'Saving to the Center':mobile?'Saving is not available on mobile':edited.length?'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.':'Nothing to save: no work on screen is edited');
+  save.disabled=!!saving||!edited.length||mobile;
   save.addEventListener('click',async()=>{
    const files=[...edited];if(!files.length)return;
-   this.saving='Saving…';this.renderFoot();
-   try{await this.plugin.saveEdited(files,{onProgress:(done,total)=>{this.saving='Saving '+done+'/'+total;this.renderFoot();}});}
-   finally{this.saving=null;for(const file of files)this.states.delete(file.path);this.render();}
+   this.saving={done:0,total:files.length};this.renderFoot();let outcome=null;
+   try{outcome=await this.plugin.saveEdited(files,{onProgress:(done,total)=>{this.saving={done,total};this.renderFoot();}});}
+   finally{
+    this.saving=null;for(const file of files)this.states.delete(file.path);this.render();
+    const failed=outcome?outcome.failed.length:files.length,saved=outcome?outcome.saved.length+outcome.unchanged.length:0;
+    this.flashFoot('save',failed?'failed':'done',failed?failed+' not saved':'Saved '+saved);
+   }
   });
  }
 }
