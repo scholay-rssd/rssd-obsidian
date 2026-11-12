@@ -1219,7 +1219,10 @@ const PREVIEW_TARGETS=[
 ];
 // The result is shown the way it lands in an editor: no frame, no fixed width, filling whatever room there is.
 // It sits in a shadow root so the Obsidian theme cannot restyle it: what shows is what is copied.
-const PREVIEW_FRAME=':host{display:block;color-scheme:light}.page{background:#fff;color:#222;padding:20px 16px 32px;overflow-wrap:anywhere;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.title{margin:0 0 18px;font-size:22px;line-height:1.4;font-weight:700}.body img{max-width:100%}.cards{padding:12px;background:#e6e6e6}.cards img{display:block;width:100%;max-width:1080px;height:auto;margin:0 auto 12px;box-shadow:0 1px 6px rgba(0,0,0,.18)}.cards img:last-child{margin-bottom:0}.message{padding:24px 16px;color:#888;font-size:13px}';
+// The article is shown at a phone's width, as a 公众号 reader sees it: a 375px column (the usual phone design
+// width) with WeChat's 16px side margins, centred on white so the column has no visible edge. Wider tables and
+// code scroll inside it rather than overflow.
+const PREVIEW_FRAME=':host{display:block;color-scheme:light;background:#fff}.page{box-sizing:border-box;max-width:375px;margin:0 auto;background:#fff;color:#222;padding:20px 16px 32px;overflow-wrap:anywhere;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.title{margin:0 0 18px;font-size:22px;line-height:1.4;font-weight:700}.body img{max-width:100%}.body table,.body pre{display:block;max-width:100%;overflow-x:auto}.cards{padding:12px;background:#e6e6e6}.cards img{display:block;width:100%;max-width:1080px;height:auto;margin:0 auto 12px;box-shadow:0 1px 6px rgba(0,0,0,.18)}.cards img:last-child{margin-bottom:0}.message{padding:24px 16px;color:#888;font-size:13px}';
 class LayoutPreview extends ItemView{
  constructor(leaf,plugin,type='rssd-article',targetId='article'){super(leaf);this.plugin=plugin;this.type=type;this.target=PREVIEW_TARGETS.find(t=>t.id===targetId);this.style=this.target.styles[0]?.id||'';this.file=null;this.content=null;this.result=null;this.urls=[];this.seq=0;}
  /** An icon button; its label is read out and shown as a tooltip. */
