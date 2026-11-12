@@ -1,6 +1,6 @@
 // RSSD for Obsidian, stage 1: open a space from the RSSD Center as a vault of drafts, see each work's sync
 // state, and save edits back as private drafts. Publishing is never done here.
-import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu} from 'obsidian';
+import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu,setIcon} from 'obsidian';
 import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
 import {deviceLogin} from './device-login.mjs';
@@ -8,37 +8,109 @@ import {SyncEngine} from './sync-engine.mjs';
 import {StagedSyncEngine} from './staged-sync-engine.mjs';
 import {canonicalPathIdentity,trackRename,trackDelete,confirmReturn} from './path-guard.mjs';
 import {AutoSync,startupDelay,syncLease} from './auto-sync.mjs';
-import {saveFailureMessage} from './messages.mjs';
+import {saveFailureMessage,saveManySummary} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
 import {workLabel,labelText} from './titles.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
+import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
 import {wechatHtml,copyRich} from './wechat.mjs';
 import {wechatTemplate,wechatSite,cardTemplate} from './wechat-template.mjs';
-import {decorateWechat} from './wechat-designs.mjs';
-import {buildCards} from './cards.mjs';
-import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,notePath,noteToWork} from './sync-model.mjs';
+import {decorateWechat,ARTICLE_THEMES,defaultArticleTheme} from './wechat-designs.mjs';
+import {buildCards,CARD_THEMES} from './cards.mjs';
+import {DETAIL_FIELDS,IDENTITY_FIELDS,fieldText,counters,cleanValue} from './details.mjs';
+import {checkSource} from '../../contracts/output-package.mjs';
+import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,notePath,noteToWork,workFingerprint,localMediaPaths} from './sync-model.mjs';
 
 const TOKEN_SECRET='rssd-center-device-token';
 // The Scholay Center. A build can point elsewhere with RSSD_DEFAULT_ORIGIN; the address stays editable until login.
 export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_ORIGIN:'https://post.linkc.cloud';
-const DEFAULTS={origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false};
+const DEFAULTS={origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
+// The right sidebar's RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is
+// where you choose between them.
+const SIDEBAR_VIEWS=Object.freeze([['rssd-article','article'],['rssd-cards','cards'],['rssd-outline','outline'],['rssd-details','details']]);
 // Work notes show their title and date; the stable ID file name stays underneath. The inline title and the
 // header title are hidden for them because editing either one renames the file and would stop its sync.
 const TITLE_STYLE=`
 .rssd-work-note .inline-title,.rssd-work-note .view-header-title-parent,.rssd-work-note .view-header-title{display:none}
 .rssd-work-header{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:var(--font-semibold);padding:0 var(--size-2-2)}
-.rssd-preview-tabs{display:flex;gap:var(--size-2-1);padding:var(--size-4-1) var(--size-4-3) 0;border-bottom:1px solid var(--background-modifier-border)}
-.rssd-preview-tabs.rssd-preview-styles{padding:0;border-bottom:0}
-.rssd-preview-tab,.rssd-preview-tab:hover{padding:var(--size-2-2) var(--size-4-2);height:auto;border:0;border-bottom:2px solid transparent;border-radius:0;background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-small);cursor:pointer}
-.rssd-preview-tab.is-active{color:var(--text-normal);border-bottom-color:var(--interactive-accent);font-weight:var(--font-semibold)}
-.rssd-preview-styles .rssd-preview-tab{font-size:var(--font-ui-smaller)}
-/* The bar wraps in a narrow sidebar: style tabs and buttons share the first line, the status takes a line of its own. */
-.rssd-preview-bar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--size-2-2) var(--size-4-2);padding:var(--size-4-2) var(--size-4-3);border-bottom:1px solid var(--background-modifier-border)}
-.rssd-preview-bar>button{flex:0 0 auto;white-space:nowrap}.rssd-preview-bar>button:first-of-type{margin-left:auto}
-.rssd-preview-bar .rssd-preview-info{order:9;flex:1 0 100%;min-width:0;color:var(--text-muted);font-size:var(--font-ui-smaller);line-height:var(--line-height-tight)}
+/* Two rows: the views, then the chosen output's styles, its status, refresh and its action. */
+.rssd-preview-bar,.rssd-preview-controls{display:flex;align-items:center;gap:var(--size-4-2);padding:var(--size-4-1) var(--size-4-2);border-bottom:1px solid var(--background-modifier-border)}
+.rssd-preview-views,.rssd-preview-actions{display:flex;align-items:center;gap:var(--size-2-1);flex:0 0 auto}
+.rssd-preview-actions{margin-left:auto}
+/* Theme tabs are small squares in the section's own colour: tinted when idle, solid and raised when chosen.
+   --rssd-accent is set from the open work's section. */
+.rssd-preview-controls{--rssd-accent:var(--interactive-accent);position:sticky;top:0;z-index:3;background:var(--background-primary)}
+.rssd-preview-controls button.rssd-preview-tab{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;height:24px;min-width:24px;padding:0 8px;margin:0;border:0;border-radius:5px;background:color-mix(in srgb,var(--rssd-accent) 12%,transparent);box-shadow:inset 0 -1px 0 color-mix(in srgb,var(--rssd-accent) 22%,transparent);color:var(--rssd-accent);font-size:var(--font-ui-smaller);font-weight:var(--font-semibold);line-height:1;white-space:nowrap;cursor:pointer;transition:background .12s,box-shadow .12s,transform .12s}
+.rssd-preview-controls button.rssd-preview-tab.is-number{width:24px;padding:0;font-variant-numeric:tabular-nums}
+.rssd-preview-controls button.rssd-preview-tab:hover{background:color-mix(in srgb,var(--rssd-accent) 22%,transparent)}
+.rssd-preview-controls button.rssd-preview-tab.is-active{background:var(--rssd-accent);color:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2),0 2px 6px color-mix(in srgb,var(--rssd-accent) 35%,transparent);transform:translateY(-1px)}
+.rssd-preview-controls button.rssd-preview-tab:not(.is-number)+button.rssd-preview-tab.is-number{margin-left:var(--size-2-2)}
+.rssd-preview-styles{display:flex;align-items:center;gap:var(--size-2-1);flex:0 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
+.rssd-preview-controls .rssd-preview-info{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-preview-bar button.rssd-preview-icon,.rssd-preview-controls button.rssd-preview-icon{display:flex;align-items:center;justify-content:center;height:auto;padding:var(--size-2-3);border:0;border-radius:var(--radius-s);background:none;box-shadow:none;color:var(--icon-color);cursor:pointer}
+.rssd-preview-bar button.rssd-preview-icon:hover,.rssd-preview-controls button.rssd-preview-icon:hover{background:var(--background-modifier-hover);color:var(--icon-color-hover)}
+.rssd-preview-bar button.rssd-preview-icon.is-active{background:var(--background-modifier-active-hover);color:var(--interactive-accent)}
+.rssd-preview-controls button.rssd-preview-icon.mod-cta{background:var(--interactive-accent);color:var(--text-on-accent)}
+.rssd-preview-controls button.rssd-preview-icon.mod-cta:hover{background:var(--interactive-accent-hover)}
 .rssd-preview-host{display:block}
+.rssd-works{display:flex;flex-direction:column;padding:0!important}
+.rssd-works-top{position:sticky;top:0;z-index:2;padding:var(--size-4-2) var(--size-4-2) var(--size-4-1);background:var(--background-secondary);border-bottom:1px solid var(--background-modifier-border)}
+.rssd-works-search{width:100%;font-size:var(--font-ui-small)}
+.rssd-works-filters{display:flex;gap:var(--size-2-2);margin-top:var(--size-4-1);flex-wrap:wrap}
+.rssd-works button.rssd-works-chip{height:auto;padding:1px 8px;border-radius:999px;border:1px solid var(--background-modifier-border);background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
+.rssd-works button.rssd-works-chip.is-active{background:var(--interactive-accent);border-color:var(--interactive-accent);color:var(--text-on-accent)}
+.rssd-works-list{flex:1 1 auto;padding:var(--size-2-2) var(--size-2-2) var(--size-4-2)}
+.rssd-works-head{display:flex;align-items:center;gap:4px;padding:6px 4px 3px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-weight:var(--font-semibold);cursor:pointer;user-select:none}
+.rssd-works-caret{display:flex;width:14px;height:14px;transition:transform .12s}.rssd-works-caret svg{width:14px;height:14px}
+.rssd-works-group.is-collapsed .rssd-works-caret{transform:rotate(-90deg)}
+.rssd-works-name{flex:1 1 auto}.rssd-works-count{font-variant-numeric:tabular-nums;font-weight:normal}
+.rssd-works-row{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:var(--radius-s);font-size:var(--font-ui-small);cursor:pointer;min-width:0}
+.rssd-works-row:hover{background:var(--background-modifier-hover)}
+.rssd-works-row.is-active{background:var(--background-modifier-active-hover);color:var(--text-normal)}
+.rssd-works-dot{flex:0 0 7px;width:7px;height:7px;border-radius:50%;background:var(--background-modifier-border)}
+.rssd-works-dot.is-synced{background:var(--color-green)}.rssd-works-dot.is-edited{background:var(--color-orange)}.rssd-works-dot.is-saving{background:var(--color-blue)}.rssd-works-dot.is-conflict{background:var(--color-red)}.rssd-works-dot.is-unlinked{background:var(--text-faint)}
+.rssd-works-date{flex:0 0 auto;color:var(--text-faint);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
+.rssd-works-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rssd-works-langs{display:flex;margin-left:auto;border:1px solid var(--background-modifier-border);border-radius:999px;overflow:hidden}
+.rssd-works button.rssd-works-lang{height:auto;padding:1px 8px;border:0;border-radius:0;background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
+.rssd-works button.rssd-works-lang.is-active{background:var(--background-modifier-active-hover);color:var(--text-normal);font-weight:var(--font-semibold)}
+.rssd-works-more,.rssd-works-empty{padding:4px 6px;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
+.rssd-works-empty{cursor:default;padding:var(--size-4-3) var(--size-4-2)}
+.rssd-works-foot{position:sticky;bottom:0;display:flex;align-items:center;gap:var(--size-4-2);padding:var(--size-4-1) var(--size-4-2);border-top:1px solid var(--background-modifier-border);background:var(--background-secondary);color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-works-pulled{flex:1 1 auto}
+.rssd-works button.rssd-works-pull{height:auto;padding:2px 10px;font-size:var(--font-ui-smaller)}
+.rssd-details,.rssd-outline{padding:var(--size-4-2) var(--size-4-3);font-size:var(--font-ui-small)}
+.rssd-outline-item{display:block;width:100%;text-align:left;padding:3px var(--size-2-2);border-radius:var(--radius-s);color:var(--text-muted);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rssd-outline-item:hover{background:var(--background-modifier-hover);color:var(--text-normal)}
+.rssd-outline-item.is-level-1{color:var(--text-normal);font-weight:var(--font-semibold)}
+.rssd-details-empty{color:var(--text-muted);padding:var(--size-4-2) 0}
+.rssd-details-field{margin-bottom:var(--size-4-3)}
+.rssd-details-label{display:block;margin-bottom:var(--size-2-1);color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-details-input{width:100%;font-size:var(--font-ui-small)}
+textarea.rssd-details-input{resize:vertical;min-height:4.5em;line-height:var(--line-height-normal)}
+.rssd-details-meter{display:flex;gap:var(--size-4-2);justify-content:flex-end;margin-top:2px}
+.rssd-details-count{color:var(--text-faint);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
+.rssd-details-count.is-over{color:var(--text-warning)}
+.rssd-details-checks{margin:var(--size-4-2) 0 var(--size-4-3);padding:var(--size-4-2);border-radius:var(--radius-s);background:var(--background-secondary)}
+.rssd-details-check{color:var(--text-warning);font-size:var(--font-ui-smaller);line-height:var(--line-height-tight);margin-top:2px}
+.rssd-details-link{border-top:1px solid var(--background-modifier-border);padding-top:var(--size-4-2)}
+.rssd-details-link>summary{cursor:pointer;color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-details-state{margin:var(--size-4-2) 0;color:var(--text-normal)}
+.rssd-details-row{display:flex;gap:var(--size-4-2);padding:2px 0;font-size:var(--font-ui-smaller)}
+.rssd-details-key{flex:0 0 7.5em;color:var(--text-muted)}
+.rssd-details-value{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;color:var(--text-normal);font-family:var(--font-monospace)}
+.rssd-details-note{margin-top:var(--size-4-2);color:var(--text-faint);font-size:var(--font-ui-smaller)}
+/* While a preview is built the last result stays visible, dimmed, under a spinner that follows the scroll. */
+.rssd-preview-stage{position:relative;min-height:180px}
+.rssd-preview-loading{position:absolute;inset:0;z-index:2;display:none;background:color-mix(in srgb,var(--background-primary) 78%,transparent)}
+.rssd-preview-stage.is-loading>.rssd-preview-loading{display:block}
+.rssd-preview-loading-box{position:sticky;top:56px;display:flex;align-items:center;gap:var(--size-4-2);width:max-content;max-width:calc(100% - 32px);margin:24px auto 0;padding:var(--size-4-2) var(--size-4-4);background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:var(--radius-m);box-shadow:var(--shadow-s)}
+.rssd-preview-spinner{flex:0 0 auto;width:18px;height:18px;border:2px solid var(--background-modifier-border);border-top-color:var(--interactive-accent);border-radius:50%;animation:rssd-spin .8s linear infinite}
+.rssd-preview-loading-text{color:var(--text-muted);font-size:var(--font-ui-small)}
+@keyframes rssd-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.rssd-preview-spinner{animation-duration:2.4s}}
 .rssd-work-header .rssd-date,.nav-file-title-content .rssd-date{color:var(--text-faint);font-size:var(--font-ui-smaller);margin-right:.5em;font-variant-numeric:tabular-nums}
 `;
 const http=request=>requestUrl(request);
@@ -82,8 +154,8 @@ export default class RssdPlugin extends Plugin{
   this.settings.boundSpace??=Object.keys(this.settings.baselines).find(k=>Object.keys(this.settings.baselines[k]||{}).length)||'';
   await this.saveSettings();
   this.registerView('rssd-works',leaf=>new WorksView(leaf,this));
-  this.addRibbonIcon('files','RSSD works',()=>this.openWorks());
-  this.addCommand({id:'works',name:'Open RSSD works',callback:()=>this.openWorks()});
+  this.addRibbonIcon('library','Works',()=>this.openWorks());
+  this.addCommand({id:'works',name:'Show the Works list',callback:()=>this.openWorks()});
   this.registerView('rssd-reader',leaf=>new ReaderView(leaf,this));
   this.addRibbonIcon('book-open','RSSD reader',()=>this.openReader());
   this.addCommand({id:'reader',name:'Read site articles online',callback:()=>this.openReader()});
@@ -98,9 +170,9 @@ export default class RssdPlugin extends Plugin{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)this.save(file);return true;}});
   this.addCommand({id:'copy-article',name:'Copy this work as a formatted article',checkCallback:checking=>{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.copyForWechat(file);return true;}});
-  this.registerView('rssd-preview',leaf=>new LayoutPreview(leaf,this));
-  // A panel saved under the preview's first name keeps working.
-  this.registerView('rssd-wechat',leaf=>new LayoutPreview(leaf,this,'rssd-wechat'));
+  for(const [type,id] of SIDEBAR_VIEWS)this.registerView(type,leaf=>new LayoutPreview(leaf,this,type,id));
+  // Panels saved by earlier versions open as the article view until the sidebar is arranged.
+  for(const type of ['rssd-preview','rssd-wechat'])this.registerView(type,leaf=>new LayoutPreview(leaf,this,type,'article'));
   this.addCommand({id:'preview-layout',name:'Preview this work\'s layout',checkCallback:checking=>{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.openPreview();return true;}});
   this.addCommand({id:'save-cards',name:'Save this work as cards',checkCallback:checking=>{
@@ -118,7 +190,11 @@ export default class RssdPlugin extends Plugin{
   for(const event of ['create','rename','delete'])this.registerEvent(this.app.vault.on(event,relabel));
   // First launch: one button logs in and opens the reader. Afterwards the reader opens from the ribbon.
   // A vault that edits works gets the layout preview in its sidebar the first time it starts with this version.
-  this.app.workspace.onLayoutReady(()=>{void this.autoOpenPreview().catch(error=>console.error('RSSD layout preview',error));});
+  // Work details are a view of the RSSD panel; the properties block in the article is hidden once they are there.
+  this.addCommand({id:'details',name:'Show work details',callback:()=>this.openDetails()});
+  this.app.workspace.onLayoutReady(()=>{void this.tidySidebar().catch(error=>console.error('RSSD sidebar',error));});
+  // Obsidian's core plugins put their tabs back on every start, so they are moved out again after it settles.
+  this.app.workspace.onLayoutReady(()=>{for(const delay of [800,3000])window.setTimeout(()=>this.closeDefaultTabs(),delay);});
   this.app.workspace.onLayoutReady(()=>{if(!this.token())new WelcomeModal(this.app,this).open();});
   this.autoSync=new AutoSync({
    ready:()=>this.settings.autoSync!==false&&!!this.settings.origin&&!!this.settings.workspaceId&&!!this.token()&&!this.operations.active,
@@ -193,7 +269,12 @@ export default class RssdPlugin extends Plugin{
   const token=this.token();if(!token||!this.settings.origin)throw Error('Log in to RSSD first');
   return createCenterClient({http,origin:this.settings.origin,token});
  }
- async openWorks(){const leaf=this.app.workspace.getLeavesOfType('rssd-works')[0]||this.app.workspace.getRightLeaf(false);await leaf.setViewState({type:'rssd-works',active:true});this.app.workspace.revealLeaf(leaf);}
+ /** Show the Works list in the left sidebar (one left by an earlier version elsewhere is moved there). */
+ async openWorks(){
+  const workspace=this.app.workspace;let leaf=workspace.getLeavesOfType('rssd-works').find(l=>l.getRoot?.()===workspace.leftSplit);
+  if(!leaf){for(const old of workspace.getLeavesOfType('rssd-works'))old.detach();leaf=workspace.getLeftLeaf(false);if(!leaf)return;await leaf.setViewState({type:'rssd-works',active:true});}
+  workspace.revealLeaf(leaf);
+ }
  isWork(file){return file.extension==='md'&&file.path.startsWith(WORKS_FOLDER+'/');}
  setStatus(text){this.status?.setText(text);}
  idleStatus(){return this.token()?'RSSD'+(this.settings.workspaceId?' · '+this.settings.workspaceId:''):'RSSD · log in';}
@@ -203,13 +284,14 @@ export default class RssdPlugin extends Plugin{
   if(!loggedIn)menu.addItem(item=>item.setTitle('Log in to RSSD').setIcon('log-in').onClick(login));
   menu.addItem(item=>item.setTitle('Read site articles online').setIcon('book-open').onClick(()=>this.openReader()));
   if(loggedIn&&space){
-   menu.addItem(item=>item.setTitle('Open RSSD works').setIcon('files').onClick(()=>this.openWorks()));
+   menu.addItem(item=>item.setTitle('Works list').setIcon('library').onClick(()=>this.openWorks()));
    menu.addItem(item=>item.setTitle('Pull works from the Center').setIcon('download').onClick(()=>this.pull()));
    if(active&&this.isWork(active))menu.addItem(item=>item.setTitle('Save this work as a private draft').setIcon('upload').onClick(()=>this.save(active)));
    menu.addItem(item=>item.setTitle('Check sync state').setIcon('refresh-cw').onClick(()=>this.refreshStates()));
   }
   if(active&&this.isWork(active)){
-   menu.addItem(item=>item.setTitle('Preview layout').setIcon('eye').onClick(()=>this.openPreview()));
+   menu.addItem(item=>item.setTitle('Work details').setIcon('info').onClick(()=>this.openDetails()));
+   menu.addItem(item=>item.setTitle('Preview layout').setIcon('file-text').onClick(()=>this.openPreview()));
    menu.addItem(item=>item.setTitle('Copy as formatted article').setIcon('copy').onClick(()=>this.copyForWechat(active)));
   }
   menu.addSeparator();
@@ -281,6 +363,7 @@ export default class RssdPlugin extends Plugin{
     for(const key of ['updated','conflicts','pending'])for(const id of overlay[key]||[]){const name=locale==='zh-CN'?id:locale+'/'+id;if(!summary[key].includes(name))summary[key].push(name);}
    }
   }
+  this.settings.lastPullAt=Date.now();
   return summary;
   // Fold this pull's journal into the settings file. If that fails the journal still holds every change.
   }finally{if(this.log().pending)await this.saveSettings().catch(()=>{});}
@@ -440,19 +523,43 @@ export default class RssdPlugin extends Plugin{
    new Notice(saveFailureMessage(error),10000);
   }
  }
+ /** Save several works one after another as private drafts, as one operation. A refused work does not stop
+  * the rest, but a space that refuses every save or a lost connection does. Never publishes. */
+ async saveEdited(files,{onProgress=()=>{}}={}){
+  const outcome={saved:[],unchanged:[],failed:[]};
+  try{
+   await this.operations.run('save',async()=>{
+    for(const [index,file] of files.entries()){
+     onProgress(index+1,files.length);
+     try{
+      const result=await this.saveWork(this.settings.workspaceId,file.path);this.autoSync?.unblock(file.path);
+      (result?.state==='unchanged'?outcome.unchanged:outcome.saved).push(file);
+     }catch(error){
+      console.error('RSSD save failed',file.path,error?.status,error?.code,error?.message);outcome.failed.push({file,error});
+      // Show it the way automatic sync does, so the list marks it as needing attention.
+      if(error?.conflict||error?.status===409)this.autoSync?.blocked?.add(file.path);
+      if(['forbidden','migration_staged','network_error'].includes(error?.code))break;
+     }
+    }
+   });
+  }catch(error){new Notice(error?.code==='operation_busy'?error.message:saveFailureMessage(error),10000);return null;}
+  new Notice(saveManySummary(outcome),outcome.failed.length?15000:6000);
+  return outcome;
+ }
 
  /** A work as a styled article for pasting into a rich-text editor (the WeChat official-account editor is
   * the one it is tuned for). Reads the note; changes nothing. */
- async wechatResult(file,content,{style='site'}={}){
+ async wechatResult(file,content,{style}={}){
+  style??=this.defaultStyle('article',file);
   const component=new Component();component.load();
   try{
    const adapter=this.app.vault.adapter;content??=await this.app.vault.read(file);
-   // Each space and section has its own colours and fonts, the same ones its public page uses.
-   // 'plain' keeps the section's colours and fonts but leaves out the site's chapter openings and name marks.
-   const space=this.settings.workspaceId,site=style==='plain'?null:wechatSite(space);
+   // The site's own style is its section's theme signed with the site's name marks; a numbered general theme
+   // carries no site marks, only the section's colours and fonts.
+   const space=this.settings.workspaceId,own=style==='site',theme=own?this.sectionTheme(file):Object.prototype.hasOwnProperty.call(ARTICLE_THEMES,style)?style:null,site=own?wechatSite(space):null;
    return await wechatHtml({doc:document,content,parseYaml,template:source=>wechatTemplate(space,source.sectionId),
-    decorate:(html,{look,source})=>decorateWechat(document,html,{site,look,category:source.category}),
-    pack:{site:wechatSite(space)||{id:space||'unknown',name:''},style,engineVersion:this.manifest?.version||'0',...this.noteVersions(file)},
+    decorate:(html,{look,source})=>decorateWechat(document,html,{site,look,category:source.category,theme,locale:source.work.data.locale}),
+    pack:{site:wechatSite(space)||{id:space||'unknown',name:''},style:own?'site:'+theme:style,engineVersion:this.manifest?.version||'0',...this.noteVersions(file)},
     render:(markdown,el)=>MarkdownRenderer.render(this.app,markdown,el,file.path,component),
     readMedia:async name=>{const path=MEDIA_FOLDER+'/'+name;return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;}});
   }finally{component.unload();}
@@ -463,6 +570,24 @@ export default class RssdPlugin extends Plugin{
   return {version:integer(properties['rssd-version']),publishedVersion:integer(properties['rssd-published-version'])};
  }
  /** Puts the styled article on the clipboard only. Nothing is sent to the Center or to any platform. */
+ /** Every view starts with the site's own style. */
+ defaultStyle(){return 'site';}
+ /** The accent colour of a work's section, from its website template. */
+ sectionAccent(file){
+  const section=file?this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']:'';
+  const accent=wechatTemplate(this.settings.workspaceId,String(section||''))?.accent;
+  return /^#[0-9a-fA-F]{6}$/.test(accent||'')?accent:null;
+ }
+ /** The site's name for its own style tab. */
+ siteName(){return wechatSite(this.settings.workspaceId)?.name||'Site';}
+ /**
+  * The structure the site's own article style uses for a work: the theme that matches the layout the website
+  * gives the work's section.
+  */
+ sectionTheme(file){
+  const section=file?this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']:'';
+  return defaultArticleTheme(cardTemplate(this.settings.workspaceId,String(section||''))?.layout);
+ }
  async copyForWechat(file,options={}){
   try{
    const result=await this.wechatResult(file,undefined,options);
@@ -473,12 +598,13 @@ export default class RssdPlugin extends Plugin{
   }catch(error){console.error('RSSD article copy',error);new Notice('Could not copy the article: '+error.message,10000);}
  }
  /** A work as picture cards (1080×1440 PNG). Reads the note and its images; changes nothing. */
- async cardsResult(file,content,{style='site',signal,onProgress}={}){
+ async cardsResult(file,content,{style,signal,onProgress}={}){
+  style??=this.defaultStyle('cards',file);
   const component=new Component();component.load();
   try{
    const adapter=this.app.vault.adapter;content??=await this.app.vault.read(file);
    const space=this.settings.workspaceId,site=wechatSite(space);
-   return await buildCards({doc:document,content,parseYaml,signal,onProgress,style,site,url:site?.origin||centerOrigin(this.settings.origin),
+   return await buildCards({doc:document,content,parseYaml,signal,onProgress,style,cardTheme:style==='site'?'text':style,site,url:site?.origin||centerOrigin(this.settings.origin),
     template:source=>cardTemplate(space,source.sectionId),engineVersion:this.manifest?.version||'0',...this.noteVersions(file),
     render:(markdown,el)=>MarkdownRenderer.render(this.app,markdown,el,file.path,component),
     readMedia:async name=>{const path=MEDIA_FOLDER+'/'+name;return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;},
@@ -503,23 +629,64 @@ export default class RssdPlugin extends Plugin{
   }catch(error){console.error('RSSD cards save',error);new Notice('Could not save the cards: '+error.message,10000);}
  }
  /**
-  * Open the layout preview once per vault, on the first start with this version. Only vaults bound to a sync
-  * space (they hold works) get it, never on mobile, and never again after that: closing it is respected.
-  * Returns true when it opened the panel.
+  * Once per vault that edits works, arrange the right sidebar: the four RSSD tabs (Article, Cards, Outline,
+  * Details) in that order, with Article in front, and none of Obsidian's link, tag, vault-properties or outline
+  * tabs (any of them can be reopened from the command palette). On the first arrangement, now that the
+  * properties have a place of their own, the properties block at the top of each note is hidden; the vault's
+  * earlier choice is kept so it can be restored. Panels left by earlier versions are replaced.
   */
- async autoOpenPreview(){
-  if(this.settings.previewOpened||!this.settings.workspaceId||Platform.isMobile)return false;
-  const workspace=this.app.workspace,present=workspace.getLeavesOfType('rssd-preview').length+workspace.getLeavesOfType('rssd-wechat').length>0;
-  let opened=false;
-  if(!present){const leaf=workspace.getRightLeaf(false);if(!leaf)return false;await leaf.setViewState({type:'rssd-preview',active:true});workspace.revealLeaf(leaf);opened=true;}
-  this.settings.previewOpened=true;await this.saveSettings();
-  return opened;
+ async tidySidebar(){
+  const version=this.settings.layoutVersion||0;
+  if(version>=6||!this.settings.workspaceId||Platform.isMobile)return false;
+  const workspace=this.app.workspace,created=new Set();
+  if(version<5){
+  // Add the new tabs before closing anything: an emptied sidebar is refilled by Obsidian with its default tabs.
+  for(const [type] of SIDEBAR_VIEWS){const leaf=workspace.getRightLeaf(false);if(!leaf)break;await leaf.setViewState({type,active:false});created.add(leaf);}
+  for(const type of ['rssd-preview','rssd-wechat',...SIDEBAR_VIEWS.map(([type])=>type)])for(const leaf of workspace.getLeavesOfType(type))if(!created.has(leaf))leaf.detach();
+  for(const type of ['backlink','outgoing-link','tag','all-properties','outline'])for(const leaf of workspace.getLeavesOfType(type))if(leaf.getRoot?.()===workspace.rightSplit)leaf.detach();
+  const first=[...created][0];if(first)workspace.revealLeaf(first);
+  }
+  // The Works list sits in the left sidebar, in front of the file tree.
+  await this.openWorks();
+  const vault=this.app.vault,before=vault.getConfig?.('propertiesInDocument');
+  // Only on the first arrangement, so a vault that brought the properties back keeps them.
+  if(version<2&&typeof vault.setConfig==='function'&&before!=='hidden'){this.settings.propertiesBefore=before||'visible';vault.setConfig('propertiesInDocument','hidden');}
+  this.settings.layoutVersion=6;await this.saveSettings();
+  return true;
  }
- async openPreview(){
-  const workspace=this.app.workspace,leaf=workspace.getLeavesOfType('rssd-preview')[0]||workspace.getLeavesOfType('rssd-wechat')[0]||workspace.getRightLeaf(false);
-  if(leaf.view?.getViewType?.()!=='rssd-preview')await leaf.setViewState({type:'rssd-preview',active:true});
+ /**
+  * Close Obsidian's backlinks, outgoing links, tags, all-properties and outline tabs in the right sidebar, where
+  * the RSSD tabs take their place. Only while the RSSD tabs are there, so the sidebar is never emptied, and
+  * only when the setting is on (Settings → RSSD → Right sidebar).
+  */
+ closeDefaultTabs(){
+  if(this.settings.tidyRightSidebar===false||!this.settings.workspaceId||Platform.isMobile)return 0;
+  const workspace=this.app.workspace,inRight=leaf=>leaf.getRoot?.()===workspace.rightSplit;
+  if(!SIDEBAR_VIEWS.some(([type])=>workspace.getLeavesOfType(type).some(inRight)))return 0;
+  let closed=0;
+  for(const type of ['backlink','outgoing-link','tag','all-properties','outline'])for(const leaf of workspace.getLeavesOfType(type))if(inRight(leaf)){leaf.detach();closed++;}
+  return closed;
+ }
+ /** Show one of the RSSD sidebar tabs, opening it if it was closed. */
+ async openView(type){
+  const workspace=this.app.workspace;let leaf=workspace.getLeavesOfType(type)[0];
+  if(!leaf){leaf=workspace.getRightLeaf(false);if(!leaf)return;await leaf.setViewState({type,active:true});}
   workspace.revealLeaf(leaf);
  }
+ openDetails(){return this.openView('rssd-details');}
+ /** The work open in the editor, even while a sidebar tab has the focus. */
+ currentWork(){
+  const workspace=this.app.workspace,active=workspace.getActiveFile();
+  if(active&&this.isWork(active))return active;
+  const recent=workspace.getMostRecentLeaf?.()?.view?.file;if(recent&&this.isWork(recent))return recent;
+  return workspace.getLeavesOfType('markdown').map(leaf=>leaf.view?.file).find(file=>file&&this.isWork(file))||null;
+ }
+ /** Show the properties block at the top of notes again, as the vault had it before the details panel. */
+ restoreProperties(){
+  this.app.vault.setConfig?.('propertiesInDocument',this.settings.propertiesBefore||'visible');
+  this.settings.propertiesBefore=null;return this.saveSettings();
+ }
+ openPreview(){return this.openView('rssd-article');}
 
  async refreshStates(){
   try{
@@ -546,34 +713,174 @@ class RssdSettings extends PluginSettingTab{
    .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
   new Setting(containerEl).setName('Command links').setDesc('Allow local commands to drive this vault. Each request has its own receipt.').addToggle(t=>t.setValue(!!s.allowAutomation).onChange(async v=>{s.allowAutomation=v;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Automatic sync').setDesc('Periodically pull and save changed works as private drafts. Conflicts and read-only spaces need attention; this never publishes.').addToggle(t=>t.setValue(s.autoSync!==false).onChange(async v=>{s.autoSync=v;await this.plugin.saveSettings();}));
+  new Setting(containerEl).setName('Right sidebar').setDesc('Keep only the RSSD tabs (Article, Cards, Outline, Details) in the right sidebar. Turn off to let Obsidian keep its backlinks, outgoing links, tags, all-properties and outline tabs there.')
+   .addToggle(t=>t.setValue(s.tidyRightSidebar!==false).onChange(async v=>{s.tidyRightSidebar=v;await this.plugin.saveSettings();if(v)this.plugin.closeDefaultTabs();}));
+  new Setting(containerEl).setName('Properties in the article').setDesc('Work details are edited under Details in the RSSD panel in the right sidebar, so the properties block at the top of each note is hidden. Show it again here.')
+   .addButton(b=>b.setButtonText('Show in article').onClick(async()=>{await this.plugin.restoreProperties();new Notice('The properties block is shown in notes again.');}));
   new Setting(containerEl).setName('Pull works').setDesc('Download new and changed works into '+WORKS_FOLDER+'/ (images go to '+MEDIA_FOLDER+'/). Notes with local changes are never overwritten.')
    .addButton(b=>b.setButtonText('Pull').onClick(()=>this.plugin.pull()));
  }
 }
 
+// The Works list: every work of the space in the left sidebar, grouped by the site's sections, newest first,
+// one row per work, Chinese and English editions shown one language at a time (an English edition is a work of
+// its own in the Center, with no link back to its original that the list could rely on). Read from the vault alone, so it is instant and works
+// offline; "edited" means changed since the last sync with the Center.
+const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not pulled from the Center yet'};
+const WORKS_PAGE=60;
 class WorksView extends ItemView{
- constructor(leaf,plugin){super(leaf);this.plugin=plugin;}
+ constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.filter='all';this.lang='zh';this.collapsed=new Set();this.limits=new Map();this.states=new Map();this.timer=null;this.filling=false;}
  getViewType(){return 'rssd-works';}
- getDisplayText(){return 'RSSD works';}
- getIcon(){return 'files';}
- async onOpen(){void this.render();}
- async render(){
-  const el=this.contentEl;el.empty();el.createEl('h3',{text:'RSSD · '+(this.plugin.settings.workspaceId||'Choose a space')});
-  new Setting(el).addButton(b=>b.setButtonText('Refresh').onClick(()=>this.render())).addButton(b=>b.setButtonText('Pull works').onClick(async()=>{await this.plugin.pull();await this.render();}));
+ getDisplayText(){return 'Works';}
+ getIcon(){return 'library';}
+ async onOpen(){
+  try{this.build();}catch(error){console.error('RSSD works',error);this.contentEl.empty();this.contentEl.createDiv({cls:'rssd-works-empty',text:'Could not show the works: '+(error?.message||error)});}
+ }
+ build(){
+  const el=this.contentEl;el.empty();el.addClass('rssd-works');
+  const top=el.createDiv({cls:'rssd-works-top'});
+  const search=top.createEl('input',{type:'search',cls:'rssd-works-search',attr:{placeholder:'Search titles and summaries'}});
+  search.addEventListener('input',()=>{this.query=search.value;this.render();});
+  this.filters=top.createDiv({cls:'rssd-works-filters'});
+  this.list=el.createDiv({cls:'rssd-works-list'});
+  this.foot=el.createDiv({cls:'rssd-works-foot'});
+  const later=()=>{window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.render(),300);};
+  this.registerEvent(this.app.metadataCache.on('changed',file=>{this.states.delete(file.path);later();}));
+  this.registerEvent(this.app.vault.on('modify',file=>{this.states.delete(file.path);later();}));
+  for(const event of ['create','delete','rename'])this.registerEvent(this.app.vault.on(event,later));
+  this.registerEvent(this.app.workspace.on('file-open',()=>this.mark()));
+  this.registerInterval(window.setInterval(()=>this.renderFoot(),60000));
+  this.app.workspace.onLayoutReady(()=>this.render());
+ }
+ async onClose(){window.clearTimeout(this.timer);}
+ /** Every work in the vault, each edition on its own. */
+ works(){
+  const items=[];
+  for(const file of this.app.vault.getMarkdownFiles()){
+   if(!this.plugin.isWork(file))continue;
+   const p=this.app.metadataCache.getFileCache(file)?.frontmatter;if(!p?.['rssd-id'])continue;
+   items.push({file,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
+    section:String(p['rssd-section']||''),author:String(p.author??''),category:String(p.category??'')});
+  }
+  return items;
+ }
+ /** Whether a note matches its last sync, from the note and its stored baseline; nothing is sent anywhere. */
+ async stateOf(work){
+  const file=work.file,key=file.path+':'+file.stat.mtime,cached=this.states.get(file.path);
+  if(cached?.key===key)return cached.state;
+  let state='synced';
   try{
-   const data=await this.plugin.operations.run('works',async()=>({registry:await this.plugin.client().registry(),states:await this.plugin.statesAll(this.plugin.settings.workspaceId)}));
-   const info=spaceInfo(data.registry,this.plugin.settings.workspaceId);
-   let reason=readOnlyReason(info,this.plugin.settings.workspaceId);
-   if(!info.writable&&info.migrationState==='staged'){
-    try{const site=await this.plugin.client().stagedSite(this.plugin.settings.workspaceId);if(site.capabilities?.includes('staged-drafts-v1'))reason='Edits are saved as private migration drafts. The original site still owns publishing; its later changes may require reconciliation.';}catch{}
+   const base=baselineBucket(this.plugin.settings,this.plugin.settings.workspaceId,work.locale)?.[work.id];
+   if(this.plugin.autoSync?.blocked?.has(file.path))state='conflict';
+   else if(!base)state='unlinked';
+   else if(base.pending)state='saving';
+   else{
+    const note=noteToWork(await this.app.vault.cachedRead(file),parseYaml);
+    if(note&&await workFingerprint(note.data,localMediaPaths(note.media))!==base.fingerprint)state='edited';
    }
-   if(reason)el.createEl('p',{text:reason});
-   for(const [path,state] of Object.entries(data.states)){
-    const id=path.split('/').at(-1).replace(/\.md$/,'');const file=this.app.vault.getAbstractFileByPath(path);
-    const label=file?this.plugin.workLabel(file):null;
-    new Setting(el).setName(label?.title||id).setDesc([label?.date,path.startsWith('Works/en/')?'English':'',STATE_LABELS[state]||state].filter(Boolean).join(' · ')).addButton(b=>b.setButtonText(file?'Open':'Pull first').setDisabled(!file).onClick(()=>this.app.workspace.getLeaf(false).openFile(file)));
+  }catch{state='synced';}
+  this.states.set(file.path,{key,state});return state;
+ }
+ sectionNames(){
+  const site=wechatSite(this.plugin.settings.workspaceId);
+  return new Map((SITE_SECTIONS[site?.id]||[]).map((section,index)=>[section.id,{name:section.name,order:index}]));
+ }
+ render(){
+  if(!this.list)return;
+  try{this.draw();}catch(error){console.error('RSSD works',error);this.list.empty();this.list.createDiv({cls:'rssd-works-empty',text:'Could not list the works: '+(error?.message||error)});}
+ }
+ draw(){
+  const every=this.works(),english=every.filter(work=>work.locale==='en'),chinese=every.filter(work=>work.locale!=='en');
+  if(this.lang==='en'&&!english.length)this.lang='zh';
+  const all=this.lang==='en'?english:chinese,q=this.query.trim().toLowerCase(),names=this.sectionNames();
+  const toCheck=work=>!work.author.trim()||!work.category.trim();
+  const edited=work=>['edited','saving','conflict'].includes(this.states.get(work.file.path)?.state);
+  this.filters.empty();
+  for(const [id,label,count] of [['all','All',all.length],['edited','Edited',all.filter(edited).length],['check','To check',all.filter(toCheck).length]]){
+   const chip=this.filters.createEl('button',{cls:'rssd-works-chip'+(this.filter===id?' is-active':''),text:label+' '+count});
+   chip.addEventListener('click',()=>{this.filter=id;this.render();});
+  }
+  // One language at a time; the switch appears only when the space has English editions.
+  if(english.length){
+   const langs=this.filters.createDiv({cls:'rssd-works-langs'});
+   for(const [id,label,count] of [['zh','中文',chinese.length],['en','English',english.length]]){
+    const tab=langs.createEl('button',{cls:'rssd-works-lang'+(this.lang===id?' is-active':''),text:label});tab.setAttribute('aria-label',label+', '+count+' works');
+    tab.addEventListener('click',()=>{if(this.lang===id)return;this.lang=id;this.render();});
    }
-  }catch(error){el.createEl('p',{text:error.message});}
+  }
+  const shown=all.filter(work=>(!q||[work.title,work.summary].some(text=>text.toLowerCase().includes(q)))&&
+   (this.filter==='all'||(this.filter==='edited'&&edited(work))||(this.filter==='check'&&toCheck(work))));
+  this.contentEl.toggleClass('is-english',this.lang==='en');
+  const groups=new Map();
+  for(const work of shown){const key=work.section||'';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(work);}
+  const order=key=>names.get(key)?.order??999;
+  this.list.empty();
+  if(!shown.length)this.list.createDiv({cls:'rssd-works-empty',text:all.length?'No works match.':'No works yet. Pull them from the Center.'});
+  for(const key of [...groups.keys()].sort((a,b)=>order(a)-order(b)||a.localeCompare(b))){
+   // Newest first; works of the same day by title.
+   const items=groups.get(key).sort((a,b)=>b.date.localeCompare(a.date)||a.title.localeCompare(b.title));
+   const name=names.get(key)?.name||items[0].category||key||'Other';
+   const group=this.list.createDiv({cls:'rssd-works-group'+(this.collapsed.has(key)?' is-collapsed':'')});
+   const head=group.createDiv({cls:'rssd-works-head'});
+   const caret=head.createSpan({cls:'rssd-works-caret'});setIcon(caret,'chevron-down');
+   head.createSpan({cls:'rssd-works-name',text:name});head.createSpan({cls:'rssd-works-count',text:String(items.length)});
+   head.addEventListener('click',()=>{if(this.collapsed.has(key))this.collapsed.delete(key);else this.collapsed.add(key);this.render();});
+   if(this.collapsed.has(key))continue;
+   const limit=this.limits.get(key)||WORKS_PAGE;
+   for(const work of items.slice(0,limit))this.row(group,work);
+   if(items.length>limit){const more=group.createDiv({cls:'rssd-works-more',text:'Show '+Math.min(WORKS_PAGE,items.length-limit)+' more of '+(items.length-limit)});more.addEventListener('click',()=>{this.limits.set(key,limit+WORKS_PAGE);this.render();});}
+  }
+  // Save takes what the Edited filter counts: the edited works of the language on screen.
+  this.edited=all.filter(work=>this.states.get(work.file.path)?.state==='edited').map(work=>work.file);
+  this.mark();this.renderFoot();void this.fillStates(every);
+ }
+ row(group,work){
+  const row=group.createDiv({cls:'rssd-works-row'});row.dataset.path=work.file.path;
+  const state=this.states.get(work.file.path)?.state;
+  const dot=row.createSpan({cls:'rssd-works-dot'+(state?' is-'+state:'')});if(state)dot.setAttribute('aria-label',WORK_STATES[state]);
+  row.createSpan({cls:'rssd-works-date',text:work.date.slice(5)});
+  row.createSpan({cls:'rssd-works-title',text:work.title});
+  row.setAttribute('aria-label',[work.title,work.date,WORK_STATES[state]].filter(Boolean).join(' · '));
+  row.addEventListener('click',()=>void this.openWork(work.file));
+ }
+ // Not named open(): that is Obsidian's own method for starting a view, and replacing it stops the view from ever opening.
+ async openWork(file){await this.app.workspace.getLeaf(false).openFile(file);this.mark();}
+ /** Highlight the work open in the editor. */
+ mark(){
+  const current=this.plugin.currentWork()?.path;
+  for(const row of this.list?.querySelectorAll('.rssd-works-row')||[])row.toggleClass('is-active',row.dataset.path===current);
+ }
+ /** Work out each work's state in the background, a few at a time, and show it as it arrives. */
+ async fillStates(all){
+  if(this.filling)return;this.filling=true;let changed=false;
+  try{
+   for(let i=0;i<all.length;i++){
+    const work=all[i],before=this.states.get(work.file.path)?.state;
+    const state=await this.stateOf(work);
+    if(state!==before){changed=true;const dot=this.list.querySelector(`.rssd-works-row[data-path="${CSS.escape(work.file.path)}"] .rssd-works-dot`);if(dot){dot.className='rssd-works-dot is-'+state;dot.setAttribute('aria-label',WORK_STATES[state]);}}
+    if(i%40===39)await new Promise(resolve=>window.setTimeout(resolve,0));
+   }
+  }finally{this.filling=false;}
+  // Counts depend on the states; refresh them once the pass is complete.
+  if(changed)this.render();
+ }
+ renderFoot(){
+  if(!this.foot)return;this.foot.empty();
+  const at=this.plugin.settings.lastPullAt,minutes=at?Math.round((Date.now()-at)/60000):null;
+  this.foot.createSpan({cls:'rssd-works-pulled',text:at?'Last pull '+(minutes<1?'just now':minutes<60?minutes+' min ago':minutes<1440?Math.round(minutes/60)+' h ago':Math.round(minutes/1440)+' d ago'):'Not pulled yet'});
+  const edited=this.saving?[]:this.edited||[];
+  if(this.saving||(edited.length&&!Platform.isMobile)){
+   const save=this.foot.createEl('button',{cls:'rssd-works-pull rssd-works-save mod-cta',text:this.saving||'Save '+edited.length});
+   save.setAttribute('aria-label',this.saving?'Saving to the Center':'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.');
+   save.disabled=!!this.saving;
+   save.addEventListener('click',async()=>{
+    const files=[...edited];if(!files.length)return;
+    this.saving='Saving…';this.renderFoot();
+    try{await this.plugin.saveEdited(files,{onProgress:(done,total)=>{this.saving='Saving '+done+'/'+total;this.renderFoot();}});}
+    finally{this.saving=null;for(const file of files)this.states.delete(file.path);this.render();}
+   });
+  }
+  const pull=this.foot.createEl('button',{cls:'rssd-works-pull',text:'Pull'});pull.addEventListener('click',async()=>{pull.disabled=true;try{await this.plugin.pull();}finally{pull.disabled=false;this.render();}});
  }
 }
 
@@ -581,62 +888,119 @@ class WorksView extends ItemView{
 // them are that view's styles. Views are named for what they produce, not for a platform: one view can serve
 // several destinations. Each says how to build its result and what its button does with it.
 const PREVIEW_TARGETS=[
- {id:'article',label:'Article',name:'Article view',copyLabel:'Copy article',
-  styles:[{id:'site',label:'Site style'},{id:'plain',label:'Plain'}],
+ {id:'article',label:'Article',name:'Article view',icon:'file-text',copyLabel:'Copy article',actionIcon:'copy',
+  // The site's own style comes first, under the site's name; the general themes are numbered (hover for names).
+  styles:[{id:'site',site:true},...Object.entries(ARTICLE_THEMES).map(([id,theme],index)=>({id,label:String(index+1),name:theme.label}))],
   build:(plugin,file,content,style)=>plugin.wechatResult(file,content,{style}),copy:(plugin,file,style)=>plugin.copyForWechat(file,{style})},
- {id:'cards',label:'Cards',name:'Card view',copyLabel:'Save cards',
-  styles:[{id:'site',label:'Site style'}],
+ {id:'cards',label:'Cards',name:'Card view',icon:'gallery-vertical-end',copyLabel:'Save cards',actionIcon:'download',
+  styles:[{id:'site',site:true},...Object.entries(CARD_THEMES).filter(([id])=>id!=='text').map(([id,theme],index)=>({id,label:String(index+1),name:theme.label}))],
   build:(plugin,file,content,style,options)=>plugin.cardsResult(file,content,{style,...options}),copy:(plugin,file,style,result)=>plugin.saveCards(file,result)},
+ // Outline and details are not outputs: they show how the work is built and what it is, beside the outputs.
+ {id:'outline',label:'Outline',name:'Outline',icon:'list',styles:[],panel:'outline'},
+ {id:'details',label:'Details',name:'Work details',icon:'info',styles:[],panel:'details'},
 ];
 // The result is shown the way it lands in an editor: no frame, no fixed width, filling whatever room there is.
 // It sits in a shadow root so the Obsidian theme cannot restyle it: what shows is what is copied.
-const PREVIEW_FRAME=':host{display:block;color-scheme:light}.page{background:#fff;color:#222;padding:20px 16px 32px;overflow-wrap:anywhere;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.title{margin:0 0 18px;font-size:22px;line-height:1.4;font-weight:700}.body img{max-width:100%}.cards{padding:12px;background:#e6e6e6}.cards img{display:block;width:100%;max-width:1080px;height:auto;margin:0 auto 12px;box-shadow:0 1px 6px rgba(0,0,0,.18)}.cards img:last-child{margin-bottom:0}';
+const PREVIEW_FRAME=':host{display:block;color-scheme:light}.page{background:#fff;color:#222;padding:20px 16px 32px;overflow-wrap:anywhere;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.title{margin:0 0 18px;font-size:22px;line-height:1.4;font-weight:700}.body img{max-width:100%}.cards{padding:12px;background:#e6e6e6}.cards img{display:block;width:100%;max-width:1080px;height:auto;margin:0 auto 12px;box-shadow:0 1px 6px rgba(0,0,0,.18)}.cards img:last-child{margin-bottom:0}.message{padding:24px 16px;color:#888;font-size:13px}';
 class LayoutPreview extends ItemView{
- constructor(leaf,plugin,type='rssd-preview'){super(leaf);this.plugin=plugin;this.type=type;this.target=PREVIEW_TARGETS[0];this.style=this.target.styles[0].id;this.file=null;this.content=null;this.result=null;this.urls=[];this.seq=0;}
- /** A row of tabs; choosing one re-renders the preview. */
- tabs(parent,items,current,choose){
-  parent.empty();
-  for(const item of items){const tab=parent.createEl('button',{text:item.label,cls:'rssd-preview-tab'+(item.id===current?' is-active':'')});tab.setAttribute('aria-pressed',String(item.id===current));tab.addEventListener('click',()=>{if(item.id!==current)choose(item);});}
- }
+ constructor(leaf,plugin,type='rssd-article',targetId='article'){super(leaf);this.plugin=plugin;this.type=type;this.target=PREVIEW_TARGETS.find(t=>t.id===targetId);this.style=this.target.styles[0]?.id||'';this.file=null;this.content=null;this.result=null;this.urls=[];this.seq=0;}
+ /** An icon button; its label is read out and shown as a tooltip. */
+ iconButton(parent,icon,label,cls=''){const button=parent.createEl('button',{cls:'rssd-preview-icon'+(cls?' '+cls:'')});setIcon(button,icon);button.setAttribute('aria-label',label);return button;}
+ /** Draw the output's style tabs and its action icon; choosing a style re-renders the preview. */
  drawTabs(){
-  this.tabs(this.targetTabs,PREVIEW_TARGETS,this.target.id,target=>{this.target=target;this.style=target.styles[0].id;this.copyButton.setText(target.copyLabel);this.drawTabs();void this.show(this.file,{force:true});});
-  this.tabs(this.styleTabs,this.target.styles,this.style,style=>{this.style=style.id;this.drawTabs();void this.show(this.file,{force:true});});
+  this.styleTabs.empty();
+  for(const style of this.target.styles){
+   const label=style.site?'Default':style.label,name=style.site?'Default: '+this.plugin.siteName()+'\'s own style for this section':style.name;
+   const active=style.id===this.style,tab=this.styleTabs.createEl('button',{text:label,cls:'rssd-preview-tab'+(style.site?'':' is-number')+(active?' is-active':'')});tab.setAttribute('aria-pressed',String(active));
+   tab.setAttribute('aria-label',name);
+   tab.addEventListener('click',()=>{if(style.id===this.style)return;this.style=style.id;this.drawTabs();void this.show(this.file,{force:true});});
+  }
+  // Outline and details have no styles, status or action; the controls row belongs to the outputs.
+  const output=!this.target.panel;this.controls.toggle(output);
+  if(output){setIcon(this.actionButton,this.target.actionIcon);this.actionButton.setAttribute('aria-label',this.target.copyLabel);}
  }
  getViewType(){return this.type;}
- getDisplayText(){return 'Layout preview';}
- getIcon(){return 'eye';}
+ getDisplayText(){return this.target.name;}
+ getIcon(){return this.target.icon;}
  async onOpen(){
   const el=this.contentEl;el.empty();el.style.padding='0';
-  this.targetTabs=el.createDiv({cls:'rssd-preview-tabs'});
-  const bar=el.createDiv({cls:'rssd-preview-bar'});this.styleTabs=bar.createDiv({cls:'rssd-preview-tabs rssd-preview-styles'});
-  this.info=bar.createDiv({cls:'rssd-preview-info'});
-  bar.createEl('button',{text:'Refresh'}).addEventListener('click',()=>this.show(this.file,{force:true}));
-  this.copyButton=bar.createEl('button',{text:this.target.copyLabel,cls:'mod-cta'});
-  this.copyButton.addEventListener('click',()=>{if(this.file)void this.target.copy(this.plugin,this.file,this.style,this.result);});
+  this.controls=el.createDiv({cls:'rssd-preview-controls'});
+  this.styleTabs=this.controls.createDiv({cls:'rssd-preview-styles'});
+  const actions=this.controls.createDiv({cls:'rssd-preview-actions'});
+  this.iconButton(actions,'refresh-cw','Refresh').addEventListener('click',()=>this.show(this.file,{force:true}));
+  // Outline and details have no action; their controls row stays hidden, but the button still needs an icon.
+  this.actionButton=this.iconButton(actions,this.target.actionIcon||'copy',this.target.copyLabel||'','mod-cta');
+  this.actionButton.addEventListener('click',()=>{if(this.file)void this.target.copy(this.plugin,this.file,this.style,this.result);});
   this.drawTabs();
-  this.root=el.createDiv({cls:'rssd-preview-host'}).attachShadow({mode:'open'});
+  this.stage=el.createDiv({cls:'rssd-preview-stage'});
+  this.root=this.stage.createDiv({cls:'rssd-preview-host'}).attachShadow({mode:'open'});
+  const overlay=this.stage.createDiv({cls:'rssd-preview-loading'}),box=overlay.createDiv({cls:'rssd-preview-loading-box'});
+  overlay.setAttribute('role','status');box.createDiv({cls:'rssd-preview-spinner'});this.loadingText=box.createDiv({cls:'rssd-preview-loading-text'});
+  this.detailsEl=el.createDiv({cls:'rssd-details'});this.details=new WorkDetails(this.plugin,this.detailsEl);
+  this.outlineEl=el.createDiv({cls:'rssd-outline'});this.outline=new WorkOutline(this.plugin,this.outlineEl);
   // Links in the preview are for looking at, not for leaving the vault.
   this.root.addEventListener('click',event=>{if(event.target?.closest?.('a'))event.preventDefault();});
   this.registerEvent(this.app.workspace.on('file-open',file=>{if(file&&this.plugin.isWork(file))void this.show(file);}));
   // Cards are redrawn page by page, so they wait longer for typing to pause.
   this.registerEvent(this.app.vault.on('modify',file=>{if(file===this.file){window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.show(this.file),this.target.id==='cards'?2500:800);}}));
-  const active=this.app.workspace.getActiveFile();void this.show(active&&this.plugin.isWork(active)?active:null);
+  this.registerEvent(this.app.workspace.on('active-leaf-change',leaf=>{if(leaf===this.leaf){this.catchUp();return;}const file=leaf?.view?.file;if(file&&this.plugin.isWork(file)&&file!==this.file)void this.show(file);}));
+  // Details redraw after the note changes, but never under a field that is being edited.
+  this.registerEvent(this.app.metadataCache.on('changed',file=>{if(file!==this.file)return;if(this.target.panel==='details'&&!this.detailsEl.contains(document.activeElement))void this.details.show(file);if(this.target.panel==='outline')this.outline.show(file);}));
+  // Choosing this tab in the sidebar shows it without making it the active pane; its size changing from
+  // nothing is the dependable sign that it is on screen.
+  const watch=new ResizeObserver(()=>this.catchUp());watch.observe(this.contentEl);this.register(()=>watch.disconnect());
+  this.registerEvent(this.app.workspace.on('layout-change',()=>this.catchUp()));
+  this.app.workspace.onLayoutReady(()=>void this.show(this.plugin.currentWork()));
  }
- async onClose(){window.clearTimeout(this.timer);this.seq++;this.abort?.abort();this.release();}
+ /** A tab that was hidden while its work changed catches up when it is shown. */
+ onResize(){this.catchUp();}
+ /** Draw what a hidden tab put off, once the tab is on screen. */
+ catchUp(){if(this.waiting&&this.containerEl.isShown?.()!==false){const file=this.pendingFile;this.waiting=false;this.pendingFile=null;void this.show(file,{force:true});}}
+ async onClose(){window.clearTimeout(this.timer);window.clearTimeout(this.loadingTimer);this.details.seq++;this.seq++;this.abort?.abort();this.release();}
+ /**
+  * Show or hide the loading cover. It appears only when building takes longer than a moment, so a quick
+  * refresh does not flicker; the action button waits until the result it would copy or save is ready.
+  */
+ loading(on,text=''){
+  if(text)this.loadingText.setText(text);
+  this.actionButton.disabled=on;
+  if(on){if(!this.stage.hasClass('is-loading')&&!this.loadingTimer)this.loadingTimer=window.setTimeout(()=>{this.loadingTimer=null;this.stage.addClass('is-loading');},150);return;}
+  window.clearTimeout(this.loadingTimer);this.loadingTimer=null;this.stage.removeClass('is-loading');
+ }
  release(){for(const url of this.urls)URL.revokeObjectURL(url);this.urls=[];}
- message(text){this.release();this.root.replaceChildren();this.info.setText(text);}
+ message(text){
+  this.loading(false);this.release();
+  const style=document.createElement('style'),note=document.createElement('div');style.textContent=PREVIEW_FRAME;note.className='message';note.textContent=text;
+  this.root.replaceChildren(style,note);
+ }
  async show(file,{force=false}={}){
-  const seq=++this.seq;
+  // An output tab behind another is not built until it is shown; cards in particular take a while. Outline
+  // and details are cheap and always drawn.
+  if(!this.target.panel&&this.containerEl.isShown&&!this.containerEl.isShown()){this.waiting=true;this.pendingFile=file||null;return;}
+  this.waiting=false;this.pendingFile=null;
+  // A newly opened work starts with its section's usual theme; a choice holds while the same work stays open.
+  if(!this.target.panel&&file&&file!==this.file){this.defaultStyle=this.plugin.defaultStyle(this.target.id,file);this.style=this.defaultStyle;this.drawTabs();
+   // The theme tabs take the colour of the work's section.
+   const accent=this.plugin.sectionAccent(file);if(accent)this.controls.style.setProperty('--rssd-accent',accent);else this.controls.style.removeProperty('--rssd-accent');}
+  const seq=++this.seq,panel=this.target.panel;
+  this.stage.toggle(!panel);this.detailsEl.toggle(panel==='details');this.outlineEl.toggle(panel==='outline');
+  if(panel){
+   this.abort?.abort();this.loading(false);this.file=file;this.content=null;this.result=null;this.release();this.root.replaceChildren();
+   try{if(panel==='details')await this.details.show(file);else this.outline.show(file);}
+   catch(error){console.error('RSSD '+panel,error);const box=panel==='details'?this.detailsEl:this.outlineEl;box.empty();box.createDiv({cls:'rssd-details-empty',text:'Could not show this: '+(error?.message||error)});}
+   return;
+  }
   if(!file){this.abort?.abort();this.file=null;this.content=null;this.result=null;this.message('Open a work to preview it.');return;}
   try{
    const content=await this.app.vault.read(file);
    if(seq!==this.seq||(!force&&file===this.file&&content===this.content))return;
    // A newer request replaces one still being laid out.
    this.abort?.abort();const abort=this.abort=new AbortController();
+   this.loading(true,this.target.id==='cards'?'Preparing cards…':'Preparing the article…');
    const result=await this.target.build(this.plugin,file,content,this.style,{signal:abort.signal,
-    onProgress:step=>{if(seq===this.seq)this.info.setText(step.stage==='layout'?'Laying out card '+step.count+'…':'Drawing card '+step.count+' of '+step.total+'…');}});
+    onProgress:step=>{if(seq===this.seq)this.loading(true,step.stage==='layout'?'Laying out card '+step.count+'…':'Drawing card '+step.count+' of '+step.total+'…');}});
    if(seq!==this.seq)return;
-   this.file=file;this.content=content;this.result=result;
+   this.file=file;this.content=content;this.result=result;this.loading(false);
    const scroll=this.contentEl.scrollTop,style=document.createElement('style');style.textContent=PREVIEW_FRAME;this.release();
    if(result.pages){
     // Each card is shown as the picture that will be saved.
@@ -651,13 +1015,81 @@ class LayoutPreview extends ItemView{
     page.append(title,body);this.root.replaceChildren(style,page);
    }
    this.contentEl.scrollTop=scroll;
-   const look=result.styled?[this.plugin.settings.workspaceId,result.sectionId].filter(Boolean).join(' · ')+' style':'Default style';
-   // The package manifest lists what this output still lacks (an author, a cover, a shortened digest…).
-   const checks=result.manifest?.warnings||[];
-   const count=result.pages?result.pages.length+(result.pages.length===1?' card':' cards'):result.images?result.images+(result.images===1?' image':' images'):'';
-   this.info.setText([look,count,checks.length?checks.length+' to check':''].filter(Boolean).join(' · '));
-   this.info.setAttribute('aria-label',[this.target.name+', '+look+'.'+(result.pages?' Cards are '+result.size.width+'×'+result.size.height+' PNG pictures.':' The title is not part of the copied body; paste it into the editor\'s title field.'),...checks.map(check=>'• '+check.message)].join('\n'));
   }catch(error){if(seq===this.seq&&error?.name!=='AbortError'){this.file=file;this.content=null;this.result=null;this.message('Could not preview: '+error.message);}}
+ }
+}
+
+// Work details: the readers' fields of the open work, edited in place and measured against the outputs that
+// use them, then the read-only fields that link the note to its Center work and its local sync state.
+// The work's headings; choosing one moves the editor there, as Obsidian's own outline does.
+class WorkOutline{
+ constructor(plugin,el){this.plugin=plugin;this.app=plugin.app;this.el=el;}
+ show(file){
+  const el=this.el;el.empty();
+  if(!file){el.createDiv({cls:'rssd-details-empty',text:'Open a work to see its outline.'});return;}
+  const headings=this.app.metadataCache.getFileCache(file)?.headings||[];
+  if(!headings.length){el.createDiv({cls:'rssd-details-empty',text:'This work has no headings.'});return;}
+  const top=Math.min(...headings.map(h=>h.level));
+  for(const heading of headings){
+   const item=el.createDiv({cls:'rssd-outline-item is-level-'+(heading.level-top+1),text:heading.heading});
+   item.style.paddingLeft=`calc(var(--size-2-2) + ${(heading.level-top)*14}px)`;item.setAttribute('role','button');item.tabIndex=0;
+   const go=()=>this.reveal(file,heading.position.start.line);
+   item.addEventListener('click',go);item.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();go();}});
+  }
+ }
+ async reveal(file,line){
+  const workspace=this.app.workspace;
+  let leaf=workspace.getLeavesOfType('markdown').find(l=>l.view?.file===file);
+  if(!leaf){leaf=workspace.getLeaf(false);await leaf.openFile(file);}
+  leaf.view.setEphemeralState?.({line});workspace.setActiveLeaf(leaf,{focus:true});
+ }
+}
+
+class WorkDetails{
+ constructor(plugin,el){this.plugin=plugin;this.app=plugin.app;this.contentEl=el;this.file=null;this.seq=0;}
+ async show(file){
+  const seq=++this.seq,el=this.contentEl;this.file=file;
+  if(!file){el.empty();el.createDiv({cls:'rssd-details-empty',text:'Open a work to see its details.'});return;}
+  const content=await this.app.vault.read(file);if(seq!==this.seq)return;
+  const properties=this.app.metadataCache.getFileCache(file)?.frontmatter||{};
+  let work=null;try{work=noteToWork(content,parseYaml);}catch{}
+  el.empty();
+  for(const field of DETAIL_FIELDS)this.field(el,file,field,fieldText(properties[field.key]));
+  if(work){
+   const checks=checkSource({...work.data,kind:work.kind,media:work.media}).warnings;
+   if(checks.length){const box=el.createDiv({cls:'rssd-details-checks'});box.createDiv({cls:'rssd-details-label',text:'To check'});for(const check of checks)box.createDiv({cls:'rssd-details-check',text:check.message});}
+  }
+  const link=el.createEl('details',{cls:'rssd-details-link'});link.createEl('summary',{text:'Center link'});
+  const state=link.createDiv({cls:'rssd-details-state',text:'Checking…'});
+  for(const [key,label] of IDENTITY_FIELDS){const row=link.createDiv({cls:'rssd-details-row'});row.createSpan({cls:'rssd-details-key',text:label});row.createSpan({cls:'rssd-details-value',text:fieldText(properties[key])||'—'});}
+  link.createDiv({cls:'rssd-details-note',text:'These link the note to its Center work and are not edited here.'});
+  const text=await this.syncState(file,work);if(seq===this.seq)state.setText(text);
+ }
+ /** One editable field: label, input, and a count for each output that limits it. Saved when you leave the field. */
+ field(el,file,field,value){
+  const row=el.createDiv({cls:'rssd-details-field'});row.createEl('label',{cls:'rssd-details-label',text:field.label});
+  const input=field.multiline?row.createEl('textarea',{cls:'rssd-details-input'}):row.createEl('input',{cls:'rssd-details-input',type:field.type==='date'?'date':'text'});
+  input.value=value;if(field.multiline)input.rows=4;
+  const meter=row.createDiv({cls:'rssd-details-meter'});
+  const measure=()=>{meter.empty();for(const count of counters(field,input.value))meter.createSpan({cls:'rssd-details-count'+(count.over?' is-over':''),text:count.name+' '+count.length+'/'+count.max});};
+  measure();input.addEventListener('input',measure);
+  input.addEventListener('keydown',event=>{if(event.key==='Enter'&&!field.multiline){event.preventDefault();input.blur();}if(event.key==='Escape'){input.value=value;measure();input.blur();}});
+  input.addEventListener('change',async()=>{
+   let next;try{next=cleanValue(field,input.value);}catch(error){new Notice(error.message);input.value=value;measure();return;}
+   if(next===value)return;
+   try{await this.app.fileManager.processFrontMatter(file,properties=>{properties[field.key]=next;});value=next;}
+   catch(error){console.error('RSSD work details',error);new Notice('Could not save '+field.label.toLowerCase()+': '+error.message,10000);input.value=value;measure();}
+  });
+ }
+ /** Whether the note matches its last sync. Read locally; nothing is sent to the Center. */
+ async syncState(file,work){
+  if(!work)return 'This note is not linked to a Center work.';
+  try{
+   const engine=this.plugin.engine(),space=this.plugin.settings.workspaceId,base=await engine.store.get(space,work.data.id,work.data.locale);
+   if(!base)return 'Not pulled from the Center yet.';
+   if(base.pending)return 'Saving to the Center…';
+   return await engine.hasLocalChanges(space,file.path)?'Edited since the last sync; saved as a private draft automatically.':'Unchanged since the last sync.';
+  }catch(error){return 'Sync state unavailable: '+error.message;}
  }
 }
 
@@ -667,11 +1099,12 @@ class ReaderView extends ItemView{
  getViewType(){return 'rssd-reader';}
  getDisplayText(){return 'RSSD reader';}
  getIcon(){return 'book-open';}
- async onOpen(){this.contentEl.addClass('rssd-reader');void this.load();}
+ async onOpen(){this.contentEl.addClass('rssd-reader');void this.loadCatalog();}
  async onClose(){this.release();}
  release(){for(const url of this.urls)URL.revokeObjectURL(url);this.urls=[];this.articleComponent?.unload();this.articleComponent=null;}
  get s(){return this.plugin.settings;}
- async load(){
+ // Not named load(): that is Obsidian's own lifecycle method for every view.
+ async loadCatalog(){
   const seq=++this.seq,el=this.contentEl;this.article=null;this.release();el.empty();
   el.createEl('p',{text:'Loading…',cls:'setting-item-description'});
   try{
@@ -686,16 +1119,16 @@ class ReaderView extends ItemView{
  }
  renderError(error){
   const el=this.contentEl;el.empty();el.createEl('h3',{text:'RSSD reader'});el.createEl('p',{text:error.message});
-  const row=new Setting(el).addButton(b=>b.setButtonText('Try again').onClick(()=>this.load()));
-  if(error?.status===401||!this.plugin.token())row.addButton(b=>b.setButtonText('Log in').setCta().onClick(async()=>{try{await this.plugin.login({openBrowser:true,selectSyncSpace:false});await this.load();}catch(e){if(e?.code!=='cancelled')new Notice('Login failed: '+e.message,10000);}}));
+  const row=new Setting(el).addButton(b=>b.setButtonText('Try again').onClick(()=>this.loadCatalog()));
+  if(error?.status===401||!this.plugin.token())row.addButton(b=>b.setButtonText('Log in').setCta().onClick(async()=>{try{await this.plugin.login({openBrowser:true,selectSyncSpace:false});await this.loadCatalog();}catch(e){if(e?.code!=='cancelled')new Notice('Login failed: '+e.message,10000);}}));
  }
  renderList(){
   const el=this.contentEl,s=this.s;this.article=null;this.release();el.empty();
   const bar=new Setting(el).setName(this.spaces.find(w=>w.id===s.readerSpace)?.name||s.readerSpace);
-  if(this.spaces.length>1)bar.addDropdown(d=>{for(const w of this.spaces)d.addOption(w.id,w.name);d.setValue(s.readerSpace).onChange(async v=>{s.readerSpace=v;await this.plugin.saveSettings();void this.load();});});
-  bar.addDropdown(d=>{for(const [k,v] of Object.entries(LOCALE_LABELS))d.addOption(k,v);d.setValue(s.readerLocale||'zh-CN').onChange(async v=>{s.readerLocale=v;await this.plugin.saveSettings();void this.load();});});
-  bar.addExtraButton(b=>b.setIcon('refresh-cw').setTooltip('Refresh').onClick(()=>this.load()));
-  new Setting(el).setName('Include unpublished drafts').addToggle(t=>t.setValue(!!s.readerDrafts).onChange(async v=>{s.readerDrafts=v;await this.plugin.saveSettings();void this.load();}))
+  if(this.spaces.length>1)bar.addDropdown(d=>{for(const w of this.spaces)d.addOption(w.id,w.name);d.setValue(s.readerSpace).onChange(async v=>{s.readerSpace=v;await this.plugin.saveSettings();void this.loadCatalog();});});
+  bar.addDropdown(d=>{for(const [k,v] of Object.entries(LOCALE_LABELS))d.addOption(k,v);d.setValue(s.readerLocale||'zh-CN').onChange(async v=>{s.readerLocale=v;await this.plugin.saveSettings();void this.loadCatalog();});});
+  bar.addExtraButton(b=>b.setIcon('refresh-cw').setTooltip('Refresh').onClick(()=>this.loadCatalog()));
+  new Setting(el).setName('Include unpublished drafts').addToggle(t=>t.setValue(!!s.readerDrafts).onChange(async v=>{s.readerDrafts=v;await this.plugin.saveSettings();void this.loadCatalog();}))
    .addSearch(q=>{q.setPlaceholder('Search titles').setValue(this.query).onChange(v=>{this.query=v;this.renderRows(list);});});
   const list=el.createDiv();this.renderRows(list);
  }
@@ -706,10 +1139,11 @@ class ReaderView extends ItemView{
    const meta=[item.dateLabel||String(item.lastmod||'').slice(0,10),item.category,item.publicationState==='published'?'':'draft'].filter(Boolean).join(' · ');
    const row=new Setting(list).setName(String(item.title||item.articleId)).setDesc(meta+(item.summary?'\n'+item.summary:''));
    row.settingEl.style.cursor='pointer';row.descEl.style.whiteSpace='pre-line';
-   row.settingEl.addEventListener('click',()=>this.open(item));
+   row.settingEl.addEventListener('click',()=>this.openArticle(item));
   }
  }
- async open(item){
+ // Not named open(): that is Obsidian's own method for starting a view.
+ async openArticle(item){
   const seq=++this.seq,el=this.contentEl,s=this.s;this.release();el.empty();
   el.createEl('p',{text:'Loading '+(item.title||item.articleId)+'…',cls:'setting-item-description'});
   try{
@@ -721,7 +1155,7 @@ class ReaderView extends ItemView{
  }
  async renderArticle(seq){
   const a=this.article,el=this.contentEl;el.empty();
-  const bar=new Setting(el).addButton(b=>b.setButtonText('← All articles').onClick(()=>this.items?this.renderList():this.load()));
+  const bar=new Setting(el).addButton(b=>b.setButtonText('← All articles').onClick(()=>this.items?this.renderList():this.loadCatalog()));
   if(a.url)bar.addButton(b=>b.setButtonText(a.published?'Open on site':'Site page (not published)').onClick(()=>window.open(a.url)));
   const body=el.createDiv({cls:'markdown-rendered markdown-preview-view'});body.style.padding='0 var(--size-4-4)';
   body.createEl('h1',{text:a.title});

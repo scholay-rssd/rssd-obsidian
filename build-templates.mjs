@@ -43,3 +43,19 @@ export function wechatSites(file=new URL('../sites/profiles.json',import.meta.ur
  }
  return sites;
 }
+/**
+ * KaTeX's stylesheet for drawing formulas as pictures: the rules without their fonts, and each font face on
+ * its own with the WOFF2 font inside, so a picture can carry only the faces its formula uses.
+ */
+export function katexAssets(dist=new URL('./node_modules/katex/dist/',import.meta.url)){
+ const css=readFileSync(new URL('katex.min.css',dist),'utf8'),faces=[];
+ const rest=css.replace(/@font-face\{([^}]*)\}/g,(_,body)=>{
+  const family=/font-family:\s*"?([^";]+)"?/.exec(body)?.[1],file=/url\((fonts\/[^)]+\.woff2)\)/.exec(body)?.[1];
+  if(!family||!file)throw Error('Unexpected KaTeX font face');
+  const data=readFileSync(new URL(file,dist)).toString('base64');
+  faces.push({family,css:'@font-face{'+body.replace(/src:[^;}]+/,'src:url(data:font/woff2;base64,'+data+') format("woff2")')+'}'});
+  return '';
+ });
+ if(faces.length<10)throw Error('KaTeX fonts are missing from '+dist);
+ return {css:rest,faces};
+}
