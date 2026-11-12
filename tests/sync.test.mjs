@@ -39,6 +39,13 @@ test('pull downloads works and images, then reports them synced',async()=>{
  assert.deepEqual(Object.values(await engine.states('metho')),['synced','synced']);
 });
 
+test('pull reports which Center work each edition belongs to, unchanged ones included',async()=>{
+ const {engine,center}=setup('a-one','b-two'),list=center.client.catalog;
+ center.client.catalog=async(...args)=>{const page=await list(...args);return {...page,items:page.items.map(item=>item.articleId==='a-one'?{...item,documentId:'doc-1'}:item)};};
+ assert.deepEqual((await engine.pull('metho')).documents,{'a-one':'doc-1'},'an edition without a document ID is left out');
+ assert.deepEqual((await engine.pull('metho')).documents,{'a-one':'doc-1'},'reported on every complete pull, not only for downloads');
+});
+
 test('an interrupted pull retains earlier progress and a retry preserves subsequent local edits',async()=>{
  const {engine,vault,center,store}=setup('a-one','b-two','c-three');
  const get=center.client.work;let fail=true;

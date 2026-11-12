@@ -58,7 +58,7 @@ export const SITE_MARKS={
   signature:(s,c)=>`<section style="margin:38px 0 0;padding:10px 14px;border:1px dashed ${c.tint(.6)};border-radius:12px;text-align:center;"><p style="margin:0;font-size:13px;line-height:1.8;color:${c.muted};">下课 · <span style="font-weight:700;color:${c.accent};">${esc(s.name)}</span> — ${esc(s.slogan)}</p></section>`,
  },
  // 犀术 IME — a keyboard: the name and chapter numbers are keycaps, shortcuts in the text are keys too.
- lingxi:{
+ xsime:{
   masthead:(s,c)=>`<section style="margin:0 0 24px;padding-bottom:12px;border-bottom:1px solid ${c.tint(.3)};"><p style="margin:0;line-height:2;">${[...String(s.name)].filter(ch=>ch.trim()).map(ch=>`<span style="display:inline-block;min-width:14px;margin-right:5px;padding:0 7px;background:#fff;border:1px solid ${c.tint(.5)};border-bottom:3px solid ${c.tint(.5)};border-radius:6px;font-family:${MONO};font-size:14px;line-height:1.7;font-weight:700;text-align:center;color:${c.ink};">${esc(ch)}</span>`).join('')}</p><p style="margin:6px 0 0;font-size:12px;line-height:1.6;color:${c.muted};">${esc(s.category||s.slogan)}</p></section>`,
   signature:(s,c)=>`<section style="margin:38px 0 0;"><section style="display:inline-block;padding:5px 6px;border:1px solid ${c.tint(.4)};border-radius:8px;"><span style="display:inline-block;padding:1px 9px;background:${c.accent};border-radius:5px;font-size:13px;line-height:1.7;color:#fff;"><span style="font-family:${MONO};">1</span> ${esc(s.name)}</span><span style="font-size:13px;line-height:1.7;color:${c.muted};">　<span style="font-family:${MONO};">2</span> ${esc(s.slogan)}　</span></section></section>`,
  },

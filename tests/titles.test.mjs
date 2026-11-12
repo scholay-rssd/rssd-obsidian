@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {workLabel,labelText} from '../src/titles.mjs';
+import {workLabel,labelText,tabTitle} from '../src/titles.mjs';
 
 test('a work note is labelled by its title and date, not its ID',()=>{
  assert.deepEqual(workLabel({title:' 个人信息保护合规审计的主要规定 ',date:'2026-10-22'}),{title:'个人信息保护合规审计的主要规定',date:'10-22'});
@@ -16,4 +16,8 @@ test('a note without a title keeps its file name',()=>{
 test('tabs show the date before the title',()=>{
  assert.equal(labelText({title:'T',date:'10-22'}),'10-22 T');
  assert.equal(labelText({title:'T',date:''}),'T');
+});
+test('an RSSD tab names what it shows and the work it shows',()=>{
+ assert.equal(tabTitle('Article',{title:'生存分析如何读懂未完的随访',date:'10-19'}),'Article · 生存分析如何读懂未完的随访');
+ assert.equal(tabTitle('Cards',null),'');assert.equal(tabTitle('Details',{title:'',date:''}),'');
 });

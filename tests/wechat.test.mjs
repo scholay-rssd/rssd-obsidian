@@ -48,9 +48,9 @@ test('rich and plain text go to the clipboard together, or the copy is refused',
 });
 test('every space takes its site name and its sections\' templates from the website',()=>{
  const table=wechatTemplates(),sites=wechatSites();
- assert.deepEqual(Object.keys(table).sort(),['enter','legis','lingxi','metho','personal','pets','piggytuck','scholay-today','study','xsiching']);
+ assert.deepEqual(Object.keys(table).sort(),['enter','legis','metho','personal','pets','piggytuck','scholay-today','study','xsiching','xsime']);
  assert.deepEqual(Object.values(sites).map(s=>s.id).sort(),Object.keys(table).sort());
- assert.equal(wechatSite('academic',sites).id,'scholay-today');assert.equal(wechatSite('design',sites).id,'piggytuck');
+ assert.equal(wechatSite('academic',sites).id,'scholay-today');assert.equal(wechatSite('lingxi',sites).id,'xsime','a space with the retired ID still finds its site');assert.equal(wechatSite('design',sites).id,'piggytuck');
  for(const site of Object.values(sites)){assert.ok(site.name);assert.ok(site.slogan);}
  const works=wechatTemplate('personal','works',table,sites);
  assert.match(works.accent,/^#[0-9a-f]{6}$/i);assert.ok(['serif','sans'].includes(works.family));

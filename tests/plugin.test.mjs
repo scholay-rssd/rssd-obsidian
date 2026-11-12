@@ -140,37 +140,53 @@ test('reading uses the login Center without requiring the vault sync space',()=>
  assert.equal(p.readClient().origin,'https://center.example.org');
  p.settings.origin='https://another.example.org';assert.throws(()=>p.readClient(),/different Center/);
 });
-test('the sidebar is arranged once: four RSSD tabs in order with Article in front, earlier panels and unused Obsidian tabs closed',async()=>{
- const p=plugin(),config={propertiesInDocument:'visible'},right={},left={},created=[],revealed=[];p.saveSettings=async()=>{};
- const leaf=(type,root)=>({type,root,detached:false,getRoot(){return this.root;},detach(){this.detached=true;}});
- const order=[];const leaves=[leaf('rssd-preview',right),leaf('rssd-details',right),leaf('backlink',right),leaf('outgoing-link',right),leaf('tag',right),leaf('all-properties',right),leaf('outline',right),leaf('tag',left),leaf('file-explorer',left)];
- const works={setViewState:async state=>{works.state=state;}};
- p.app.workspace={rightSplit:right,leftSplit:left,getLeftLeaf:split=>{assert.equal(split,false);return works;},getLeavesOfType:type=>leaves.filter(l=>l.type===type&&!l.detached),
-  getRightLeaf:split=>{assert.equal(split,false);assert.equal(leaves.filter(x=>x.detached).length,0,'new tabs are added before anything is closed');const l={setViewState:async state=>{l.state=state;}};created.push(l);return l;},revealLeaf:l=>revealed.push(l)};
+test('the layout is arranged once: the Works list on the left, RSSD tabs only next to the note, the right sidebar left to Obsidian',async()=>{
+ const p=plugin(),config={propertiesInDocument:'visible'},right={},left={},root={};p.saveSettings=async()=>{};
+ const leaf=(type,where,parent)=>({type,where,parent,detached:false,getRoot(){return this.where;},detach(){this.detached=true;}});
+ const leaves=[leaf('rssd-preview',right),leaf('rssd-details',right),leaf('rssd-outline',right),leaf('backlink',right),leaf('outline',right),leaf('tag',left),leaf('file-explorer',left)];
+ const works={setViewState:async state=>{works.state=state;}},revealed=[];
+ p.app.workspace={rightSplit:right,leftSplit:left,rootSplit:root,getLeftLeaf:split=>{assert.equal(split,false);return works;},getLeavesOfType:type=>leaves.filter(l=>l.type===type&&!l.detached),
+  getRightLeaf:()=>assert.fail('nothing is added to the right sidebar'),revealLeaf:l=>revealed.push(l)};
  p.app.vault={getConfig:key=>config[key],setConfig:(key,value)=>{config[key]=value;}};
  assert.equal(await p.tidySidebar(),true);
- assert.deepEqual(leaves.filter(l=>l.detached).map(l=>l.type),['rssd-preview','rssd-details','backlink','outgoing-link','tag','all-properties','outline']);
- assert.deepEqual(leaves.filter(l=>!l.detached).map(l=>l.type),['tag','file-explorer'],'the left sidebar is left alone');
- assert.deepEqual(created.map(l=>l.state),[{type:'rssd-article',active:false},{type:'rssd-cards',active:false},{type:'rssd-outline',active:false},{type:'rssd-details',active:false}]);
- assert.deepEqual(revealed,[created[0],works]);assert.deepEqual(works.state,{type:'rssd-works',active:true},'the Works list opens in the left sidebar');
- assert.equal(config.propertiesInDocument,'hidden');assert.equal(p.settings.propertiesBefore,'visible');assert.equal(p.settings.layoutVersion,6);
- assert.equal(await p.tidySidebar(),false);assert.equal(created.length,4,'arranged only once');
+ assert.deepEqual(leaves.filter(l=>l.detached).map(l=>l.type),['rssd-preview','rssd-details','rssd-outline']);
+ assert.deepEqual(leaves.filter(l=>!l.detached).map(l=>l.type),['backlink','outline','tag','file-explorer'],'Obsidian\'s own tabs are left where they are');
+ assert.deepEqual(revealed,[works]);assert.deepEqual(works.state,{type:'rssd-works',active:true},'the Works list opens in the left sidebar');
+ assert.equal(config.propertiesInDocument,'hidden');assert.equal(p.settings.propertiesBefore,'visible');assert.equal(p.settings.layoutVersion,9);
+ assert.equal(await p.tidySidebar(),false,'arranged only once');
  await p.restoreProperties();assert.equal(config.propertiesInDocument,'visible');
  // A vault arranged by an earlier version keeps its properties choice.
  const earlier=plugin(),conf={propertiesInDocument:'visible'};earlier.saveSettings=async()=>{};earlier.settings.layoutVersion=4;
- earlier.app.workspace={rightSplit:right,leftSplit:left,getLeftLeaf:()=>({setViewState:async()=>{}}),getLeavesOfType:()=>[],getRightLeaf:()=>({setViewState:async()=>{}}),revealLeaf:()=>{}};
+ earlier.app.workspace={rightSplit:right,leftSplit:left,rootSplit:root,getLeftLeaf:()=>({setViewState:async()=>{}}),getLeavesOfType:()=>[],revealLeaf:()=>{}};
  earlier.app.vault={getConfig:key=>conf[key],setConfig:(key,value)=>{conf[key]=value;}};
  assert.equal(await earlier.tidySidebar(),true);assert.equal(conf.propertiesInDocument,'visible');
  const reader=plugin();reader.settings.workspaceId='';assert.equal(await reader.tidySidebar(),false);
 });
-test('Obsidian\'s own tabs are moved out of the right sidebar on each start, only beside the RSSD tabs and while the setting is on',()=>{
- const right={},left={},leaf=(type,root)=>({type,root,detached:false,getRoot(){return this.root;},detach(){this.detached=true;}});
- const make=leaves=>{const p=plugin();p.app.workspace={rightSplit:right,getLeavesOfType:type=>leaves.filter(l=>l.type===type&&!l.detached)};return p;};
- const leaves=[leaf('rssd-article',right),leaf('backlink',right),leaf('outline',right),leaf('tag',left),leaf('outline',left)];
- const p=make(leaves);assert.equal(p.closeDefaultTabs(),2);
- assert.deepEqual(leaves.filter(l=>l.detached).map(l=>l.type),['backlink','outline']);
- const without=[leaf('backlink',right)];assert.equal(make(without).closeDefaultTabs(),0,'never empties a sidebar without RSSD tabs');
- const off=make([leaf('rssd-details',right),leaf('tag',right)]);off.settings.tidyRightSidebar=false;assert.equal(off.closeDefaultTabs(),0);
+test('tabs Obsidian has not loaded yet are named for their work too, even before any note is loaded',()=>{
+ const p=plugin(),work=Object.assign(new mock.TFile(),{path:'Works/one.md',extension:'md',basename:'one'}),texts=new Map();
+ const header=name=>({setText:text=>texts.set(name,text)});
+ const note={view:{},getViewState:()=>({type:'markdown',state:{file:'Works/one.md'}}),tabHeaderInnerTitleEl:header('note')};
+ const article={view:{},tabHeaderInnerTitleEl:header('article')},details={view:{},tabHeaderInnerTitleEl:header('details')};
+ p.app.workspace={getLeavesOfType:type=>({markdown:[note],'rssd-article':[article],'rssd-details':[details]})[type]||[],getActiveFile:()=>null,getMostRecentLeaf:()=>({view:{}})};
+ p.app.vault={getAbstractFileByPath:path=>path===work.path?work:null};
+ p.app.metadataCache={getFileCache:file=>file===work?{frontmatter:{title:'生存分析如何读懂未完的随访',date:'2026-10-19'}}:null};
+ p.refreshTitles();
+ assert.deepEqual(Object.fromEntries(texts),{note:'10-19 生存分析如何读懂未完的随访',article:'Article · 生存分析如何读懂未完的随访',details:'Details · 生存分析如何读懂未完的随访'});
+});
+test('a card click replaces the work everywhere and keeps the tab in front; a ⌘-click opens a new tab',async()=>{
+ const p=plugin(),root={},file=name=>Object.assign(new mock.TFile(),{path:'Works/'+name+'.md',extension:'md',basename:name}),old=file('old'),next=file('next'),other=file('other');
+ const opened=[],shown=[],note=(held,activeTime)=>{const l={view:{file:held},activeTime,getRoot:()=>root,openFile:async(f,state)=>{opened.push([l.view.file.basename,f.basename,state]);l.view.file=f;}};return l;};
+ const first=note(old,5),second=note(other,9),cards={view:{getViewType:()=>'rssd-cards',show:async f=>shown.push(f.basename)},getRoot:()=>root};
+ let front=cards;const newTabs=[];p.refreshTitles=()=>{};
+ p.app.workspace={rootSplit:root,getLeavesOfType:type=>type==='markdown'?[first,second]:type==='rssd-cards'?[cards]:[],getMostRecentLeaf:()=>front,getActiveFile:()=>null,
+  getLeaf:kind=>{assert.equal(kind,'tab');const l={openFile:async f=>newTabs.push(f.basename)};return l;}};
+ p.shownWork=old;
+ await p.openWorkFile(next);
+ assert.deepEqual(opened,[['old','next',{active:false}]],'the note tab the plug-in used last is reused, behind the Cards tab that stays in front');
+ assert.deepEqual(shown,['next'],'the RSSD tabs switch to the new work');assert.equal(p.shownWork,next);
+ front=first;opened.length=0;await p.openWorkFile(old);
+ assert.deepEqual(opened,[['next','old',{active:true}]],'with the note in front, the same note tab shows the new work');
+ await p.openWorkFile(other,{newTab:true});assert.deepEqual(newTabs,['other'],'⌘-click opens a new tab');
 });
 test('the panel finds the open work even while a sidebar tab has the focus',()=>{
  const p=plugin(),work={extension:'md',path:'Works/one.md'},note={extension:'md',path:'Notes/x.md'};
@@ -181,14 +197,44 @@ test('the panel finds the open work even while a sidebar tab has the focus',()=>
  p.app.workspace={getActiveFile:()=>null,getMostRecentLeaf:()=>null,getLeavesOfType:()=>[]};
  assert.equal(p.currentWork(),null);
 });
-test('a vault arranged by the previous version only gets the Works list added on the left',async()=>{
+test('a vault arranged by an earlier version only gets the Works list added on the left',async()=>{
  const p=plugin(),right={},left={},created=[];p.saveSettings=async()=>{};p.settings.layoutVersion=5;
  const old={type:'rssd-works',detached:false,getRoot:()=>right,detach(){this.detached=true;}};
  p.app.workspace={rightSplit:right,leftSplit:left,getLeavesOfType:type=>type==='rssd-works'&&!old.detached?[old]:[],
   getRightLeaf:()=>{created.push('right');return {setViewState:async()=>{}};},getLeftLeaf:()=>{created.push('left');return {setViewState:async()=>{}};},revealLeaf:()=>{}};
  p.app.vault={getConfig:()=>'hidden',setConfig:()=>{}};
- assert.equal(await p.tidySidebar(),true);assert.deepEqual(created,['left'],'no right-sidebar tabs are recreated');
- assert.equal(old.detached,true,'a Works view left elsewhere by an earlier version is moved');assert.equal(p.settings.layoutVersion,6);
+ assert.equal(await p.tidySidebar(),true);assert.deepEqual(created,['left'],'no right-sidebar tabs are created');
+ assert.equal(old.detached,true,'a Works view left elsewhere by an earlier version is moved');assert.equal(p.settings.layoutVersion,9);
+});
+test('RSSD tabs that earlier versions put in the right sidebar or a pane of their own are closed once; ones beside a note stay',async()=>{
+ for(const version of [6,7,8]){
+  const p=plugin(),right={},left={},root={},noteTabs={},ownPane={};p.saveSettings=async()=>{};p.settings.layoutVersion=version;
+  const leaf=(type,where,parent)=>({type,where,parent,detached:false,getRoot(){return this.where;},detach(){this.detached=true;}});
+  const leaves=[leaf('markdown',root,noteTabs),leaf('rssd-article',root,noteTabs),leaf('rssd-cards',root,ownPane),leaf('rssd-article',root,ownPane),
+   leaf('rssd-outline',right),leaf('rssd-details',right),leaf('backlink',right),leaf('rssd-works',left)];
+  p.app.workspace={rightSplit:right,leftSplit:left,rootSplit:root,getLeavesOfType:type=>leaves.filter(l=>l.type===type&&!l.detached),
+   getRightLeaf:()=>assert.fail('nothing is added to the right sidebar'),getLeftLeaf:()=>({setViewState:async()=>{}}),revealLeaf:()=>{}};
+  p.app.vault={getConfig:()=>'hidden',setConfig:()=>{}};
+  assert.equal(await p.tidySidebar(),true);
+  assert.deepEqual(leaves.map(l=>l.detached),[false,false,true,true,true,true,false,false],'from version '+version);
+  assert.equal(p.settings.layoutVersion,9);assert.equal(await p.tidySidebar(),false,'only once');
+ }
+});
+test('every RSSD tab opens in the note\'s own tab bar, next to another RSSD tab when one is open, and an open tab is shown where it is',async()=>{
+ const p=plugin(),root={},right={},work={extension:'md',path:'Works/one.md'},leaves=[],made=[],revealed=[];let active=null;
+ const leaf=(type,where)=>{const l={type,where,getRoot(){return this.where;},setViewState:async state=>{l.type=state.type;l.state=state;}};leaves.push(l);return l;};
+ const note=leaf('markdown',root);note.view={file:work};
+ p.app.workspace={rootSplit:root,rightSplit:right,getActiveFile:()=>work,getMostRecentLeaf:()=>null,getLeavesOfType:type=>leaves.filter(l=>l.type===type),
+  createLeafBySplit:()=>assert.fail('a tab never splits the editor area'),getRightLeaf:()=>assert.fail('nothing opens in the right sidebar'),
+  setActiveLeaf:(l,options)=>{active=l;assert.deepEqual(options,{focus:false});},
+  getLeaf:kind=>{assert.equal(kind,'tab');made.push('tab');const l=leaf(null,root);l.besideOf=active;return l;},revealLeaf:l=>revealed.push(l)};
+ await p.openView('rssd-article');await p.openView('rssd-cards');await p.openDetails();await p.openOutline();await p.openView('rssd-article');
+ assert.equal(made.length,4);
+ const of=type=>leaves.find(l=>l.type===type);
+ assert.equal(of('rssd-article').besideOf,note,'the first opens next to the note');
+ for(const type of ['rssd-cards','rssd-details','rssd-outline'])assert.ok(['rssd-article','rssd-cards','rssd-details'].includes(of(type).besideOf.type),type+' opens next to another RSSD tab');
+ assert.deepEqual(of('rssd-details').state,{type:'rssd-details',active:true});
+ assert.equal(revealed.at(-1),of('rssd-article'),'an open tab is shown where it is, not opened again');
 });
 test('no view replaces Obsidian\'s own lifecycle methods',async()=>{
  const {readFileSync}=await import('node:fs');const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');

@@ -11,7 +11,9 @@ import {AutoSync,startupDelay,syncLease} from './auto-sync.mjs';
 import {saveFailureMessage,saveManySummary} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
-import {workLabel,labelText} from './titles.mjs';
+import {workLabel,labelText,tabTitle} from './titles.mjs';
+import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel} from './work-cards.mjs';
+import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER} from './works-filter.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
 import {wechatHtml,copyRich} from './wechat.mjs';
@@ -27,9 +29,12 @@ const TOKEN_SECRET='rssd-center-device-token';
 export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_ORIGIN:'https://post.linkc.cloud';
 const DEFAULTS={origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
-// The right sidebar's RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is
-// where you choose between them.
+// The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
+// between them.
 const SIDEBAR_VIEWS=Object.freeze([['rssd-article','article'],['rssd-cards','cards'],['rssd-outline','outline'],['rssd-details','details']]);
+// All four open as tabs in the note's own tab bar, where each has the full width, and the right sidebar is left
+// to Obsidian. Wherever a tab is moved afterwards, it is reopened there.
+const EDITOR_VIEWS=Object.freeze(SIDEBAR_VIEWS.map(([type])=>type));
 // Work notes show their title and date; the stable ID file name stays underneath. The inline title and the
 // header title are hidden for them because editing either one renames the file and would stop its sync.
 const TITLE_STYLE=`
@@ -42,6 +47,14 @@ const TITLE_STYLE=`
 /* Theme tabs are small squares in the section's own colour: tinted when idle, solid and raised when chosen.
    --rssd-accent is set from the open work's section. */
 .rssd-preview-controls{--rssd-accent:var(--interactive-accent);position:sticky;top:0;z-index:3;background:var(--background-primary)}
+/* In the status bar the controls are a compact row; another tab's controls take their place when it comes to the front. */
+.rssd-preview-slot{display:flex;align-items:center;padding:0 4px}
+.rssd-preview-slot .rssd-preview-controls{position:static;gap:var(--size-2-2);padding:0;border:0;background:none}
+.rssd-preview-slot .rssd-preview-controls button.rssd-preview-tab{height:18px;min-width:18px;padding:0 6px;font-size:var(--font-ui-smaller)}
+.rssd-preview-slot .rssd-preview-controls button.rssd-preview-tab.is-number{width:18px;padding:0}
+.rssd-preview-slot .rssd-preview-controls button.rssd-preview-tab.is-active{transform:none}
+.rssd-preview-slot .rssd-preview-controls .rssd-preview-info{display:none}
+.rssd-preview-slot button.rssd-preview-icon{padding:2px}.rssd-preview-slot button.rssd-preview-icon svg{width:14px;height:14px}
 .rssd-preview-controls button.rssd-preview-tab{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;height:24px;min-width:24px;padding:0 8px;margin:0;border:0;border-radius:5px;background:color-mix(in srgb,var(--rssd-accent) 12%,transparent);box-shadow:inset 0 -1px 0 color-mix(in srgb,var(--rssd-accent) 22%,transparent);color:var(--rssd-accent);font-size:var(--font-ui-smaller);font-weight:var(--font-semibold);line-height:1;white-space:nowrap;cursor:pointer;transition:background .12s,box-shadow .12s,transform .12s}
 .rssd-preview-controls button.rssd-preview-tab.is-number{width:24px;padding:0;font-variant-numeric:tabular-nums}
 .rssd-preview-controls button.rssd-preview-tab:hover{background:color-mix(in srgb,var(--rssd-accent) 22%,transparent)}
@@ -57,15 +70,35 @@ const TITLE_STYLE=`
 .rssd-preview-host{display:block}
 .rssd-works{display:flex;flex-direction:column;padding:0!important}
 .rssd-works-top{position:sticky;top:0;z-index:2;padding:var(--size-4-2) var(--size-4-2) var(--size-4-1);background:var(--background-secondary);border-bottom:1px solid var(--background-modifier-border)}
-.rssd-works-search{width:100%;font-size:var(--font-ui-small)}
-.rssd-works-filters{display:flex;gap:var(--size-2-2);margin-top:var(--size-4-1);flex-wrap:wrap}
-.rssd-works button.rssd-works-chip{height:auto;padding:1px 8px;border-radius:999px;border:1px solid var(--background-modifier-border);background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
-.rssd-works button.rssd-works-chip.is-active{background:var(--interactive-accent);border-color:var(--interactive-accent);color:var(--text-on-accent)}
+.rssd-works-bar{display:flex;align-items:center;gap:var(--size-2-2)}
+.rssd-works-search{flex:1 1 auto;min-width:0;width:100%;font-size:var(--font-ui-small)}
+.rssd-works-layout,.rssd-works-filter{flex:0 0 auto}
+.rssd-works-filter{position:relative}.rssd-works-filter.is-active{color:var(--interactive-accent)}
+.rssd-works-filter-count{position:absolute;top:-2px;right:-2px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:var(--interactive-accent);color:var(--text-on-accent);font-size:9px;line-height:14px;text-align:center}
+/* The filters in force, each removable, under the search box. */
+.rssd-works-active{display:flex;flex-wrap:wrap;gap:4px;margin-top:var(--size-4-1)}.rssd-works-active:empty{display:none}
+.rssd-works button.rssd-works-tag{display:inline-flex;align-items:center;gap:2px;height:auto;max-width:100%;padding:0 4px 0 8px;border:1px solid var(--background-modifier-border);border-radius:999px;background:var(--background-primary);box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
+.rssd-works-tag>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rssd-works-tag-x{display:flex}.rssd-works-tag-x svg{width:12px;height:12px}
+.rssd-works button.rssd-works-clear{height:auto;padding:0 6px;border:0;background:none;box-shadow:none;color:var(--text-faint);font-size:var(--font-ui-smaller);cursor:pointer}
+.rssd-works-section{display:inline-block;margin-right:5px;padding:0 5px;border-radius:3px;background:color-mix(in srgb,var(--rssd-section,var(--text-muted)) 14%,transparent);color:var(--rssd-section,var(--text-muted));font-size:var(--font-ui-smaller);font-weight:var(--font-normal);line-height:1.5;vertical-align:1px;white-space:nowrap}
+.rssd-works-row .rssd-works-section{flex:0 0 auto;margin-right:0}
+/* The filter panel floats under the filter button. */
+.rssd-filter-panel{position:fixed;z-index:var(--layer-menu);width:300px;max-height:min(70vh,560px);overflow-y:auto;padding:0 var(--size-4-3);border:1px solid var(--background-modifier-border);border-radius:var(--radius-m);background:var(--background-primary);box-shadow:var(--shadow-l);font-size:var(--font-ui-small)}
+.rssd-filter-group{padding:var(--size-4-2) 0;border-bottom:1px solid var(--background-modifier-border)}
+.rssd-filter-title{margin-bottom:var(--size-2-3);color:var(--text-muted);font-size:var(--font-ui-smaller);font-weight:var(--font-semibold)}
+.rssd-filter-segments{display:flex;border:1px solid var(--background-modifier-border);border-radius:var(--radius-s);overflow:hidden}
+.rssd-filter-panel button.rssd-filter-segment{flex:1 1 0;height:auto;padding:3px 6px;border:0;border-radius:0;background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
+.rssd-filter-panel button.rssd-filter-segment.is-active{background:var(--interactive-accent);color:var(--text-on-accent)}
+.rssd-filter-option{display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer}.rssd-filter-option input{margin:0}
+.rssd-filter-option-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rssd-filter-option-count{color:var(--text-faint);font-variant-numeric:tabular-nums}.rssd-filter-option.is-empty{color:var(--text-faint)}
+.rssd-filter-dates{display:grid;grid-template-columns:auto 1fr;gap:4px 8px;align-items:center}.rssd-filter-dates input{width:100%;font-size:var(--font-ui-smaller)}
+.rssd-filter-presets{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.rssd-filter-panel button.rssd-filter-preset{height:auto;padding:1px 8px;font-size:var(--font-ui-smaller)}
+.rssd-filter-note{color:var(--text-faint);font-size:var(--font-ui-smaller)}
+.rssd-filter-foot{display:flex;align-items:center;justify-content:space-between;padding:var(--size-4-2) 0}
+.rssd-filter-panel .rssd-filter-foot button{height:auto;padding:2px 10px;font-size:var(--font-ui-smaller)}
 .rssd-works-list{flex:1 1 auto;padding:var(--size-2-2) var(--size-2-2) var(--size-4-2)}
-.rssd-works-head{display:flex;align-items:center;gap:4px;padding:6px 4px 3px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-weight:var(--font-semibold);cursor:pointer;user-select:none}
-.rssd-works-caret{display:flex;width:14px;height:14px;transition:transform .12s}.rssd-works-caret svg{width:14px;height:14px}
-.rssd-works-group.is-collapsed .rssd-works-caret{transform:rotate(-90deg)}
-.rssd-works-name{flex:1 1 auto}.rssd-works-count{font-variant-numeric:tabular-nums;font-weight:normal}
 .rssd-works-row{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:var(--radius-s);font-size:var(--font-ui-small);cursor:pointer;min-width:0}
 .rssd-works-row:hover{background:var(--background-modifier-hover)}
 .rssd-works-row.is-active{background:var(--background-modifier-active-hover);color:var(--text-normal)}
@@ -73,14 +106,51 @@ const TITLE_STYLE=`
 .rssd-works-dot.is-synced{background:var(--color-green)}.rssd-works-dot.is-edited{background:var(--color-orange)}.rssd-works-dot.is-saving{background:var(--color-blue)}.rssd-works-dot.is-conflict{background:var(--color-red)}.rssd-works-dot.is-unlinked{background:var(--text-faint)}
 .rssd-works-date{flex:0 0 auto;color:var(--text-faint);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
 .rssd-works-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rssd-works-langs{display:flex;margin-left:auto;border:1px solid var(--background-modifier-border);border-radius:999px;overflow:hidden}
-.rssd-works button.rssd-works-lang{height:auto;padding:1px 8px;border:0;border-radius:0;background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
-.rssd-works button.rssd-works-lang.is-active{background:var(--background-modifier-active-hover);color:var(--text-normal);font-weight:var(--font-semibold)}
 .rssd-works-more,.rssd-works-empty{padding:4px 6px;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
 .rssd-works-empty{cursor:default;padding:var(--size-4-3) var(--size-4-2)}
-.rssd-works-foot{position:sticky;bottom:0;display:flex;align-items:center;gap:var(--size-4-2);padding:var(--size-4-1) var(--size-4-2);border-top:1px solid var(--background-modifier-border);background:var(--background-secondary);color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-works-foot{position:sticky;bottom:0;padding:var(--size-4-1) var(--size-4-2);border-top:1px solid var(--background-modifier-border);background:var(--background-secondary);color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-works-foot-body{display:flex;align-items:center;gap:var(--size-4-2)}
+/* The footer's stages: a bar along its top edge (sliding while updating, filling while saving), a spinning icon
+   on the busy button, then a short check-mark pop when done or a shake when something was not saved. */
+.rssd-works-progress{position:absolute;left:0;top:-1px;height:2px;width:0;background:var(--interactive-accent);opacity:0;transition:width .35s ease,opacity .4s ease}
+.rssd-works-progress.is-active{opacity:1}
+.rssd-works-progress.is-sliding{width:30%;animation:rssd-slide 1.2s ease-in-out infinite}
+.rssd-works button.rssd-works-pull{display:inline-flex;align-items:center;gap:4px}
+.rssd-works-pull-icon{display:flex}.rssd-works-pull-icon svg{width:12px;height:12px}
+.rssd-works-pull.is-busy .rssd-works-pull-icon svg{animation:rssd-spin .9s linear infinite}
+.rssd-works button.rssd-works-pull.is-done{color:var(--color-green);animation:rssd-pop .45s ease-out}
+.rssd-works button.rssd-works-pull.is-failed{color:var(--color-red);animation:rssd-shake .4s ease-in-out}
+.rssd-works-pulled.is-fresh{animation:rssd-fade .6s ease-out}
+@keyframes rssd-slide{from{left:-30%}to{left:100%}}
+@keyframes rssd-spin{to{transform:rotate(360deg)}}
+@keyframes rssd-pop{0%{transform:scale(.92);opacity:.5}60%{transform:scale(1.06)}100%{transform:scale(1);opacity:1}}
+@keyframes rssd-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+@keyframes rssd-fade{from{opacity:.2}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.rssd-works-foot *{animation:none!important;transition:none!important}}
 .rssd-works-pulled{flex:1 1 auto}
 .rssd-works button.rssd-works-pull{height:auto;padding:2px 10px;font-size:var(--font-ui-smaller)}
+/* Cards: the title, what needs attention, the first picture, then the date, length and picture count. The
+   open work's card also carries its actions. */
+.rssd-works-card{display:grid;grid-template-columns:minmax(0,1fr);gap:4px;margin:0 2px 6px;padding:7px 8px 6px;border:1px solid var(--background-modifier-border);border-radius:var(--radius-s);background:var(--background-primary);cursor:pointer}
+.rssd-works-card:hover{border-color:var(--background-modifier-border-hover)}
+.rssd-works-card.is-active{border-color:var(--interactive-accent)}
+.rssd-works-card-body{min-width:0}
+.rssd-works-card-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;color:var(--text-normal);font-size:var(--font-ui-small);font-weight:var(--font-medium);line-height:1.35}
+.rssd-works-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.rssd-works-badge{padding:0 6px;border:1px solid var(--background-modifier-border);border-radius:999px;color:var(--text-muted);font-size:var(--font-ui-smaller);line-height:16px;white-space:nowrap}
+.rssd-works-badge.is-warning{border-color:transparent;background:color-mix(in srgb,var(--color-orange) 16%,transparent);color:var(--color-orange)}
+.rssd-works-badge.is-danger{border-color:transparent;background:color-mix(in srgb,var(--color-red) 14%,transparent);color:var(--color-red)}
+.rssd-works-badge.is-site{border-color:transparent;background:color-mix(in srgb,var(--color-blue) 14%,transparent);color:var(--color-blue)}
+.rssd-works-facts{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
+.rssd-works-fact,.rssd-works-writer{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+.rssd-works-fact-icon{display:flex}.rssd-works-fact-icon svg{width:12px;height:12px}
+.rssd-works-fact.is-missing,.rssd-works-writer.is-missing{color:var(--text-faint)}
+.rssd-works-fact.is-absent>span:last-child{text-decoration:line-through}
+.rssd-works-machine{display:inline-flex;align-items:center;gap:3px;margin-left:10px}
+.rssd-works-writer{grid-column:1/-1;min-width:0;overflow:hidden;color:var(--text-muted);font-size:var(--font-ui-smaller);text-overflow:ellipsis}
+.rssd-works-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px;margin-top:2px;padding-top:6px;border-top:1px solid var(--background-modifier-border)}
+.rssd-works button.rssd-works-action{display:inline-flex;align-items:center;gap:4px;height:auto;padding:2px 8px;font-size:var(--font-ui-smaller)}
+.rssd-works-action-icon{display:flex}.rssd-works-action-icon svg{width:12px;height:12px}
 .rssd-details,.rssd-outline{padding:var(--size-4-2) var(--size-4-3);font-size:var(--font-ui-small)}
 .rssd-outline-item{display:block;width:100%;text-align:left;padding:3px var(--size-2-2);border-radius:var(--radius-s);color:var(--text-muted);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rssd-outline-item:hover{background:var(--background-modifier-hover);color:var(--text-normal)}
@@ -159,6 +229,9 @@ export default class RssdPlugin extends Plugin{
   this.registerView('rssd-reader',leaf=>new ReaderView(leaf,this));
   this.addRibbonIcon('book-open','RSSD reader',()=>this.openReader());
   this.addCommand({id:'reader',name:'Read site articles online',callback:()=>this.openReader()});
+  // The front Article or Cards tab shows its styles, refresh and copy here, in the status bar, rather than across
+  // its top (desktop; mobile has no status bar and keeps them at the top).
+  if(!Platform.isMobile){this.previewSlot=this.addStatusBarItem();this.previewSlot.addClass('rssd-preview-slot');this.previewSlot.hide();}
   this.status=this.addStatusBarItem();this.setStatus(this.idleStatus());
   // The status item is the quick way in: reading, works, sync and login in one menu.
   this.status.addClass('mod-clickable');this.status.setAttribute('aria-label','RSSD');
@@ -189,12 +262,11 @@ export default class RssdPlugin extends Plugin{
   for(const event of ['layout-change','file-open','active-leaf-change'])this.registerEvent(this.app.workspace.on(event,relabel));
   for(const event of ['create','rename','delete'])this.registerEvent(this.app.vault.on(event,relabel));
   // First launch: one button logs in and opens the reader. Afterwards the reader opens from the ribbon.
-  // A vault that edits works gets the layout preview in its sidebar the first time it starts with this version.
-  // Work details are a view of the RSSD panel; the properties block in the article is hidden once they are there.
+  // Work details have a tab of their own; the properties block in the article is hidden once they are there.
   this.addCommand({id:'details',name:'Show work details',callback:()=>this.openDetails()});
+  // The work in front is the one RSSD tabs and the next card click follow.
+  this.registerEvent(this.app.workspace.on('file-open',file=>{if(file&&this.isWork(file))this.shownWork=file;}));
   this.app.workspace.onLayoutReady(()=>{void this.tidySidebar().catch(error=>console.error('RSSD sidebar',error));});
-  // Obsidian's core plugins put their tabs back on every start, so they are moved out again after it settles.
-  this.app.workspace.onLayoutReady(()=>{for(const delay of [800,3000])window.setTimeout(()=>this.closeDefaultTabs(),delay);});
   this.app.workspace.onLayoutReady(()=>{if(!this.token())new WelcomeModal(this.app,this).open();});
   this.autoSync=new AutoSync({
    ready:()=>this.settings.autoSync!==false&&!!this.settings.origin&&!!this.settings.workspaceId&&!!this.token()&&!this.operations.active,
@@ -359,6 +431,8 @@ export default class RssdPlugin extends Plugin{
    for(const key of ['downloaded','updated','skipped','conflicts','pending','metadataPending','removedFromCenter'])summary[key].push(...(result[key]||[]).map(id=>locale==='zh-CN'?id:locale+'/'+id));
    summary.failed.push(...(result.failed||[]).map(item=>({...item,locale})));summary.unchanged+=result.unchanged||0;
    summary.transportByLocale[locale]=result.transport;
+   // A complete catalog replaces this language's pairing record; kept for the Works list's edition marks.
+   ((this.settings.documents??={})[space]??={})[locale]=result.documents||{};
    if(!info.writable&&info.migrationState==='staged'){
     const overlay=await new StagedSyncEngine({engine}).pull(space,{locale});
     for(const key of ['updated','conflicts','pending'])for(const id of overlay[key]||[]){const name=locale==='zh-CN'?id:locale+'/'+id;if(!summary[key].includes(name))summary[key].push(name);}
@@ -444,7 +518,7 @@ export default class RssdPlugin extends Plugin{
     }
    }
    for(const leaf of this.app.workspace.getLeavesOfType('markdown')){
-    const view=leaf.view,file=view?.file,label=restore?null:this.workLabel(file);
+    const view=leaf.view,file=this.leafFile(leaf),label=restore?null:this.workLabel(file);
     view?.containerEl?.toggleClass('rssd-work-note',!!label);
     const container=view?.titleContainerEl||view?.containerEl?.querySelector('.view-header-title-container');
     let header=container?.querySelector('.rssd-work-header');
@@ -455,6 +529,13 @@ export default class RssdPlugin extends Plugin{
     }else header?.remove();
     const tab=leaf.tabHeaderInnerTitleEl;
     if(tab&&label)tab.setText(labelText(label));else if(tab&&restore&&file)tab.setText(file.basename);
+   }
+   // A loaded RSSD tab names itself after the work it shows; one not loaded yet will show the open work.
+   const work=restore?null:this.workLabel(this.currentWork());
+   for(const [type,id] of SIDEBAR_VIEWS)for(const leaf of this.app.workspace.getLeavesOfType(type)){
+    if(leaf.view instanceof LayoutPreview)continue;
+    const title=tabTitle(PREVIEW_TARGETS.find(target=>target.id===id).label,work);
+    if(title)leaf.tabHeaderInnerTitleEl?.setText(title);
    }
   }catch(error){console.error('RSSD titles',error);}
  }
@@ -488,7 +569,9 @@ export default class RssdPlugin extends Plugin{
    const incomplete=['failed','conflicts','pending','metadataPending'].some(key=>summary[key]?.length);
    new Notice((incomplete?'Update incomplete: ':'Update finished: ')+parts.join(', '));
    if(summary.conflicts.length)new Notice('Conflicts were not changed: '+summary.conflicts.join(', '),10000);
-  }catch(error){new Notice('Update failed: '+error.message);}
+   // The footer shows how it went: 'done', 'incomplete' or 'failed'.
+   return incomplete?'incomplete':'done';
+  }catch(error){new Notice('Update failed: '+error.message);return 'failed';}
  }
 
  client(){
@@ -575,8 +658,8 @@ export default class RssdPlugin extends Plugin{
  /** Every view starts with the site's own style. */
  defaultStyle(){return 'site';}
  /** The accent colour of a work's section, from its website template. */
- sectionAccent(file){
-  const section=file?this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']:'';
+ sectionAccent(file){return this.sectionAccentOf(file?this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']:'');}
+ sectionAccentOf(section){
   const accent=wechatTemplate(this.settings.workspaceId,String(section||''))?.accent;
   return /^#[0-9a-fA-F]{6}$/.test(accent||'')?accent:null;
  }
@@ -631,57 +714,85 @@ export default class RssdPlugin extends Plugin{
   }catch(error){console.error('RSSD cards save',error);new Notice('Could not save the cards: '+error.message,10000);}
  }
  /**
-  * Once per vault that edits works, arrange the right sidebar: the four RSSD tabs (Article, Cards, Outline,
-  * Details) in that order, with Article in front, and none of Obsidian's link, tag, vault-properties or outline
-  * tabs (any of them can be reopened from the command palette). On the first arrangement, now that the
-  * properties have a place of their own, the properties block at the top of each note is hidden; the vault's
-  * earlier choice is kept so it can be restored. Panels left by earlier versions are replaced.
+  * Once per vault that edits works, arrange the layout: the Works list in the left sidebar, and the RSSD tabs
+  * (Article, Cards, Outline, Details) only as tabs next to the note. Tabs that earlier versions kept in the right
+  * sidebar, or in a pane of their own beside the note, are closed once; they open next to the note when asked
+  * for, and the right sidebar is left to Obsidian. On the first arrangement, now that the properties have a place
+  * of their own, the properties block at the top of each note is hidden; the vault's earlier choice is kept so it
+  * can be restored. Panels left by earlier versions are removed.
   */
  async tidySidebar(){
   const version=this.settings.layoutVersion||0;
-  if(version>=6||!this.settings.workspaceId||Platform.isMobile)return false;
-  const workspace=this.app.workspace,created=new Set();
-  if(version<5){
-  // Add the new tabs before closing anything: an emptied sidebar is refilled by Obsidian with its default tabs.
-  for(const [type] of SIDEBAR_VIEWS){const leaf=workspace.getRightLeaf(false);if(!leaf)break;await leaf.setViewState({type,active:false});created.add(leaf);}
-  for(const type of ['rssd-preview','rssd-wechat',...SIDEBAR_VIEWS.map(([type])=>type)])for(const leaf of workspace.getLeavesOfType(type))if(!created.has(leaf))leaf.detach();
-  for(const type of ['backlink','outgoing-link','tag','all-properties','outline'])for(const leaf of workspace.getLeavesOfType(type))if(leaf.getRoot?.()===workspace.rightSplit)leaf.detach();
-  const first=[...created][0];if(first)workspace.revealLeaf(first);
+  if(version>=9||!this.settings.workspaceId||Platform.isMobile)return false;
+  const workspace=this.app.workspace,notes=workspace.getLeavesOfType('markdown');
+  for(const type of ['rssd-preview','rssd-wechat'])for(const leaf of workspace.getLeavesOfType(type))leaf.detach();
+  for(const type of EDITOR_VIEWS)for(const leaf of workspace.getLeavesOfType(type)){
+   const root=leaf.getRoot?.();
+   // A tab that already shares a tab bar with a note is in place.
+   if(root===workspace.rightSplit||root===workspace.rootSplit&&leaf.parent&&!notes.some(note=>note.parent===leaf.parent))leaf.detach();
   }
   // The Works list sits in the left sidebar, in front of the file tree.
   await this.openWorks();
   const vault=this.app.vault,before=vault.getConfig?.('propertiesInDocument');
   // Only on the first arrangement, so a vault that brought the properties back keeps them.
   if(version<2&&typeof vault.setConfig==='function'&&before!=='hidden'){this.settings.propertiesBefore=before||'visible';vault.setConfig('propertiesInDocument','hidden');}
-  this.settings.layoutVersion=6;await this.saveSettings();
+  this.settings.layoutVersion=9;await this.saveSettings();
   return true;
  }
- /**
-  * Close Obsidian's backlinks, outgoing links, tags, all-properties and outline tabs in the right sidebar, where
-  * the RSSD tabs take their place. Only while the RSSD tabs are there, so the sidebar is never emptied, and
-  * only when the setting is on (Settings → RSSD → Right sidebar).
-  */
- closeDefaultTabs(){
-  if(this.settings.tidyRightSidebar===false||!this.settings.workspaceId||Platform.isMobile)return 0;
-  const workspace=this.app.workspace,inRight=leaf=>leaf.getRoot?.()===workspace.rightSplit;
-  if(!SIDEBAR_VIEWS.some(([type])=>workspace.getLeavesOfType(type).some(inRight)))return 0;
-  let closed=0;
-  for(const type of ['backlink','outgoing-link','tag','all-properties','outline'])for(const leaf of workspace.getLeavesOfType(type))if(inRight(leaf)){leaf.detach();closed++;}
-  return closed;
- }
- /** Show one of the RSSD sidebar tabs, opening it if it was closed. */
+ /** Show one of the RSSD tabs where it is, or open it as a tab next to the note. */
  async openView(type){
   const workspace=this.app.workspace;let leaf=workspace.getLeavesOfType(type)[0];
-  if(!leaf){leaf=workspace.getRightLeaf(false);if(!leaf)return;await leaf.setViewState({type,active:true});}
+  if(!leaf){leaf=this.previewTab(type);if(!leaf)return;await leaf.setViewState({type,active:true});}
   workspace.revealLeaf(leaf);
  }
+ /** A new RSSD tab in the note's own tab bar: next to another RSSD tab if one is open in the editor area, else
+  * next to the note. */
+ previewTab(type){
+  const workspace=this.app.workspace;
+  const sibling=EDITOR_VIEWS.filter(t=>t!==type).flatMap(t=>workspace.getLeavesOfType(t)).find(leaf=>leaf.getRoot?.()===workspace.rootSplit);
+  const work=this.currentWork(),note=work&&workspace.getLeavesOfType('markdown').find(leaf=>leaf.view?.file===work);
+  const beside=sibling||note;if(beside)workspace.setActiveLeaf(beside,{focus:false});
+  return workspace.getLeaf('tab');
+ }
  openDetails(){return this.openView('rssd-details');}
+ openOutline(){return this.openView('rssd-outline');}
  /** The work open in the editor, even while a sidebar tab has the focus. */
+ /**
+  * Open a work from the Works list. A click replaces: the work goes into the note tab the plug-in used last, and
+  * every RSSD tab switches to it, while whichever tab was in front (the note, Article, Cards…) stays in front.
+  * ⌘/Ctrl-click opens it in a new note tab and leaves the other note tabs alone.
+  */
+ async openWorkFile(file,{newTab=false}={}){
+  const workspace=this.app.workspace,previous=this.shownWork;this.shownWork=file;
+  if(newTab){const leaf=workspace.getLeaf('tab');await leaf.openFile(file);return leaf;}
+  const notes=workspace.getLeavesOfType('markdown').filter(leaf=>{const held=this.leafFile(leaf);return leaf.getRoot?.()===workspace.rootSplit&&held&&this.isWork(held);});
+  const leaf=notes.find(leaf=>this.leafFile(leaf)===previous)||notes.sort((a,b)=>(b.activeTime||0)-(a.activeTime||0))[0];
+  if(!leaf){const fresh=workspace.getLeaf(false);await fresh.openFile(file);return fresh;}
+  const front=workspace.getMostRecentLeaf?.(),keepFront=!!front&&front!==leaf&&EDITOR_VIEWS.includes(front.view?.getViewType?.());
+  await leaf.openFile(file,{active:!keepFront});
+  this.followWork(file);
+  return leaf;
+ }
+ /** Point every open RSSD tab at a work; ones not loaded yet take it when shown. */
+ followWork(file){
+  this.shownWork=file;
+  for(const type of EDITOR_VIEWS)for(const leaf of this.app.workspace.getLeavesOfType(type))if(typeof leaf.view?.show==='function')void leaf.view.show(file);
+  this.refreshTitles?.();
+ }
  currentWork(){
   const workspace=this.app.workspace,active=workspace.getActiveFile();
   if(active&&this.isWork(active))return active;
+  // The work last opened from the list or brought to the front, while a note tab still holds it.
+  const last=this.shownWork;if(last&&workspace.getLeavesOfType('markdown').some(leaf=>this.leafFile(leaf)===last))return last;
   const recent=workspace.getMostRecentLeaf?.()?.view?.file;if(recent&&this.isWork(recent))return recent;
-  return workspace.getLeavesOfType('markdown').map(leaf=>leaf.view?.file).find(file=>file&&this.isWork(file))||null;
+  return workspace.getLeavesOfType('markdown').map(leaf=>this.leafFile(leaf)).find(file=>file&&this.isWork(file))||null;
+ }
+ /** The note a tab holds. A tab Obsidian has not loaded yet (behind others after a restart) has no file on its
+  * view, but its saved state still says which note it is. */
+ leafFile(leaf){
+  if(leaf?.view?.file)return leaf.view.file;
+  const path=leaf?.getViewState?.()?.state?.file,file=typeof path==='string'?this.app.vault.getAbstractFileByPath?.(path):null;
+  return file instanceof TFile?file:null;
  }
  /** Show the properties block at the top of notes again, as the vault had it before the details panel. */
  restoreProperties(){
@@ -715,23 +826,98 @@ class RssdSettings extends PluginSettingTab{
    .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
   new Setting(containerEl).setName('Command links').setDesc('Allow local commands to drive this vault. Each request has its own receipt.').addToggle(t=>t.setValue(!!s.allowAutomation).onChange(async v=>{s.allowAutomation=v;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Automatic sync').setDesc('Periodically update from the Center and save changed works as private drafts. Conflicts and read-only spaces need attention; this never publishes.').addToggle(t=>t.setValue(s.autoSync!==false).onChange(async v=>{s.autoSync=v;await this.plugin.saveSettings();}));
-  new Setting(containerEl).setName('Right sidebar').setDesc('Keep only the RSSD tabs (Article, Cards, Outline, Details) in the right sidebar. Turn off to let Obsidian keep its backlinks, outgoing links, tags, all-properties and outline tabs there.')
-   .addToggle(t=>t.setValue(s.tidyRightSidebar!==false).onChange(async v=>{s.tidyRightSidebar=v;await this.plugin.saveSettings();if(v)this.plugin.closeDefaultTabs();}));
-  new Setting(containerEl).setName('Properties in the article').setDesc('Work details are edited under Details in the RSSD panel in the right sidebar, so the properties block at the top of each note is hidden. Show it again here.')
+  new Setting(containerEl).setName('Properties in the article').setDesc('Work details are edited in the Details tab next to the note, so the properties block at the top of each note is hidden. Show it again here.')
    .addButton(b=>b.setButtonText('Show in article').onClick(async()=>{await this.plugin.restoreProperties();new Notice('The properties block is shown in notes again.');}));
   new Setting(containerEl).setName('Update works').setDesc('Download new and changed works into '+WORKS_FOLDER+'/ (images go to '+MEDIA_FOLDER+'/). Notes with local changes are never overwritten.')
    .addButton(b=>b.setButtonText('Update').onClick(()=>this.plugin.pull()));
  }
 }
 
-// The Works list: every work of the space in the left sidebar, grouped by the site's sections, newest first,
-// one row per work, Chinese and English editions shown one language at a time (an English edition is a work of
-// its own in the Center, with no link back to its original that the list could rely on). Read from the vault alone, so it is instant and works
-// offline; "edited" means changed since the last sync with the Center.
+// The Works list: every work of the space in the left sidebar, newest first, as cards or one line per work, with
+// its section as a label, one language at a time. The filter panel narrows it by status, section, writer and
+// date. Read from the vault (writers from the Center, kept on this device), so it is instant and works offline;
+// "edited" means changed since the last sync with the Center.
+/**
+ * The Works list's filter panel, floating under the filter button. Every change applies at once and is kept on
+ * this device; the count beside each option is how many works it would list with the other choices kept. Closes
+ * on Escape, on a click outside it, or with the filter button.
+ */
+class WorksFilterPanel{
+ constructor(view,anchor){
+  this.view=view;this.anchor=anchor;
+  this.el=document.body.createDiv({cls:'rssd-filter-panel',attr:{role:'dialog','aria-label':'Filter the works'}});
+  this.onPointer=event=>{if(!this.el.contains(event.target)&&!this.anchor.contains(event.target))this.close();};
+  this.onKey=event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();this.close();this.anchor.focus();}};
+  document.addEventListener('pointerdown',this.onPointer,true);document.addEventListener('keydown',this.onKey,true);
+  this.place();this.draw();
+ }
+ place(){
+  const box=this.anchor.getBoundingClientRect(),width=300;
+  this.el.style.left=Math.max(8,Math.min(box.right-width,window.innerWidth-width-8))+'px';this.el.style.top=(box.bottom+6)+'px';
+ }
+ close(){
+  document.removeEventListener('pointerdown',this.onPointer,true);document.removeEventListener('keydown',this.onKey,true);
+  this.el.remove();if(this.view.panel===this)this.view.panel=null;this.anchor.setAttribute('aria-expanded','false');
+ }
+ draw(){
+  const el=this.el,focused=el.contains(document.activeElement)?document.activeElement:null;
+  // A date being typed is not interrupted by the list redrawing underneath.
+  if(focused?.type==='date')return;
+  const view=this.view,f=view.filterState,c=view.counts,names=view.names||new Map(),scroll=el.scrollTop,set=next=>view.setFilter(next);
+  el.empty();
+  const group=title=>{const g=el.createDiv({cls:'rssd-filter-group'});g.createDiv({cls:'rssd-filter-title',text:title});return g;};
+  const segments=(parent,key,items,current,pick)=>{
+   const row=parent.createDiv({cls:'rssd-filter-segments'});
+   for(const [id,label,count] of items){const b=row.createEl('button',{cls:'rssd-filter-segment'+(current===id?' is-active':''),text:label+' '+count});b.dataset.key=key+':'+id;b.setAttribute('aria-pressed',String(current===id));b.addEventListener('click',()=>pick(id));}
+  };
+  const options=(parent,facet,entries)=>{
+   for(const {value,name,count} of entries){
+    const row=parent.createEl('label',{cls:'rssd-filter-option'+(count?'':' is-empty')}),box=row.createEl('input',{type:'checkbox'});
+    box.checked=f[facet].includes(value);box.dataset.key=facet+':'+value;box.addEventListener('change',()=>set(toggled(view.filterState,facet,value)));
+    row.createSpan({cls:'rssd-filter-option-name',text:name});row.createSpan({cls:'rssd-filter-option-count',text:String(count)});
+   }
+  };
+  segments(group('Show'),'status',[['all','All',c.status.all],['edited','Edited',c.status.edited],['check','To check',c.status.check]],f.status,id=>set({...view.filterState,status:id}));
+  if(c.locale.en)segments(group('Language'),'locale',[['zh-CN','中文',c.locale['zh-CN']],['en','English',c.locale.en]],f.locale,id=>set({...view.filterState,locale:id}));
+  // Sections in the site's order, then any the site does not name.
+  const sectionIds=[...new Set([...names.keys(),...c.sections.keys(),...f.sections])];
+  options(group('Section'),'sections',sectionIds.map(id=>({value:id,name:names.get(id)?.name||id||'No section',count:c.sections.get(id)||0})));
+  // Agents and models, most works first; works whose writer is not recorded last.
+  for(const [facet,title] of [['agents','Agent'],['models','Model'],['machines','Machine']]){
+   const box=group(title),count=c[facet],values=[...new Set([...count.keys(),...f[facet]])].filter(v=>v!==NO_WRITER).sort((a,b)=>(count.get(b)||0)-(count.get(a)||0)||a.localeCompare(b));
+   options(box,facet,[...values.map(v=>({value:v,name:v,count:count.get(v)||0})),{value:NO_WRITER,name:'Not recorded',count:count.get(NO_WRITER)||0}]);
+   if(view.fetchingWriters)box.createDiv({cls:'rssd-filter-note',text:'Still reading writers from the Center…'});
+  }
+  const dates=group('Date'),grid=dates.createDiv({cls:'rssd-filter-dates'});
+  for(const [key,label] of [['from','From'],['to','To']]){
+   grid.createSpan({text:label});const input=grid.createEl('input',{type:'date'});input.value=f[key];input.dataset.key='date:'+key;
+   input.addEventListener('change',()=>set({...view.filterState,[key]:input.value}));
+  }
+  const presets=dates.createDiv({cls:'rssd-filter-presets'});
+  for(const [id,label] of [['7d','Last 7 days'],['30d','Last 30 days'],['month','This month']]){const b=presets.createEl('button',{cls:'rssd-filter-preset',text:label});b.dataset.key='preset:'+id;b.addEventListener('click',()=>set({...view.filterState,...datePreset(id)}));}
+  if(f.from||f.to){const b=presets.createEl('button',{cls:'rssd-filter-preset',text:'Any date'});b.dataset.key='preset:any';b.addEventListener('click',()=>set({...view.filterState,from:'',to:''}));}
+  const foot=el.createDiv({cls:'rssd-filter-foot'});
+  foot.createSpan({cls:'rssd-filter-note',text:c.dates+(c.dates===1?' work listed':' works listed')});
+  const reset=foot.createEl('button',{text:'Reset'});reset.dataset.key='reset';reset.disabled=!narrowedBy(f);reset.addEventListener('click',()=>set(emptyFilter(view.filterState.locale)));
+  el.scrollTop=scroll;
+  // Keyboard focus stays on the control that was used.
+  const key=focused?.dataset?.key;if(key)el.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
+ }
+}
+
 const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not updated from the Center yet'};
 const WORKS_PAGE=60;
+// Where writers ({agent, model, machine}) are kept on this device. A new name makes every writer be read again after a fix.
+const WRITERS_KEY='rssd-writers-4';
+const FILTER_KEY='rssd-works-filter';
 class WorksView extends ItemView{
- constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.filter='all';this.lang='zh';this.collapsed=new Set();this.limits=new Map();this.states=new Map();this.timer=null;this.filling=false;}
+ constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.limit=WORKS_PAGE;this.panel=null;this.states=new Map();
+  // What is listed, kept on this device (see works-filter.mjs).
+  this.filterState=(()=>{try{return normalizeFilter(this.app.loadLocalStorage?.(FILTER_KEY));}catch{return emptyFilter();}})();
+  this.facts=new Map();this.shown=new Map();this.timer=null;this.filling=false;this.fetchingWriters=false;this.machineAsked=new Set();
+  // Who wrote each edition, read from the Center once per version and kept on this device.
+  this.writers=(()=>{try{const kept=this.app.loadLocalStorage?.(WRITERS_KEY);return kept&&typeof kept==='object'?kept:{};}catch{return {};}})();
+  this.layout=this.app.loadLocalStorage?.('rssd-works-layout')==='list'?'list':'cards';}
  getViewType(){return 'rssd-works';}
  getDisplayText(){return 'Works';}
  getIcon(){return 'library';}
@@ -741,11 +927,24 @@ class WorksView extends ItemView{
  build(){
   const el=this.contentEl;el.empty();el.addClass('rssd-works');
   const top=el.createDiv({cls:'rssd-works-top'});
-  const search=top.createEl('input',{type:'search',cls:'rssd-works-search',attr:{placeholder:'Search titles and summaries'}});
+  const bar=top.createDiv({cls:'rssd-works-bar'});
+  const search=bar.createEl('input',{type:'search',cls:'rssd-works-search',attr:{placeholder:'Search titles and summaries'}});
   search.addEventListener('input',()=>{this.query=search.value;this.render();});
-  this.filters=top.createDiv({cls:'rssd-works-filters'});
+  // The filter button opens the filter panel; it turns the accent colour and shows how many facets narrow the list.
+  this.filterButton=bar.createDiv({cls:'clickable-icon rssd-works-filter',attr:{role:'button',tabindex:'0','aria-haspopup':'dialog','aria-expanded':'false'}});setIcon(this.filterButton,'list-filter');
+  this.filterBadge=this.filterButton.createSpan({cls:'rssd-works-filter-count'});
+  this.filterButton.addEventListener('click',()=>this.togglePanel());
+  this.filterButton.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();this.togglePanel();}});
+  // Cards or one line per work; remembered on this device only.
+  const layout=bar.createDiv({cls:'clickable-icon rssd-works-layout',attr:{role:'button',tabindex:'0'}});
+  const showLayout=()=>{layout.empty();setIcon(layout,this.layout==='cards'?'list':'layout-list');layout.setAttribute('aria-label',this.layout==='cards'?'Show as a list':'Show as cards');};
+  const switchLayout=()=>{this.layout=this.layout==='cards'?'list':'cards';this.app.saveLocalStorage?.('rssd-works-layout',this.layout);showLayout();this.render();};
+  layout.addEventListener('click',switchLayout);
+  layout.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();switchLayout();}});
+  showLayout();
+  this.active=top.createDiv({cls:'rssd-works-active'});
   this.list=el.createDiv({cls:'rssd-works-list'});
-  this.foot=el.createDiv({cls:'rssd-works-foot'});
+  this.foot=el.createDiv({cls:'rssd-works-foot'});this.progress=this.foot.createDiv({cls:'rssd-works-progress'});this.footBody=this.foot.createDiv({cls:'rssd-works-foot-body'});
   const later=()=>{window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.render(),300);};
   this.registerEvent(this.app.metadataCache.on('changed',file=>{this.states.delete(file.path);later();}));
   this.registerEvent(this.app.vault.on('modify',file=>{this.states.delete(file.path);later();}));
@@ -754,7 +953,7 @@ class WorksView extends ItemView{
   this.registerInterval(window.setInterval(()=>this.renderFoot(),60000));
   this.app.workspace.onLayoutReady(()=>this.render());
  }
- async onClose(){window.clearTimeout(this.timer);}
+ async onClose(){window.clearTimeout(this.timer);this.panel?.close();}
  /** Every work in the vault, each edition on its own. */
  works(){
   const items=[];
@@ -762,7 +961,9 @@ class WorksView extends ItemView{
    if(!this.plugin.isWork(file))continue;
    const p=this.app.metadataCache.getFileCache(file)?.frontmatter;if(!p?.['rssd-id'])continue;
    items.push({file,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
-    section:String(p['rssd-section']||''),author:String(p.author??''),category:String(p.category??'')});
+    section:String(p['rssd-section']||''),author:String(p.author??''),category:String(p.category??''),
+    version:p['rssd-version'],publishedVersion:p['rssd-published-version'],
+    media:(this.app.metadataCache.getFileCache(file)?.embeds||[]).map(embed=>mediaName(embed.link)).filter(Boolean)});
   }
   return items;
  }
@@ -783,6 +984,50 @@ class WorksView extends ItemView{
   }catch{state='synced';}
   this.states.set(file.path,{key,state});return state;
  }
+ /** What the body holds (length, references, the site's brand line), read once per version of the note.
+  * Returns whether it changed. */
+ async measure(work){
+  const file=work.file,key=file.path+':'+file.stat.mtime;
+  if(this.facts.get(file.path)?.key===key)return false;
+  let facts=null;try{facts=noteFacts(await this.app.vault.cachedRead(file),{origin:wechatSite(this.plugin.settings.workspaceId)?.origin});}catch{}
+  this.facts.set(file.path,{key,...facts});return true;
+ }
+ /** For each edition, whether the Center has the same work in the other language; known after an Update. */
+ editionIndex(){
+  const documents=this.plugin.settings.documents?.[this.plugin.settings.workspaceId];if(!documents)return null;
+  const present=Object.fromEntries(Object.entries(documents).map(([locale,ids])=>[locale,new Set(Object.values(ids||{}))]));
+  return {document:work=>documents[work.locale]?.[work.id],has:(locale,document)=>!!document&&!!present[locale]?.has(document)};
+ }
+ writerKey(work){return this.plugin.settings.workspaceId+':'+work.locale+':'+work.id+':'+work.version;}
+ /** The writer as {agent, model, machine}, null when the Center has no record, undefined while not yet read. */
+ writerFor(work){const key=this.writerKey(work);return Object.hasOwn(this.writers,key)?this.writers[key]:undefined;}
+ /** Read who wrote each work from the Center's private writing record, one work at a time, the ones on screen
+  * first. Read only; a lost connection stops the pass and the next drawing resumes it. */
+ async fillWriters(works){
+  if(this.fetchingWriters||this.layout!=='cards'||!this.plugin.settings.workspaceId)return;
+  let client;try{client=this.plugin.client();}catch{return;}
+  if(typeof client.privateNotes!=='function')return;
+  this.fetchingWriters=true;let added=0,stopped=false;
+  // Four reads at a time: each is a separate request, and one at a time takes minutes for a whole space.
+  // A writer kept without a machine is asked again once per session: the Center may have learnt to name it since.
+  const queue=[...new Set(works)].filter(work=>{const version=Number(work.version),known=this.writerFor(work);return Number.isSafeInteger(version)&&version>=1&&(known===undefined||known&&!known.machine&&!this.machineAsked.has(this.writerKey(work)));});
+  const read=async work=>{
+   let writer=null;
+   this.machineAsked.add(this.writerKey(work));
+   try{const notes=await client.privateNotes(this.plugin.settings.workspaceId,work.id,Number(work.version)),found=writerOf(notes?.privateEditorial),machine=typeof notes?.firstMachine?.name==='string'?notes.firstMachine.name:'';
+    writer=found||machine?{agent:found?.agent||'',model:found?.model||'',machine}:null;}
+   catch(error){if(error?.status!==404){stopped=true;return;}}
+   this.writers[this.writerKey(work)]=writer;added++;this.refreshItem(work.file.path);
+   if(added%25===0)this.saveWriters();
+  };
+  try{
+   const lane=async()=>{while(queue.length&&!stopped&&this.layout==='cards')await read(queue.shift());};
+   await Promise.all([lane(),lane(),lane(),lane()]);
+  }finally{this.fetchingWriters=false;if(added)this.saveWriters();}
+  // Writer filters and the panel's counts depend on the writers read in this pass.
+  if(added&&(this.filterState.agents.length||this.filterState.models.length||this.filterState.machines.length||this.panel))this.render();
+ }
+ saveWriters(){try{this.app.saveLocalStorage?.(WRITERS_KEY,this.writers);}catch{}}
  sectionNames(){
   const site=wechatSite(this.plugin.settings.workspaceId);
   return new Map((SITE_SECTIONS[site?.id]||[]).map((section,index)=>[section.id,{name:section.name,order:index}]));
@@ -792,65 +1037,122 @@ class WorksView extends ItemView{
   try{this.draw();}catch(error){console.error('RSSD works',error);this.list.empty();this.list.createDiv({cls:'rssd-works-empty',text:'Could not list the works: '+(error?.message||error)});}
  }
  draw(){
-  const every=this.works(),english=every.filter(work=>work.locale==='en'),chinese=every.filter(work=>work.locale!=='en');
-  if(this.lang==='en'&&!english.length)this.lang='zh';
-  const all=this.lang==='en'?english:chinese,q=this.query.trim().toLowerCase(),names=this.sectionNames();
-  const toCheck=work=>!work.author.trim()||!work.category.trim();
-  const edited=work=>['edited','saving','conflict'].includes(this.states.get(work.file.path)?.state);
-  this.filters.empty();
-  for(const [id,label,count] of [['all','All',all.length],['edited','Edited',all.filter(edited).length],['check','To check',all.filter(toCheck).length]]){
-   const chip=this.filters.createEl('button',{cls:'rssd-works-chip'+(this.filter===id?' is-active':''),text:label+' '+count});
-   chip.addEventListener('click',()=>{this.filter=id;this.render();});
+  const every=this.works(),f=this.filterState;
+  if(f.locale==='en'&&!every.some(work=>work.locale==='en'))f.locale='zh-CN';
+  const context=work=>({state:this.states.get(work.file.path)?.state,writer:this.writerFor(work)});
+  this.names=this.sectionNames();this.counts=facetCounts(every,f,context,this.query);
+  const inLanguage=every.filter(work=>(work.locale==='en'?'en':'zh-CN')===f.locale);
+  // One list, newest first by the work's own date, then by title; the section is a label on each work.
+  const shown=inLanguage.filter(work=>matches(work,f,{...context(work),query:this.query})).sort((a,b)=>b.date.localeCompare(a.date)||a.title.localeCompare(b.title));
+  this.contentEl.toggleClass('is-english',f.locale==='en');this.pairs=this.editionIndex();
+  this.markFilter();this.panel?.draw();
+  this.list.empty();this.list.toggleClass('is-cards',this.layout==='cards');this.shown.clear();
+  if(!shown.length)this.list.createDiv({cls:'rssd-works-empty',text:inLanguage.length?'No works match.':'No works yet. Use Update to get them from the Center.'});
+  for(const work of shown.slice(0,this.limit))this.item(this.list,work);
+  if(shown.length>this.limit){const rest=shown.length-this.limit,more=this.list.createDiv({cls:'rssd-works-more',text:'Show '+Math.min(WORKS_PAGE,rest)+' more of '+rest});more.addEventListener('click',()=>{this.limit+=WORKS_PAGE;this.render();});}
+  // Save takes the edited works of the language on screen, whatever else is filtered.
+  this.edited=inLanguage.filter(work=>this.states.get(work.file.path)?.state==='edited').map(work=>work.file);
+  this.mark();this.renderFoot();void this.fillStates(every);void this.fillWriters([...this.shown.values(),...inLanguage]);
+ }
+ sectionName(id){return this.names?.get(id)?.name||id||'';}
+ /** Apply a new filter, keep it on this device, and list from the top again. */
+ setFilter(next){
+  this.filterState=normalizeFilter(next);this.limit=WORKS_PAGE;
+  try{this.app.saveLocalStorage?.(FILTER_KEY,this.filterState);}catch{}
+  this.render();
+ }
+ togglePanel(){
+  if(this.panel){this.panel.close();return;}
+  this.panel=new WorksFilterPanel(this,this.filterButton);this.filterButton.setAttribute('aria-expanded','true');
+ }
+ /** The filter button's badge and tooltip, and one removable chip per filter in force under the search box. */
+ markFilter(){
+  if(!this.filterButton)return;
+  const f=this.filterState,n=narrowedBy(f);
+  this.filterButton.toggleClass('is-active',n>0);this.filterBadge.setText(n?String(n):'');this.filterBadge.toggle(n>0);
+  this.filterButton.setAttribute('aria-label',n?'Filter: '+(this.counts?.dates??'')+' works listed':'Filter the works');
+  this.active.empty();
+  const chips=activeChips(f,{sectionName:id=>this.sectionName(id)});
+  for(const chip of chips){
+   const tag=this.active.createEl('button',{cls:'rssd-works-tag'});tag.createSpan({text:chip.text});setIcon(tag.createSpan({cls:'rssd-works-tag-x'}),'x');
+   tag.setAttribute('aria-label','Remove this filter');tag.addEventListener('click',()=>this.setFilter(withoutChip(this.filterState,chip)));
   }
-  // One language at a time; the switch appears only when the space has English editions.
-  if(english.length){
-   const langs=this.filters.createDiv({cls:'rssd-works-langs'});
-   for(const [id,label,count] of [['zh','中文',chinese.length],['en','English',english.length]]){
-    const tab=langs.createEl('button',{cls:'rssd-works-lang'+(this.lang===id?' is-active':''),text:label});tab.setAttribute('aria-label',label+', '+count+' works');
-    tab.addEventListener('click',()=>{if(this.lang===id)return;this.lang=id;this.render();});
-   }
+  if(chips.length>1){const clear=this.active.createEl('button',{cls:'rssd-works-clear',text:'Clear all'});clear.addEventListener('click',()=>this.setFilter(emptyFilter(f.locale)));}
+ }
+ item(group,work){this.shown.set(work.file.path,work);return this.layout==='cards'?this.card(group,work):this.row(group,work);}
+ /** Draw one work again in place, after its state or length became known. */
+ refreshItem(path){
+  const old=this.list?.querySelector(`[data-path="${CSS.escape(path)}"]`),work=this.shown.get(path);
+  if(!old||!work)return;
+  const fresh=this.item(old.parentElement,work);old.replaceWith(fresh);
+  if(old.classList.contains('is-active'))this.mark();
+ }
+ card(group,work){
+  const card=group.createDiv({cls:'rssd-works-card'});card.dataset.path=work.file.path;
+  const state=this.states.get(work.file.path)?.state,facts=this.facts.get(work.file.path);
+  const body=card.createDiv({cls:'rssd-works-card-body'});
+  // The section's label leads the title, in the section's colour.
+  const title=body.createDiv({cls:'rssd-works-card-title'}),sectionName=this.sectionName(work.section);
+  if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
+  title.appendText(work.title);
+  // Most works need nothing, so the chip row is only there when there is a chip.
+  const chips=cardChips({...work,state}),badges=chips.length?body.createDiv({cls:'rssd-works-badges'}):null;
+  for(const chip of chips){const badge=badges.createSpan({cls:'rssd-works-badge is-'+chip.tone,text:chip.text});badge.setAttribute('aria-label',chip.title);}
+  // What the work is made of. Length, references and the brand line arrive with the background pass.
+  const row=card.createDiv({cls:'rssd-works-facts'}),pictures=work.media.length,references=facts?.references;
+  const fact=(icon,text,label,{missing=false,absent=false}={})=>{const el=row.createSpan({cls:'rssd-works-fact'+(missing||absent?' is-missing':'')+(absent?' is-absent':'')});setIcon(el.createSpan({cls:'rssd-works-fact-icon'}),icon);el.createSpan({text});el.setAttribute('aria-label',label);};
+  fact('calendar',work.date.slice(5)||'—',work.date?'Date '+work.date:'No date',{missing:!work.date});
+  if(facts?.length!=null)fact('type',lengthText(facts.length,work.locale),'Length');
+  fact('image',String(pictures),pictures?pictures+(pictures===1?' image':' images'):'No images',{missing:!pictures});
+  if(references!=null)fact('quote',String(references),references?references+(references===1?' reference':' references'):'No references',{missing:!references});
+  if(facts?.brand!=null)fact(facts.brand?'badge-check':'badge','Brand',facts.brand?'The site\'s brand line is mounted':'No brand line',{absent:!facts.brand});
+  const other=work.locale==='en'?'zh-CN':'en',doc=this.pairs?.document(work);
+  if(doc){const has=this.pairs.has(other,doc),name=other==='en'?'English':'Chinese';fact('languages',other==='en'?'EN':'中',(has?'Has a ':'No ')+name+' edition',{absent:!has});}
+  const writer=this.writerFor(work),label=writerLabel(writer);
+  if(writer!==undefined){
+   const line=card.createDiv({cls:'rssd-works-writer'+(label?'':' is-missing')});setIcon(line.createSpan({cls:'rssd-works-fact-icon'}),'bot');line.createSpan({text:label||'Writer not recorded'});line.setAttribute('aria-label',label?'Written by '+label:'The Center has no record of the agent that wrote this');
+   // The machine that saved the first version, by its device name.
+   if(writer?.machine){const machine=line.createSpan({cls:'rssd-works-machine'});setIcon(machine.createSpan({cls:'rssd-works-fact-icon'}),'laptop');machine.createSpan({text:writer.machine});machine.setAttribute('aria-label','First written on '+writer.machine);}
   }
-  const shown=all.filter(work=>(!q||[work.title,work.summary].some(text=>text.toLowerCase().includes(q)))&&
-   (this.filter==='all'||(this.filter==='edited'&&edited(work))||(this.filter==='check'&&toCheck(work))));
-  this.contentEl.toggleClass('is-english',this.lang==='en');
-  const groups=new Map();
-  for(const work of shown){const key=work.section||'';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(work);}
-  const order=key=>names.get(key)?.order??999;
-  this.list.empty();
-  if(!shown.length)this.list.createDiv({cls:'rssd-works-empty',text:all.length?'No works match.':'No works yet. Use Update to get them from the Center.'});
-  for(const key of [...groups.keys()].sort((a,b)=>order(a)-order(b)||a.localeCompare(b))){
-   // Newest first; works of the same day by title.
-   const items=groups.get(key).sort((a,b)=>b.date.localeCompare(a.date)||a.title.localeCompare(b.title));
-   const name=names.get(key)?.name||items[0].category||key||'Other';
-   const group=this.list.createDiv({cls:'rssd-works-group'+(this.collapsed.has(key)?' is-collapsed':'')});
-   const head=group.createDiv({cls:'rssd-works-head'});
-   const caret=head.createSpan({cls:'rssd-works-caret'});setIcon(caret,'chevron-down');
-   head.createSpan({cls:'rssd-works-name',text:name});head.createSpan({cls:'rssd-works-count',text:String(items.length)});
-   head.addEventListener('click',()=>{if(this.collapsed.has(key))this.collapsed.delete(key);else this.collapsed.add(key);this.render();});
-   if(this.collapsed.has(key))continue;
-   const limit=this.limits.get(key)||WORKS_PAGE;
-   for(const work of items.slice(0,limit))this.row(group,work);
-   if(items.length>limit){const more=group.createDiv({cls:'rssd-works-more',text:'Show '+Math.min(WORKS_PAGE,items.length-limit)+' more of '+(items.length-limit)});more.addEventListener('click',()=>{this.limits.set(key,limit+WORKS_PAGE);this.render();});}
-  }
-  // Save takes what the Edited filter counts: the edited works of the language on screen.
-  this.edited=all.filter(work=>this.states.get(work.file.path)?.state==='edited').map(work=>work.file);
-  this.mark();this.renderFoot();void this.fillStates(every);
+  card.addEventListener('click',event=>void this.openWork(work.file,{newTab:event.metaKey||event.ctrlKey}));
+  return card;
+ }
+ /** Actions for the open work's card. Save appears only when there is something to save. */
+ actions(card,work){
+  const bar=card.createDiv({cls:'rssd-works-actions'}),state=this.states.get(work.file.path)?.state;
+  // Each button carries the icon of the tab it opens.
+  const add=(icon,text,label,run)=>{const button=bar.createEl('button',{cls:'rssd-works-action'});setIcon(button.createSpan({cls:'rssd-works-action-icon'}),icon);button.createSpan({text});
+   button.setAttribute('aria-label',label);button.addEventListener('click',event=>{event.stopPropagation();void run();});return button;};
+  if(state==='edited'&&!Platform.isMobile)add('upload','Save','Save this work to the Center as a private draft. Nothing is published.',async()=>{await this.plugin.save(work.file);this.states.delete(work.file.path);this.render();}).addClass('mod-cta');
+  const icon=id=>PREVIEW_TARGETS.find(target=>target.id===id).icon;
+  add(icon('article'),'Preview','Preview the article layout',()=>this.plugin.openPreview());
+  add(icon('cards'),'Cards','Preview the work as cards',()=>this.plugin.openView('rssd-cards'));
+  add(icon('outline'),'Outline','The work\'s headings',()=>this.plugin.openOutline());
+  add(icon('details'),'Details','Edit the title, summary, author and category',()=>this.plugin.openDetails());
  }
  row(group,work){
   const row=group.createDiv({cls:'rssd-works-row'});row.dataset.path=work.file.path;
   const state=this.states.get(work.file.path)?.state;
   const dot=row.createSpan({cls:'rssd-works-dot'+(state?' is-'+state:'')});if(state)dot.setAttribute('aria-label',WORK_STATES[state]);
   row.createSpan({cls:'rssd-works-date',text:work.date.slice(5)});
+  const sectionName=this.sectionName(work.section);
+  if(sectionName){const tag=row.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);}
   row.createSpan({cls:'rssd-works-title',text:work.title});
   row.setAttribute('aria-label',[work.title,work.date,WORK_STATES[state]].filter(Boolean).join(' · '));
-  row.addEventListener('click',()=>void this.openWork(work.file));
+  row.addEventListener('click',event=>void this.openWork(work.file,{newTab:event.metaKey||event.ctrlKey}));
+  return row;
  }
  // Not named open(): that is Obsidian's own method for starting a view, and replacing it stops the view from ever opening.
- async openWork(file){await this.app.workspace.getLeaf(false).openFile(file);this.mark();}
+ async openWork(file,options){await this.plugin.openWorkFile(file,options);this.mark();}
  /** Highlight the work open in the editor. */
  mark(){
   const current=this.plugin.currentWork()?.path;
-  for(const row of this.list?.querySelectorAll('.rssd-works-row')||[])row.toggleClass('is-active',row.dataset.path===current);
+  for(const item of this.list?.querySelectorAll('[data-path]')||[]){
+   const active=item.dataset.path===current;item.toggleClass('is-active',active);
+   if(!item.classList.contains('rssd-works-card'))continue;
+   const bar=item.querySelector('.rssd-works-actions'),work=this.shown.get(item.dataset.path);
+   if(active&&!bar&&work)this.actions(item,work);else if(!active&&bar)bar.remove();
+  }
  }
  /** Work out each work's state in the background, a few at a time, and show it as it arrives. */
  async fillStates(all){
@@ -859,31 +1161,54 @@ class WorksView extends ItemView{
    for(let i=0;i<all.length;i++){
     const work=all[i],before=this.states.get(work.file.path)?.state;
     const state=await this.stateOf(work);
-    if(state!==before){changed=true;const dot=this.list.querySelector(`.rssd-works-row[data-path="${CSS.escape(work.file.path)}"] .rssd-works-dot`);if(dot){dot.className='rssd-works-dot is-'+state;dot.setAttribute('aria-label',WORK_STATES[state]);}}
+    const measured=this.layout==='cards'&&await this.measure(work);
+    if(state!==before)changed=true;
+    if(state!==before||measured)this.refreshItem(work.file.path);
     if(i%40===39)await new Promise(resolve=>window.setTimeout(resolve,0));
    }
   }finally{this.filling=false;}
   // Counts depend on the states; refresh them once the pass is complete.
   if(changed)this.render();
  }
+ /** Show a finished stage on its button for a moment ("Saved 12", "2 not saved", "Updated"), then the usual footer. */
+ flashFoot(target,kind,text){
+  window.clearTimeout(this.flashTimer);this.flash={target,kind,text};this.renderFoot();
+  this.flashTimer=window.setTimeout(()=>{this.flash=null;this.renderFoot();},2600);
+ }
  renderFoot(){
-  if(!this.foot)return;this.foot.empty();
-  const at=this.plugin.settings.lastPullAt,minutes=at?Math.round((Date.now()-at)/60000):null;
-  this.foot.createSpan({cls:'rssd-works-pulled',text:at?'Updated '+(minutes<1?'just now':minutes<60?minutes+' min ago':minutes<1440?Math.round(minutes/60)+' h ago':Math.round(minutes/1440)+' d ago'):'Not updated yet'});
+  if(!this.foot)return;const body=this.footBody;body.empty();
+  const at=this.plugin.settings.lastPullAt,fresh=at&&this.seenPullAt&&at!==this.seenPullAt;this.seenPullAt=at;
+  body.createSpan({cls:'rssd-works-pulled'+(fresh?' is-fresh':''),text:at?'Updated '+agoText(at):'Not updated yet'});
+  // The bar slides while updating and fills while saving.
+  const saving=this.saving,share=saving?.total?saving.done/saving.total:0;
+  this.progress.toggleClass('is-active',!!(this.updating||saving));this.progress.toggleClass('is-sliding',!!this.updating&&!saving);
+  this.progress.style.width=saving?Math.max(4,share*100)+'%':this.updating?'':'0';
+  const button=(cls,icon,text,state)=>{const b=body.createEl('button',{cls:'rssd-works-pull '+cls+(state?' is-'+state:'')});if(icon)setIcon(b.createSpan({cls:'rssd-works-pull-icon'}),icon);b.createSpan({text});return b;};
+  const flash=target=>this.flash?.target===target?this.flash:null;
   // Two directions, always both shown: Update brings the Center's versions down, Save sends edits up as
   // private drafts. Save is greyed out while there is nothing to save, and on mobile, which is read-only.
-  const update=this.foot.createEl('button',{cls:'rssd-works-pull',text:'Update'});update.setAttribute('aria-label','Get the latest versions from the Center');
-  update.disabled=!!this.saving;
-  update.addEventListener('click',async()=>{update.disabled=true;try{await this.plugin.pull();}finally{update.disabled=false;this.render();}});
-  const edited=this.saving?[]:this.edited||[],mobile=Platform.isMobile;
-  const save=this.foot.createEl('button',{cls:'rssd-works-pull rssd-works-save'+(edited.length&&!mobile?' mod-cta':''),text:this.saving||(edited.length?'Save '+edited.length:'Save')});
-  save.setAttribute('aria-label',this.saving?'Saving to the Center':mobile?'Saving is not available on mobile':edited.length?'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.':'Nothing to save: no work on screen is edited');
-  save.disabled=!!this.saving||!edited.length||mobile;
+  const done=flash('update'),update=this.updating?button('','loader-2','Updating…','busy'):done?button('',done.kind==='done'?'check':'x',done.text,done.kind):button('','','Update');
+  update.setAttribute('aria-label','Get the latest versions from the Center');
+  update.disabled=!!saving||!!this.updating;
+  update.addEventListener('click',async()=>{
+   this.updating=true;this.renderFoot();let outcome='failed';
+   try{outcome=await this.plugin.pull()||'done';}
+   finally{this.updating=false;this.render();this.flashFoot('update',outcome==='done'?'done':'failed',outcome==='done'?'Updated':outcome==='incomplete'?'Incomplete':'Not updated');}
+  });
+  const edited=saving?[]:this.edited||[],mobile=Platform.isMobile,result=flash('save');
+  const label=saving?(saving.total?'Saving '+saving.done+'/'+saving.total:'Saving…'):result?result.text:edited.length?'Save '+edited.length:'Save';
+  const save=button('rssd-works-save'+(edited.length&&!mobile&&!result?' mod-cta':''),saving?'loader-2':result?(result.kind==='done'?'check':'x'):'',label,saving?'busy':result?.kind);
+  save.setAttribute('aria-label',saving?'Saving to the Center':mobile?'Saving is not available on mobile':edited.length?'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.':'Nothing to save: no work on screen is edited');
+  save.disabled=!!saving||!edited.length||mobile;
   save.addEventListener('click',async()=>{
    const files=[...edited];if(!files.length)return;
-   this.saving='Saving…';this.renderFoot();
-   try{await this.plugin.saveEdited(files,{onProgress:(done,total)=>{this.saving='Saving '+done+'/'+total;this.renderFoot();}});}
-   finally{this.saving=null;for(const file of files)this.states.delete(file.path);this.render();}
+   this.saving={done:0,total:files.length};this.renderFoot();let outcome=null;
+   try{outcome=await this.plugin.saveEdited(files,{onProgress:(done,total)=>{this.saving={done,total};this.renderFoot();}});}
+   finally{
+    this.saving=null;for(const file of files)this.states.delete(file.path);this.render();
+    const failed=outcome?outcome.failed.length:files.length,saved=outcome?outcome.saved.length+outcome.unchanged.length:0;
+    this.flashFoot('save',failed?'failed':'done',failed?failed+' not saved':'Saved '+saved);
+   }
   });
  }
 }
@@ -905,7 +1230,10 @@ const PREVIEW_TARGETS=[
 ];
 // The result is shown the way it lands in an editor: no frame, no fixed width, filling whatever room there is.
 // It sits in a shadow root so the Obsidian theme cannot restyle it: what shows is what is copied.
-const PREVIEW_FRAME=':host{display:block;color-scheme:light}.page{background:#fff;color:#222;padding:20px 16px 32px;overflow-wrap:anywhere;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.title{margin:0 0 18px;font-size:22px;line-height:1.4;font-weight:700}.body img{max-width:100%}.cards{padding:12px;background:#e6e6e6}.cards img{display:block;width:100%;max-width:1080px;height:auto;margin:0 auto 12px;box-shadow:0 1px 6px rgba(0,0,0,.18)}.cards img:last-child{margin-bottom:0}.message{padding:24px 16px;color:#888;font-size:13px}';
+// The article is shown at a phone's width, as a 公众号 reader sees it: a 375px column (the usual phone design
+// width) with WeChat's 16px side margins, centred on white so the column has no visible edge. Wider tables and
+// code scroll inside it rather than overflow.
+const PREVIEW_FRAME=':host{display:block;color-scheme:light;background:#fff}.page{box-sizing:border-box;max-width:375px;margin:0 auto;background:#fff;color:#222;padding:20px 16px 32px;overflow-wrap:anywhere;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.title{margin:0 0 18px;font-size:22px;line-height:1.4;font-weight:700}.body img{max-width:100%}.body table,.body pre{display:block;max-width:100%;overflow-x:auto}.cards{padding:12px;background:#e6e6e6}.cards img{display:block;width:100%;max-width:1080px;height:auto;margin:0 auto 12px;box-shadow:0 1px 6px rgba(0,0,0,.18)}.cards img:last-child{margin-bottom:0}.message{padding:24px 16px;color:#888;font-size:13px}';
 class LayoutPreview extends ItemView{
  constructor(leaf,plugin,type='rssd-article',targetId='article'){super(leaf);this.plugin=plugin;this.type=type;this.target=PREVIEW_TARGETS.find(t=>t.id===targetId);this.style=this.target.styles[0]?.id||'';this.file=null;this.content=null;this.result=null;this.urls=[];this.seq=0;}
  /** An icon button; its label is read out and shown as a tooltip. */
@@ -920,15 +1248,17 @@ class LayoutPreview extends ItemView{
    tab.addEventListener('click',()=>{if(style.id===this.style)return;this.style=style.id;this.drawTabs();void this.show(this.file,{force:true});});
   }
   // Outline and details have no styles, status or action; the controls row belongs to the outputs.
-  const output=!this.target.panel;this.controls.toggle(output);
+  const output=!this.target.panel;this.controls.toggle(output&&(!this.plugin.previewSlot||this.docked));
   if(output){setIcon(this.actionButton,this.target.actionIcon);this.actionButton.setAttribute('aria-label',this.target.copyLabel);}
  }
  getViewType(){return this.type;}
- getDisplayText(){return this.target.name;}
+ // Named for the work it shows, so tabs of several works can be told apart.
+ getDisplayText(){return tabTitle(this.target.label,this.titleFile&&this.plugin.workLabel(this.titleFile))||this.target.name;}
  getIcon(){return this.target.icon;}
  async onOpen(){
   const el=this.contentEl;el.empty();el.style.padding='0';
   this.controls=el.createDiv({cls:'rssd-preview-controls'});
+  if(this.plugin.previewSlot){this.registerEvent(this.app.workspace.on('active-leaf-change',()=>this.dock()));this.app.workspace.onLayoutReady(()=>this.dock());}
   this.styleTabs=this.controls.createDiv({cls:'rssd-preview-styles'});
   const actions=this.controls.createDiv({cls:'rssd-preview-actions'});
   this.iconButton(actions,'refresh-cw','Refresh').addEventListener('click',()=>this.show(this.file,{force:true}));
@@ -960,7 +1290,16 @@ class LayoutPreview extends ItemView{
  onResize(){this.catchUp();}
  /** Draw what a hidden tab put off, once the tab is on screen. */
  catchUp(){if(this.waiting&&this.containerEl.isShown?.()!==false){const file=this.pendingFile;this.waiting=false;this.pendingFile=null;void this.show(file,{force:true});}}
- async onClose(){window.clearTimeout(this.timer);window.clearTimeout(this.loadingTimer);this.details.seq++;this.seq++;this.abort?.abort();this.release();}
+ /** Put this tab's controls in the status bar while it is the tab in front, and take them back when it is not. */
+ dock(){
+  const slot=this.plugin.previewSlot;if(!slot||!this.controls||this.target.panel)return;
+  const front=this.app.workspace.getMostRecentLeaf?.()===this.leaf;
+  if(front&&!this.docked){slot.empty();slot.append(this.controls);this.docked=true;this.controls.show();}
+  else if(!front&&this.docked){if(slot.contains(this.controls))this.controls.remove();this.docked=false;}
+  slot.toggle(slot.childElementCount>0);
+ }
+ async onClose(){window.clearTimeout(this.timer);window.clearTimeout(this.loadingTimer);this.details.seq++;this.seq++;this.abort?.abort();this.release();
+  if(this.docked){this.controls.remove();this.docked=false;const slot=this.plugin.previewSlot;slot?.toggle(slot.childElementCount>0);}}
  /**
   * Show or hide the loading cover. It appears only when building takes longer than a moment, so a quick
   * refresh does not flicker; the action button waits until the result it would copy or save is ready.
@@ -978,6 +1317,7 @@ class LayoutPreview extends ItemView{
   this.root.replaceChildren(style,note);
  }
  async show(file,{force=false}={}){
+  if(file&&file!==this.titleFile){this.titleFile=file;this.leaf.updateHeader?.();}
   // An output tab behind another is not built until it is shown; cards in particular take a while. Outline
   // and details are cheap and always drawn.
   if(!this.target.panel&&this.containerEl.isShown&&!this.containerEl.isShown()){this.waiting=true;this.pendingFile=file||null;return;}
@@ -1045,7 +1385,8 @@ class WorkOutline{
   const workspace=this.app.workspace;
   let leaf=workspace.getLeavesOfType('markdown').find(l=>l.view?.file===file);
   if(!leaf){leaf=workspace.getLeaf(false);await leaf.openFile(file);}
-  leaf.view.setEphemeralState?.({line});workspace.setActiveLeaf(leaf,{focus:true});
+  // The note may be a tab behind the outline in the same tab bar.
+  workspace.revealLeaf(leaf);leaf.view.setEphemeralState?.({line});workspace.setActiveLeaf(leaf,{focus:true});
  }
 }
 
