@@ -184,6 +184,12 @@ export class SyncEngine{
    const mediaChanged=base&&local?this.localChanges(base,local):false;
    const state=base?.pending?'publishing':workState({base,localFingerprint:local?(mediaChanged===false?local.fingerprint:'media-changed:'+local.fingerprint):null,remote:{version:item.version}});
    await onProgress({articleId:item.articleId,locale,state,summary:snapshot()});
+   // Publishing the same version on the website changes no content, only the published version. Keep it current,
+   // or the next save is refused as a conflict although nobody changed the work.
+   if(base&&!base.pending&&!base.staged&&item.version===base.version&&Object.hasOwn(item,'publishedVersion')&&(item.publishedVersion??null)!==(base.publishedVersion??null)){
+    await this.store.set(workspaceId,item.articleId,{...base,publishedVersion:item.publishedVersion??null},locale);
+    base=await this.store.get(workspaceId,item.articleId,locale);
+   }
    if(state==='publishing'){summary.pending.push(item.articleId);return null;}
    if(state==='synced'){summary.unchanged++;return null;}
    if(state==='local_changed'){summary.skipped.push(item.articleId);return null;}
@@ -363,7 +369,8 @@ export class SyncEngine{
   // current revision first and require the server's explicit preservation guarantee.
   const current=await this.client.work(workspaceId,work.data.id,work.data.locale);
   if(current?.version!==base.version||(current?.publishedVersion??null)!==(base.publishedVersion??null))
-   throw Object.assign(Error('The Center version changed; local edits were kept. Update or resolve the conflict before saving'),{status:409,code:'revision_conflict',conflict:true});
+   throw Object.assign(Error('The Center version changed; local edits were kept. Update or resolve the conflict before saving'+
+    ' (Center: version '+current?.version+', published '+(current?.publishedVersion??'none')+'; note based on version '+base.version+', published '+(base.publishedVersion??'none')+')'),{status:409,code:'revision_conflict',conflict:true});
   if(current?.articleId!==work.data.id||current?.data?.id!==work.data.id||(current?.data?.locale||'zh-CN')!==work.data.locale||(current?.locale&&current.locale!==work.data.locale))
    throw Object.assign(Error('The Center returned a different work; local edits were kept'),{code:'identity_conflict'});
   if(structured)verifyStructuredDetail({work,base,detail:current});

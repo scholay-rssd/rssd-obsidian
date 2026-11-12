@@ -15,12 +15,13 @@ export function agoText(at,now=Date.now()){
  * work was edited is left out: the card describes the work, and the Save button says what is waiting. What the
  * website shows is left out too; a work with nothing to attend to has no chip.
  */
-export function cardChips({state,author,category}){
+export function cardChips({state,author,category,checks}){
  const chips=[];
  if(state==='edited')chips.push({text:'Edited',tone:'warning',title:'Changed since the last sync; not saved to the Center yet'});
  else if(state==='saving')chips.push({text:'Saving…',tone:'site',title:'Saving to the Center'});
  else if(state==='conflict')chips.push({text:'Conflict',tone:'danger',title:'Conflict: needs attention'});
  else if(state==='unlinked')chips.push({text:'Not linked',tone:'plain',title:'Not updated from the Center yet'});
+ if(checks)chips.push({text:'Open checks',tone:'warning',title:'核对与待办 in the internal notes still has items; see Details'});
  // Many works miss both; one chip says so without filling the card with red.
  const missing=[!String(author??'').trim()&&'author',!String(category??'').trim()&&'category'].filter(Boolean);
  if(missing.length)chips.push({text:'No '+missing.join(' or '),tone:'danger',title:'Add the '+missing.join(' and ')+' in the work details'});
@@ -110,8 +111,12 @@ export function writerOf(privateEditorial){
   .filter(run=>run&&run.status==='completed'&&typeof run.agentName==='string'&&run.agentName.trim())
   .sort((a,b)=>String(b.startedAt??'').localeCompare(String(a.startedAt??'')));
  const run=runs.find(r=>r.action==='write')||runs[0];if(!run)return null;
- const model=modelLabel(run),full=withoutEffort(run.agentName.trim()),at=model?full.toLowerCase().indexOf(model.toLowerCase()):-1;
- const agent=(at>0?full.slice(0,at).trim():'')||(at===0?full:'')||full;
- const writer={agent,model:at===0&&agent===full?'':model};
+ const writer=runWriter(run);
  return {...writer,label:writerLabel(writer)};
+}
+/** One run's agent and model, named the same tidy way as the writer. */
+export function runWriter(run){
+ const model=modelLabel(run),full=withoutEffort(String(run?.agentName??'').trim()),at=model?full.toLowerCase().indexOf(model.toLowerCase()):-1;
+ const agent=(at>0?full.slice(0,at).trim():'')||(at===0?full:'')||full;
+ return {agent,model:at===0&&agent===full?'':model};
 }

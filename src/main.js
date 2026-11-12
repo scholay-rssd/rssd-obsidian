@@ -12,7 +12,8 @@ import {saveFailureMessage,saveManySummary} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
 import {workLabel,labelText,tabTitle} from './titles.mjs';
-import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel} from './work-cards.mjs';
+import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel,isBrandLine} from './work-cards.mjs';
+import {internalNotes,hasOpenChecks,runHistory,rowNotes,anchorMatches} from './private-notes.mjs';
 import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER} from './works-filter.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
@@ -38,6 +39,36 @@ const EDITOR_VIEWS=Object.freeze(SIDEBAR_VIEWS.map(([type])=>type));
 // Work notes show their title and date; the stable ID file name stays underneath. The inline title and the
 // header title are hidden for them because editing either one renames the file and would stop its sync.
 const TITLE_STYLE=`
+/* Reading mode of a work note is a proofreading view: a page-width column, Chinese typography, clear heading
+   steps, quiet citation numbers, references set apart, captions under pictures, the brand line marked, and a
+   context line under the title. Editing mode and every other note keep the theme. */
+.rssd-work-note .markdown-reading-view{--file-line-width:680px}
+.rssd-work-note .markdown-reading-view .markdown-preview-view{font-family:"PingFang SC","Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei",var(--font-text);line-height:1.8;letter-spacing:.01em}
+.rssd-work-note .markdown-reading-view p{margin-block:0 1em}
+.rssd-work-note .markdown-reading-view h1{font-size:1.65em;line-height:1.4;margin-block:.2em .4em}
+.rssd-work-note .markdown-reading-view h2{font-size:1.3em;line-height:1.5;margin-block:1.8em .6em;padding-bottom:.3em;border-bottom:1px solid var(--background-modifier-border)}
+.rssd-work-note .markdown-reading-view h3{font-size:1.1em;line-height:1.6;margin-block:1.4em .5em}
+.rssd-work-note .markdown-reading-view sup.footnote-ref{font-size:.7em}
+.rssd-work-note .markdown-reading-view sup.footnote-ref a{color:var(--text-faint);text-decoration:none}
+.rssd-work-note .markdown-reading-view section.footnotes{margin-top:2.4em;padding-top:1em;border-top:1px solid var(--background-modifier-border);color:var(--text-muted);font-size:.9em}
+.rssd-work-note .markdown-reading-view .rssd-reference-block h1,.rssd-work-note .markdown-reading-view .rssd-reference-block h2,.rssd-work-note .markdown-reading-view .rssd-reference-block h3,.rssd-work-note .markdown-reading-view .rssd-reference-block h4{margin-top:2.4em;padding-top:1em;border-top:1px solid var(--background-modifier-border);border-bottom:0;font-size:1em;color:var(--text-muted)}
+.rssd-work-note .markdown-reading-view .rssd-reference-block+div{color:var(--text-muted);font-size:.9em;line-height:1.65}
+.rssd-work-note .markdown-reading-view .rssd-reference-block+div li{margin-block:.35em}
+.rssd-work-note .markdown-reading-view img{display:block;max-width:100%;margin:1.2em auto .4em;border-radius:4px}
+.rssd-figcaption{margin:0 auto 1.2em;max-width:90%;color:var(--text-muted);font-size:.85em;line-height:1.6;text-align:center}
+.rssd-figcaption.is-missing{color:var(--text-error)}
+.rssd-brand-line{position:relative}
+.rssd-brand-line::after{content:"Brand";margin-left:6px;padding:0 5px;border-radius:3px;background:color-mix(in srgb,var(--color-green) 15%,transparent);color:var(--color-green);font-size:.75em;vertical-align:1px}
+.rssd-row-note-mark{display:inline-flex;margin-left:4px;color:var(--color-orange);cursor:pointer;vertical-align:-2px}.rssd-row-note-mark svg{width:14px;height:14px}
+.rssd-row-note-box{margin:.2em 0 1em;padding:6px 10px;border-left:3px solid var(--color-orange);border-radius:0;background:color-mix(in srgb,var(--color-orange) 8%,transparent);font-family:var(--font-interface);font-size:var(--font-ui-small);line-height:1.6}
+.rssd-row-note-label{color:var(--text-muted);font-size:var(--font-ui-smaller)}.rssd-row-note-text{white-space:pre-wrap}
+.rssd-details-private{margin:var(--size-4-3) 0;padding-top:var(--size-4-2);border-top:1px solid var(--background-modifier-border)}
+.rssd-details-private-item{margin:6px 0}.rssd-details-private-label{color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-details-private-text{white-space:pre-wrap;font-size:var(--font-ui-small);line-height:1.6}
+.rssd-details-private-item.is-checks{padding:6px 8px;border-left:3px solid var(--color-orange);background:color-mix(in srgb,var(--color-orange) 8%,transparent)}
+.rssd-details-runs>summary{cursor:pointer;color:var(--text-muted);font-size:var(--font-ui-smaller);margin-top:6px}
+.rssd-context{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;margin:0 0 1.8em;color:var(--text-muted);font-family:var(--font-interface);font-size:var(--font-ui-smaller);line-height:1.6}
+.rssd-context-section{padding:0 6px;border-radius:3px;background:color-mix(in srgb,var(--rssd-section,var(--text-muted)) 14%,transparent);color:var(--rssd-section,var(--text-muted))}
 .rssd-work-note .inline-title,.rssd-work-note .view-header-title-parent,.rssd-work-note .view-header-title{display:none}
 .rssd-work-header{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:var(--font-semibold);padding:0 var(--size-2-2)}
 /* Two rows: the views, then the chosen output's styles, its status, refresh and its action. */
@@ -121,6 +152,20 @@ const TITLE_STYLE=`
 .rssd-works button.rssd-works-pull.is-done{color:var(--color-green);animation:rssd-pop .45s ease-out}
 .rssd-works button.rssd-works-pull.is-failed{color:var(--color-red);animation:rssd-shake .4s ease-in-out}
 .rssd-works-pulled.is-fresh{animation:rssd-fade .6s ease-out}
+/* Update and Save in the sidebar's tab bar: icons with a count badge, a thin bar under them while busy. */
+/* The left sidebar's tab icons are hidden: the ribbon switches between Files, Search and Works. */
+body.rssd-one-row .mod-left-split .workspace-tab-header-container-inner{display:none}
+body.rssd-one-row .mod-left-split .workspace-tab-header-container .workspace-tab-header-spacer{flex:1 1 auto}
+.rssd-works-headbar{position:relative;display:flex;align-items:center;margin-left:var(--size-2-2);-webkit-app-region:no-drag}
+.rssd-works-headbar-body{display:flex;align-items:center;gap:2px}
+.rssd-works-headbar .rssd-works-progress{top:auto;bottom:-3px}
+.rssd-works-headbar button.rssd-works-headbutton{position:relative;height:auto;padding:var(--size-2-2);border:0;background:none;box-shadow:none}
+.rssd-works-headbar button.rssd-works-headbutton:disabled{opacity:.45;cursor:default}
+.rssd-works-headbar button.rssd-works-headbutton.has-edits{color:var(--interactive-accent)}
+.rssd-works-headbar button.is-busy svg{animation:rssd-spin .9s linear infinite}
+.rssd-works-headbar button.is-done{color:var(--color-green);animation:rssd-pop .45s ease-out}
+.rssd-works-headbar button.is-failed{color:var(--color-red);animation:rssd-shake .4s ease-in-out}
+.rssd-works-headbadge{position:absolute;top:-2px;right:-4px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:var(--interactive-accent);color:var(--text-on-accent);font-size:9px;line-height:14px;text-align:center;pointer-events:none}
 @keyframes rssd-slide{from{left:-30%}to{left:100%}}
 @keyframes rssd-spin{to{transform:rotate(360deg)}}
 @keyframes rssd-pop{0%{transform:scale(.92);opacity:.5}60%{transform:scale(1.06)}100%{transform:scale(1);opacity:1}}
@@ -224,6 +269,10 @@ export default class RssdPlugin extends Plugin{
   this.settings.boundSpace??=Object.keys(this.settings.baselines).find(k=>Object.keys(this.settings.baselines[k]||{}).length)||'';
   await this.saveSettings();
   this.registerView('rssd-works',leaf=>new WorksView(leaf,this));
+  // One place to switch the left sidebar: the ribbon has Files, Search and Works (the sidebar's own tab icons are
+  // hidden on desktop), then the reader; the sidebar's top row keeps only Update and Save.
+  this.addRibbonIcon('folder-closed','Files',()=>this.revealCore('file-explorer','file-explorer:open'));
+  this.addRibbonIcon('search','Search',()=>this.revealCore('search','global-search:open'));
   this.addRibbonIcon('library','Works',()=>this.openWorks());
   this.addCommand({id:'works',name:'Show the Works list',callback:()=>this.openWorks()});
   this.registerView('rssd-reader',leaf=>new ReaderView(leaf,this));
@@ -255,7 +304,9 @@ export default class RssdPlugin extends Plugin{
   // obsidian://rssd?vault=<vault>&do=login|pull|save|status|spaces[&path=Works/x.md] lets scripts and agents drive
   // the plugin. Any app or page can open such a link, so it only works when the vault opts in.
   this.registerObsidianProtocolHandler('rssd',params=>this.automate(params));
-  this.titleStyle=document.head.createEl('style',{text:TITLE_STYLE});
+  // Update and Save live in the Works view, so it is loaded even while Files or Search is the tab shown.
+  this.app.workspace.onLayoutReady(()=>{for(const leaf of this.app.workspace.getLeavesOfType('rssd-works'))void leaf.loadIfDeferred?.();});
+  this.titleStyle=document.head.createEl('style',{text:TITLE_STYLE});if(!Platform.isMobile)document.body.addClass('rssd-one-row');
   const relabel=()=>{window.clearTimeout(this.titleTimer);this.titleTimer=window.setTimeout(()=>this.refreshTitles(),150);};
   this.app.workspace.onLayoutReady(relabel);
   for(const event of ['changed','resolved'])this.registerEvent(this.app.metadataCache.on(event,relabel));
@@ -264,6 +315,8 @@ export default class RssdPlugin extends Plugin{
   // First launch: one button logs in and opens the reader. Afterwards the reader opens from the ribbon.
   // Work details have a tab of their own; the properties block in the article is hidden once they are there.
   this.addCommand({id:'details',name:'Show work details',callback:()=>this.openDetails()});
+  // Reading mode of a work note: context line, captions, reference list and brand line (see the reading styles).
+  this.registerMarkdownPostProcessor((el,ctx)=>this.decorateReading(el,ctx));
   // The work in front is the one RSSD tabs and the next card click follow.
   this.registerEvent(this.app.workspace.on('file-open',file=>{if(file&&this.isWork(file))this.shownWork=file;}));
   this.app.workspace.onLayoutReady(()=>{void this.tidySidebar().catch(error=>console.error('RSSD sidebar',error));});
@@ -342,6 +395,85 @@ export default class RssdPlugin extends Plugin{
   return createCenterClient({http,origin:this.settings.origin,token});
  }
  /** Show the Works list in the left sidebar (one left by an earlier version elsewhere is moved there). */
+ /** A work's private Center record ({privateEditorial, firstMachine}), read once per version and kept for the
+  * session. Null when the Center has none. Read only. */
+ privateRecord(file){
+  const front=this.app.metadataCache.getFileCache(file)?.frontmatter||{},version=Number(front['rssd-version']);
+  const key=this.settings.workspaceId+':'+String(front['rssd-locale']||'zh-CN')+':'+String(front['rssd-id']||'')+':'+version;
+  this.privateRecords??=new Map();
+  if(!this.privateRecords.has(key)){
+   const read=(async()=>{
+    if(!front['rssd-id']||!Number.isSafeInteger(version)||version<1)return null;
+    try{return await this.client().privateNotes(this.settings.workspaceId,String(front['rssd-id']),version);}
+    catch(error){if(error?.status===404)return null;this.privateRecords.delete(key);throw error;}
+   })();
+   read.then(value=>{read.value=value;},()=>{});
+   this.privateRecords.set(key,read);
+  }
+  return this.privateRecords.get(key);
+ }
+ /** Marks a work note's reading view as a proofreading view. Runs on each rendered block; never edits the note. */
+ decorateReading(el,ctx){
+  const file=ctx?.sourcePath?this.app.vault.getAbstractFileByPath(ctx.sourcePath):null;
+  if(!(file instanceof TFile)||!this.isWork(file))return;
+  const front=this.app.metadataCache.getFileCache(file)?.frontmatter||{},origin=wechatSite(this.settings.workspaceId)?.origin||'';
+  // Under the title: section, date and who wrote it, as on the work's card.
+  const title=el.querySelector('h1');
+  if(title&&!el.querySelector('.rssd-context')){
+   const line=createDiv({cls:'rssd-context'}),sectionId=String(front['rssd-section']||'');
+   const site=wechatSite(this.settings.workspaceId),section=(SITE_SECTIONS[site?.id]||[]).find(item=>item.id===sectionId);
+   if(section){const tag=line.createSpan({cls:'rssd-context-section',text:section.name}),accent=this.sectionAccentOf(sectionId);if(accent)tag.style.setProperty('--rssd-section',accent);}
+   const date=fieldText(front.date);if(date)line.createSpan({text:date});
+   let writer=null;try{const kept=this.app.loadLocalStorage?.(WRITERS_KEY)||{};writer=kept[this.settings.workspaceId+':'+String(front['rssd-locale']||'zh-CN')+':'+String(front['rssd-id']||'')+':'+front['rssd-version']]||null;}catch{}
+   const label=writerLabel(writer);if(label)line.createSpan({text:label+(writer?.machine?' · '+writer.machine:'')});
+   title.after(line);
+  }
+  // A caption under each picture, from its alt text; a missing one is shown as missing.
+  for(const img of el.querySelectorAll('img')){
+   const holder=img.closest('.image-embed,.internal-embed')||img;if(holder.nextElementSibling?.classList.contains('rssd-figcaption'))continue;
+   const alt=String(img.getAttribute('alt')||'').trim(),named=alt&&!/\.(png|jpe?g|webp|gif|svg)$/i.test(alt);
+   holder.after(createDiv({cls:'rssd-figcaption'+(named?'':' is-missing'),text:named?alt:'No caption'}));
+  }
+  // The reference heading sets the list after it apart.
+  const heading=el.querySelector('h1,h2,h3,h4,h5,h6');
+  if(heading&&/^(参考文献|参考资料|References|Bibliography|Sources)$/i.test(heading.textContent.trim()))el.addClass('rssd-reference-block');
+  // Notes pinned to a paragraph, heading or picture: a mark that opens them in place. The record is read in the
+  // background; the view is drawn again once it arrives.
+  const pending=this.privateRecord(file);
+  if(!('value' in pending)){if(!pending.redrawing){pending.redrawing=true;pending.then(()=>this.redrawReading(file),()=>{});}}
+  else for(const row of rowNotes(pending.value?.privateEditorial)){
+   if(!row.anchor)continue;
+   const candidates=row.anchor.type==='image'?[...el.querySelectorAll('img')]:[...el.querySelectorAll('p,li,h1,h2,h3,h4,h5,h6')];
+   for(const node of candidates){
+    const text=row.anchor.type==='image'?node.getAttribute('alt'):node.textContent;
+    if(!anchorMatches(row.anchor.text,text)||node.dataset.rssdRowNote)continue;node.dataset.rssdRowNote='1';
+    const holder=node.tagName==='IMG'?(node.closest('.image-embed,.internal-embed')||node):node;
+    const mark=(holder===node&&node.tagName!=='IMG'?node:holder.parentElement).createSpan({cls:'rssd-row-note-mark'});setIcon(mark,'message-square');
+    if(holder!==node||node.tagName==='IMG')holder.after(mark);
+    mark.setAttribute('aria-label',row.notes.map(n=>n.label+'：'+n.text).join('\n'));
+    const box=createDiv({cls:'rssd-row-note-box'});box.hide();
+    for(const note of row.notes){box.createDiv({cls:'rssd-row-note-label',text:note.label});box.createDiv({cls:'rssd-row-note-text',text:note.text});}
+    (node.tagName==='IMG'?mark:holder).after(box);
+    mark.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();box.toggle(!box.isShown());});
+    break;
+   }
+  }
+  // The site's brand line, wherever it is mounted.
+  for(const node of el.querySelectorAll('li,p')){
+   const link=node.querySelector(':scope > a, :scope > p:first-child > a');
+   if(link&&isBrandLine('['+link.textContent+']('+link.getAttribute('href')+')',origin)&&node.textContent.trim().startsWith(link.textContent.trim()))node.addClass('rssd-brand-line');
+  }
+ }
+ /** Draw a work's reading views again, for marks that need the private record. */
+ redrawReading(file){
+  for(const leaf of this.app.workspace.getLeavesOfType('markdown'))if(leaf.view?.file===file)leaf.view.previewMode?.rerender?.(true);
+ }
+ /** Show one of Obsidian's own sidebar tabs (Files, Search), or open it with its own command if it was closed. */
+ revealCore(type,command){
+  const leaf=this.app.workspace.getLeavesOfType(type)[0];
+  if(leaf){this.app.workspace.revealLeaf(leaf);return;}
+  this.app.commands?.executeCommandById?.(command);
+ }
  async openWorks(){
   const workspace=this.app.workspace;let leaf=workspace.getLeavesOfType('rssd-works').find(l=>l.getRoot?.()===workspace.leftSplit);
   if(!leaf){for(const old of workspace.getLeavesOfType('rssd-works'))old.detach();leaf=workspace.getLeftLeaf(false);if(!leaf)return;await leaf.setViewState({type:'rssd-works',active:true});}
@@ -501,7 +633,7 @@ export default class RssdPlugin extends Plugin{
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
  }
- onunload(){this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
+ onunload(){document.body.removeClass('rssd-one-row');this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
  workLabel(file){return file instanceof TFile&&this.isWork(file)?workLabel(this.app.metadataCache.getFileCache(file)?.frontmatter):null;}
  /** Paint titles and dates over ID file names in the explorer, tabs and note headers. Never renames a file. */
  refreshTitles({restore=false}={}){
@@ -629,6 +761,9 @@ export default class RssdPlugin extends Plugin{
    });
   }catch(error){new Notice(error?.code==='operation_busy'?error.message:saveFailureMessage(error),10000);return null;}
   new Notice(saveManySummary(outcome),outcome.failed.length?15000:6000);
+  // A receipt beside the plugin, so a refused save can be diagnosed without the developer console.
+  await this.writeRun({action:'save',workspaceId:this.settings.workspaceId,state:outcome.failed.length?'partial':'completed',ok:!outcome.failed.length,
+   saved:outcome.saved.length,unchanged:outcome.unchanged.length,failed:outcome.failed.map(({file,error})=>({path:file.path,...diagnosticError(error)}))});
   return outcome;
  }
 
@@ -908,7 +1043,7 @@ class WorksFilterPanel{
 const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not updated from the Center yet'};
 const WORKS_PAGE=60;
 // Where writers ({agent, model, machine}) are kept on this device. A new name makes every writer be read again after a fix.
-const WRITERS_KEY='rssd-writers-4';
+const WRITERS_KEY='rssd-writers-5';
 const FILTER_KEY='rssd-works-filter';
 class WorksView extends ItemView{
  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.limit=WORKS_PAGE;this.panel=null;this.states=new Map();
@@ -951,9 +1086,11 @@ class WorksView extends ItemView{
   for(const event of ['create','delete','rename'])this.registerEvent(this.app.vault.on(event,later));
   this.registerEvent(this.app.workspace.on('file-open',()=>this.mark()));
   this.registerInterval(window.setInterval(()=>this.renderFoot(),60000));
+  // Placed again when the layout changes, as the sidebar's top row may be rebuilt.
+  for(const event of ['active-leaf-change','layout-change'])this.registerEvent(this.app.workspace.on(event,()=>this.placeHeadbar()));
   this.app.workspace.onLayoutReady(()=>this.render());
  }
- async onClose(){window.clearTimeout(this.timer);this.panel?.close();}
+ async onClose(){window.clearTimeout(this.timer);this.panel?.close();this.headbar?.remove();}
  /** Every work in the vault, each edition on its own. */
  works(){
   const items=[];
@@ -1015,7 +1152,8 @@ class WorksView extends ItemView{
    let writer=null;
    this.machineAsked.add(this.writerKey(work));
    try{const notes=await client.privateNotes(this.plugin.settings.workspaceId,work.id,Number(work.version)),found=writerOf(notes?.privateEditorial),machine=typeof notes?.firstMachine?.name==='string'?notes.firstMachine.name:'';
-    writer=found||machine?{agent:found?.agent||'',model:found?.model||'',machine}:null;}
+    const checks=hasOpenChecks(notes?.privateEditorial);
+    writer=found||machine||checks?{agent:found?.agent||'',model:found?.model||'',machine,checks}:null;}
    catch(error){if(error?.status!==404){stopped=true;return;}}
    this.writers[this.writerKey(work)]=writer;added++;this.refreshItem(work.file.path);
    if(added%25===0)this.saveWriters();
@@ -1096,7 +1234,7 @@ class WorksView extends ItemView{
   if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
   title.appendText(work.title);
   // Most works need nothing, so the chip row is only there when there is a chip.
-  const chips=cardChips({...work,state}),badges=chips.length?body.createDiv({cls:'rssd-works-badges'}):null;
+  const chips=cardChips({...work,state,checks:this.writerFor(work)?.checks}),badges=chips.length?body.createDiv({cls:'rssd-works-badges'}):null;
   for(const chip of chips){const badge=badges.createSpan({cls:'rssd-works-badge is-'+chip.tone,text:chip.text});badge.setAttribute('aria-label',chip.title);}
   // What the work is made of. Length, references and the brand line arrive with the background pass.
   const row=card.createDiv({cls:'rssd-works-facts'}),pictures=work.media.length,references=facts?.references;
@@ -1175,20 +1313,45 @@ class WorksView extends ItemView{
   window.clearTimeout(this.flashTimer);this.flash={target,kind,text};this.renderFoot();
   this.flashTimer=window.setTimeout(()=>{this.flash=null;this.renderFoot();},2600);
  }
+ /**
+  * Put Update and Save at the left of the sidebar's top row, whichever of its tabs is shown (the tab icons
+  * themselves are hidden; the ribbon switches between Files, Search and Works).
+  * Returns whether they are there; where the tab bar cannot be found (mobile, an unusual layout) the footer stays.
+  */
+ placeHeadbar(){
+  if(Platform.isMobile)return false;
+  const container=this.leaf.tabHeaderEl?.closest?.('.workspace-tab-header-container');if(!container)return false;
+  if(!this.headbar||!container.contains(this.headbar)){
+   this.headbar?.remove();
+   this.headbar=createDiv({cls:'rssd-works-headbar'});this.headBody=this.headbar.createDiv({cls:'rssd-works-headbar-body'});this.headProgress=this.headbar.createDiv({cls:'rssd-works-progress'});
+   container.prepend(this.headbar);
+  }
+  return true;
+ }
  renderFoot(){
-  if(!this.foot)return;const body=this.footBody;body.empty();
+  if(!this.foot)return;
+  // In the tab bar the buttons are icons, with the count as a badge; the footer keeps words.
+  const compact=this.placeHeadbar();this.foot.toggle(!compact);
+  const body=compact?this.headBody:this.footBody,bar=compact?this.headProgress:this.progress;body.empty();
   const at=this.plugin.settings.lastPullAt,fresh=at&&this.seenPullAt&&at!==this.seenPullAt;this.seenPullAt=at;
-  body.createSpan({cls:'rssd-works-pulled'+(fresh?' is-fresh':''),text:at?'Updated '+agoText(at):'Not updated yet'});
+  const updated=at?'Updated '+agoText(at):'Not updated yet';
+  if(!compact)body.createSpan({cls:'rssd-works-pulled'+(fresh?' is-fresh':''),text:updated});
   // The bar slides while updating and fills while saving.
   const saving=this.saving,share=saving?.total?saving.done/saving.total:0;
-  this.progress.toggleClass('is-active',!!(this.updating||saving));this.progress.toggleClass('is-sliding',!!this.updating&&!saving);
-  this.progress.style.width=saving?Math.max(4,share*100)+'%':this.updating?'':'0';
-  const button=(cls,icon,text,state)=>{const b=body.createEl('button',{cls:'rssd-works-pull '+cls+(state?' is-'+state:'')});if(icon)setIcon(b.createSpan({cls:'rssd-works-pull-icon'}),icon);b.createSpan({text});return b;};
-  const flash=target=>this.flash?.target===target?this.flash:null;
+  bar.toggleClass('is-active',!!(this.updating||saving));bar.toggleClass('is-sliding',!!this.updating&&!saving);
+  bar.style.width=saving?Math.max(4,share*100)+'%':this.updating?'':'0';
+  const button=(cls,icon,text,state,badge='')=>{
+   if(compact){
+    const b=body.createEl('button',{cls:'clickable-icon rssd-works-headbutton '+cls+(state?' is-'+state:'')});setIcon(b,icon);
+    if(badge!=='')b.createSpan({cls:'rssd-works-headbadge',text:String(badge)});return b;
+   }
+   const b=body.createEl('button',{cls:'rssd-works-pull '+cls+(state?' is-'+state:'')});if(icon&&!['refresh-cw','upload'].includes(icon))setIcon(b.createSpan({cls:'rssd-works-pull-icon'}),icon);b.createSpan({text});return b;
+  };
+  const flash=target=>this.flash?.target===target?this.flash:null,mark=kind=>kind==='done'?'check':'x';
   // Two directions, always both shown: Update brings the Center's versions down, Save sends edits up as
   // private drafts. Save is greyed out while there is nothing to save, and on mobile, which is read-only.
-  const done=flash('update'),update=this.updating?button('','loader-2','Updating…','busy'):done?button('',done.kind==='done'?'check':'x',done.text,done.kind):button('','','Update');
-  update.setAttribute('aria-label','Get the latest versions from the Center');
+  const done=flash('update'),update=this.updating?button('','loader-2','Updating…','busy'):done?button('',mark(done.kind),done.text,done.kind):button('','refresh-cw','Update');
+  update.setAttribute('aria-label',compact?(this.updating?'Updating…':done?done.text:'Update: get the latest versions from the Center. '+updated):'Get the latest versions from the Center');
   update.disabled=!!saving||!!this.updating;
   update.addEventListener('click',async()=>{
    this.updating=true;this.renderFoot();let outcome='failed';
@@ -1197,8 +1360,9 @@ class WorksView extends ItemView{
   });
   const edited=saving?[]:this.edited||[],mobile=Platform.isMobile,result=flash('save');
   const label=saving?(saving.total?'Saving '+saving.done+'/'+saving.total:'Saving…'):result?result.text:edited.length?'Save '+edited.length:'Save';
-  const save=button('rssd-works-save'+(edited.length&&!mobile&&!result?' mod-cta':''),saving?'loader-2':result?(result.kind==='done'?'check':'x'):'',label,saving?'busy':result?.kind);
-  save.setAttribute('aria-label',saving?'Saving to the Center':mobile?'Saving is not available on mobile':edited.length?'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.':'Nothing to save: no work on screen is edited');
+  const badge=saving?(saving.total?saving.done+'/'+saving.total:''):result?'':edited.length||'';
+  const save=button('rssd-works-save'+(edited.length&&!mobile&&!result?(compact?' has-edits':' mod-cta'):''),saving?'loader-2':result?mark(result.kind):'upload',label,saving?'busy':result?.kind,badge);
+  save.setAttribute('aria-label',saving?label:result?result.text:mobile?'Saving is not available on mobile':edited.length?'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.':'Nothing to save: no work on screen is edited');
   save.disabled=!!saving||!edited.length||mobile;
   save.addEventListener('click',async()=>{
    const files=[...edited];if(!files.length)return;
@@ -1211,6 +1375,7 @@ class WorksView extends ItemView{
    }
   });
  }
+
 }
 
 // One preview panel for every layout a work can be exported in. The top tabs are the views and the tabs under
@@ -1404,6 +1569,21 @@ class WorkDetails{
    const checks=checkSource({...work.data,kind:work.kind,media:work.media}).warnings;
    if(checks.length){const box=el.createDiv({cls:'rssd-details-checks'});box.createDiv({cls:'rssd-details-label',text:'To check'});for(const check of checks)box.createDiv({cls:'rssd-details-check',text:check.message});}
   }
+  // The private record: internal notes (what still needs checking first) and every run. Read only.
+  const privateBox=el.createDiv({cls:'rssd-details-private'});privateBox.createDiv({cls:'rssd-details-label',text:'Internal notes'});
+  const waiting=privateBox.createDiv({cls:'rssd-details-note',text:'Reading from the Center…'});
+  this.plugin.privateRecord(file).then(record=>{
+   if(seq!==this.seq)return;waiting.remove();
+   const notes=internalNotes(record?.privateEditorial),runs=runHistory(record?.privateEditorial);
+   if(!notes.length)privateBox.createDiv({cls:'rssd-details-note',text:'No internal notes.'});
+   for(const note of notes){const item=privateBox.createDiv({cls:'rssd-details-private-item'+(note.key==='verification'?' is-checks':'')});item.createDiv({cls:'rssd-details-private-label',text:note.label});item.createDiv({cls:'rssd-details-private-text',text:note.text});}
+   const rows=rowNotes(record?.privateEditorial).length;if(rows)privateBox.createDiv({cls:'rssd-details-note',text:rows+(rows===1?' note is':' notes are')+' pinned to paragraphs; reading mode marks them.'});
+   if(runs.length){
+    const history=privateBox.createEl('details',{cls:'rssd-details-runs'});history.createEl('summary',{text:'Runs ('+runs.length+')'});
+    for(const run of runs){const row=history.createDiv({cls:'rssd-details-row'});row.createSpan({cls:'rssd-details-key',text:run.at.slice(5,16).replace('T',' ')+' · '+run.action});row.createSpan({cls:'rssd-details-value',text:run.label+(run.status&&run.status!=='completed'?' ('+run.status+')':'')});}
+   }
+   if(record?.firstMachine?.name)privateBox.createDiv({cls:'rssd-details-note',text:'First written on '+record.firstMachine.name+'.'});
+  },error=>{if(seq!==this.seq)return;waiting.setText('Internal notes unavailable: '+(error?.message||error));});
   const link=el.createEl('details',{cls:'rssd-details-link'});link.createEl('summary',{text:'Center link'});
   const state=link.createDiv({cls:'rssd-details-state',text:'Checking…'});
   for(const [key,label] of IDENTITY_FIELDS){const row=link.createDiv({cls:'rssd-details-row'});row.createSpan({cls:'rssd-details-key',text:label});row.createSpan({cls:'rssd-details-value',text:fieldText(properties[key])||'—'});}

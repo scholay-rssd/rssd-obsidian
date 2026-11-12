@@ -26,6 +26,7 @@ test('a card names what needs attention, most urgent first',()=>{
  assert.deepEqual(texts(cardChips({...work,state:'synced',category:''})),['No category']);
  assert.deepEqual(cardChips({...work,state:'synced',author:'',category:''}),[{text:'No author or category',tone:'danger',title:'Add the author and category in the work details'}],'one chip when both are missing');
  assert.deepEqual(texts(cardChips({...work,state:'conflict'})),['Conflict']);
+ assert.deepEqual(texts(cardChips({...work,state:'synced',checks:true,author:''})),['Open checks','No author'],'open checks from the internal notes come before missing fields');
  assert.deepEqual(texts(cardChips({...work,state:'saving'})),['Saving…']);
  assert.equal(cardChips({...work,state:'edited'})[0].tone,'warning');
 });
