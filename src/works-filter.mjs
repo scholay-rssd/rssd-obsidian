@@ -11,7 +11,7 @@ export const LOCALES=Object.freeze(['zh-CN','en']);
 export const NO_WRITER='';
 const DATE=/^\d{4}-\d{2}-\d{2}$/;
 
-export function emptyFilter(locale='zh-CN'){return {status:'all',locale,sections:[],agents:[],models:[],from:'',to:''};}
+export function emptyFilter(locale='zh-CN'){return {status:'all',locale,sections:[],agents:[],models:[],machines:[],from:'',to:''};}
 
 /** A filter read back from storage or built by the panel: anything unknown or malformed falls back to "all". */
 export function normalizeFilter(value){
@@ -20,7 +20,7 @@ export function normalizeFilter(value){
  let from=DATE.test(v.from)?v.from:'',to=DATE.test(v.to)?v.to:'';
  if(from&&to&&from>to)[from,to]=[to,from];
  return {status:STATUSES.includes(v.status)?v.status:base.status,locale:LOCALES.includes(v.locale)?v.locale:base.locale,
-  sections:list(v.sections),agents:list(v.agents),models:list(v.models),from,to};
+  sections:list(v.sections),agents:list(v.agents),models:list(v.models),machines:list(v.machines),from,to};
 }
 
 const localeOf=work=>work.locale==='en'?'en':'zh-CN';
@@ -28,12 +28,13 @@ const dayOf=work=>String(work.date??'').slice(0,10);
 /** A work's agent or model for filtering, or NO_WRITER when there is none or it is not known yet. */
 const agentOf=writer=>typeof writer?.agent==='string'&&writer.agent?writer.agent:NO_WRITER;
 const modelOf=writer=>typeof writer?.model==='string'&&writer.model?writer.model:NO_WRITER;
+const machineOf=writer=>typeof writer?.machine==='string'&&writer.machine?writer.machine:NO_WRITER;
 const statusMatches=(status,work,state)=>status==='all'||
  status==='edited'&&['edited','saving','conflict'].includes(state)||
  status==='check'&&(!String(work.author??'').trim()||!String(work.category??'').trim());
 
 /**
- * Whether one work is listed. `state` is its local sync state, `writer` its {agent, model} (null or undefined
+ * Whether one work is listed. `state` is its local sync state, `writer` its {agent, model, machine} (null or undefined
  * when unknown), `query` the search text. `skip` names a facet to leave out, for counting that facet's options.
  */
 export function matches(work,filter,{state,writer,query=''}={},skip=''){
@@ -44,6 +45,7 @@ export function matches(work,filter,{state,writer,query=''}={},skip=''){
  if(skip!=='sections'&&filter.sections.length&&!filter.sections.includes(work.section||''))return false;
  if(skip!=='agents'&&filter.agents.length&&!filter.agents.includes(agentOf(writer)))return false;
  if(skip!=='models'&&filter.models.length&&!filter.models.includes(modelOf(writer)))return false;
+ if(skip!=='machines'&&filter.machines.length&&!filter.machines.includes(machineOf(writer)))return false;
  if(skip!=='dates'&&(filter.from||filter.to)){
   const day=dayOf(work);
   if(!DATE.test(day)||filter.from&&day<filter.from||filter.to&&day>filter.to)return false;
@@ -53,10 +55,10 @@ export function matches(work,filter,{state,writer,query=''}={},skip=''){
 
 /**
  * How many works each option would list, counted the usual faceted way: every other facet applies, this one does
- * not. `context(work)` returns {state, writer}. Sections, agents and models come back as Maps of value → count.
+ * not. `context(work)` returns {state, writer}. Sections, agents, models and machines come back as Maps of value → count.
  */
 export function facetCounts(works,filter,context,query=''){
- const counts={status:{all:0,edited:0,check:0},locale:{'zh-CN':0,en:0},sections:new Map(),agents:new Map(),models:new Map(),dates:0};
+ const counts={status:{all:0,edited:0,check:0},locale:{'zh-CN':0,en:0},sections:new Map(),agents:new Map(),models:new Map(),machines:new Map(),dates:0};
  const add=(map,key)=>map.set(key,(map.get(key)||0)+1);
  for(const work of works){
   const c={...context(work),query};
@@ -65,13 +67,14 @@ export function facetCounts(works,filter,context,query=''){
   if(matches(work,filter,c,'sections'))add(counts.sections,work.section||'');
   if(matches(work,filter,c,'agents'))add(counts.agents,agentOf(c.writer));
   if(matches(work,filter,c,'models'))add(counts.models,modelOf(c.writer));
+  if(matches(work,filter,c,'machines'))add(counts.machines,machineOf(c.writer));
   if(matches(work,filter,c))counts.dates++;
  }
  return counts;
 }
 
 /** How many facets narrow the list (the language is a choice of list, not a narrowing). */
-export const narrowedBy=filter=>(filter.status!=='all')+(filter.sections.length>0)+(filter.agents.length>0)+(filter.models.length>0)+(!!(filter.from||filter.to));
+export const narrowedBy=filter=>(filter.status!=='all')+(filter.sections.length>0)+(filter.agents.length>0)+(filter.models.length>0)+(filter.machines.length>0)+(!!(filter.from||filter.to));
 
 /** One removable chip per chosen value, in the panel's order. `sectionName(id)` names a section. */
 export function activeChips(filter,{sectionName=id=>id}={}){
@@ -80,6 +83,7 @@ export function activeChips(filter,{sectionName=id=>id}={}){
  for(const id of filter.sections)chips.push({facet:'sections',value:id,text:sectionName(id)||'No section'});
  for(const agent of filter.agents)chips.push({facet:'agents',value:agent,text:agent||'No agent recorded'});
  for(const model of filter.models)chips.push({facet:'models',value:model,text:model||'No model recorded'});
+ for(const machine of filter.machines)chips.push({facet:'machines',value:machine,text:machine||'No machine recorded'});
  if(filter.from||filter.to)chips.push({facet:'dates',value:'',text:dateRangeText(filter.from,filter.to)});
  return chips;
 }
@@ -88,7 +92,7 @@ export function withoutChip(filter,{facet,value}){
  const next=normalizeFilter(filter);
  if(facet==='status')next.status='all';
  else if(facet==='dates'){next.from='';next.to='';}
- else if(['sections','agents','models'].includes(facet))next[facet]=next[facet].filter(item=>item!==value);
+ else if(['sections','agents','models','machines'].includes(facet))next[facet]=next[facet].filter(item=>item!==value);
  return next;
 }
 /** The filter with one value of a multi-choice facet turned on or off. */

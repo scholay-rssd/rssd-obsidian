@@ -9,7 +9,7 @@ const works=[
  work('c',{section:'methods',date:'2026-10-20'}),
  work('d',{section:'frontiers',date:'2026-11-01',locale:'en'}),
 ];
-const writers={a:{agent:'Codex',model:'6.1 Terra'},b:{agent:'Cursor',model:'Auto'},c:null,d:{agent:'Codex',model:'6.1 Terra'}},states={a:'edited',b:'synced',c:'conflict',d:'synced'};
+const writers={a:{agent:'Codex',model:'6.1 Terra',machine:'metho-mac'},b:{agent:'Cursor',model:'Auto',machine:'studio'},c:null,d:{agent:'Codex',model:'6.1 Terra'}},states={a:'edited',b:'synced',c:'conflict',d:'synced'};
 const context=w=>({state:states[w.id],writer:writers[w.id]});
 const ids=filter=>works.filter(w=>matches(w,filter,context(w))).map(w=>w.id);
 
@@ -26,6 +26,8 @@ test('several sections, agents or models may be chosen, and any of them matches'
  assert.deepEqual(ids({...emptyFilter(),models:['6.1 Terra']}),['a']);
  assert.deepEqual(ids({...emptyFilter(),agents:[NO_WRITER]}),['c'],'works with no recorded writer can be listed on their own');
  assert.deepEqual(ids({...emptyFilter(),models:[NO_WRITER]}),['c']);
+ assert.deepEqual(ids({...emptyFilter(),machines:['studio']}),['b']);
+ assert.deepEqual(ids({...emptyFilter(),machines:[NO_WRITER]}),['c'],'a writer without a machine on record counts as not recorded');
 });
 
 test('facets combine: every chosen facet must match',()=>{
@@ -62,7 +64,7 @@ test('each option is counted with every other facet applied but its own',()=>{
 test('stored or hand-built filters are cleaned, and an inverted range is put the right way round',()=>{
  assert.deepEqual(normalizeFilter(null),emptyFilter());
  assert.deepEqual(normalizeFilter({status:'nope',locale:'fr',sections:['a','a',3],writers:'x',from:'2026-11-10',to:'2026-11-01'}),
-  {status:'all',locale:'zh-CN',sections:['a'],agents:[],models:[],from:'2026-11-01',to:'2026-11-10'});
+  {status:'all',locale:'zh-CN',sections:['a'],agents:[],models:[],machines:[],from:'2026-11-01',to:'2026-11-10'});
  assert.deepEqual(normalizeFilter({from:'11/01/2026'}).from,'');
 });
 

@@ -99,7 +99,7 @@ const modelLabel=signature=>{
  return typeof signature.modelId==='string'?modelFromId(signature.modelId):'';
 };
 /** "Agent · Model", or the agent alone when no model was recorded. */
-export const writerLabel=writer=>writer?(writer.model?writer.agent+' · '+writer.model:writer.agent):'';
+export const writerLabel=writer=>writer&&writer.agent?(writer.model?writer.agent+' · '+writer.model:writer.agent):'';
 /**
  * Who wrote a work, from the private writing record the Center keeps with each edition: the newest completed
  * "write" run, or the newest completed run of any kind when none wrote. Returns {agent, model, label} or null.

@@ -120,6 +120,7 @@ const TITLE_STYLE=`
 .rssd-works-fact-icon{display:flex}.rssd-works-fact-icon svg{width:12px;height:12px}
 .rssd-works-fact.is-missing,.rssd-works-writer.is-missing{color:var(--text-faint)}
 .rssd-works-fact.is-absent>span:last-child{text-decoration:line-through}
+.rssd-works-machine{display:inline-flex;align-items:center;gap:3px;margin-left:10px}
 .rssd-works-writer{grid-column:1/-1;min-width:0;overflow:hidden;color:var(--text-muted);font-size:var(--font-ui-smaller);text-overflow:ellipsis}
 .rssd-works-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px;margin-top:2px;padding-top:6px;border-top:1px solid var(--background-modifier-border)}
 .rssd-works button.rssd-works-action{display:inline-flex;align-items:center;gap:4px;height:auto;padding:2px 8px;font-size:var(--font-ui-smaller)}
@@ -825,7 +826,7 @@ class WorksFilterPanel{
   const sectionIds=[...new Set([...names.keys(),...c.sections.keys(),...f.sections])];
   options(group('Section'),'sections',sectionIds.map(id=>({value:id,name:names.get(id)?.name||id||'No section',count:c.sections.get(id)||0})));
   // Agents and models, most works first; works whose writer is not recorded last.
-  for(const [facet,title] of [['agents','Agent'],['models','Model']]){
+  for(const [facet,title] of [['agents','Agent'],['models','Model'],['machines','Machine']]){
    const box=group(title),count=c[facet],values=[...new Set([...count.keys(),...f[facet]])].filter(v=>v!==NO_WRITER).sort((a,b)=>(count.get(b)||0)-(count.get(a)||0)||a.localeCompare(b));
    options(box,facet,[...values.map(v=>({value:v,name:v,count:count.get(v)||0})),{value:NO_WRITER,name:'Not recorded',count:count.get(NO_WRITER)||0}]);
    if(view.fetchingWriters)box.createDiv({cls:'rssd-filter-note',text:'Still reading writers from the Center…'});
@@ -849,14 +850,14 @@ class WorksFilterPanel{
 
 const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not updated from the Center yet'};
 const WORKS_PAGE=60;
-// Where writers ({agent, model}) are kept on this device. A new name makes every writer be read again after a fix.
-const WRITERS_KEY='rssd-writers-3';
+// Where writers ({agent, model, machine}) are kept on this device. A new name makes every writer be read again after a fix.
+const WRITERS_KEY='rssd-writers-4';
 const FILTER_KEY='rssd-works-filter';
 class WorksView extends ItemView{
  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.limit=WORKS_PAGE;this.panel=null;this.states=new Map();
   // What is listed, kept on this device (see works-filter.mjs).
   this.filterState=(()=>{try{return normalizeFilter(this.app.loadLocalStorage?.(FILTER_KEY));}catch{return emptyFilter();}})();
-  this.facts=new Map();this.shown=new Map();this.timer=null;this.filling=false;this.fetchingWriters=false;
+  this.facts=new Map();this.shown=new Map();this.timer=null;this.filling=false;this.fetchingWriters=false;this.machineAsked=new Set();
   // Who wrote each edition, read from the Center once per version and kept on this device.
   this.writers=(()=>{try{const kept=this.app.loadLocalStorage?.(WRITERS_KEY);return kept&&typeof kept==='object'?kept:{};}catch{return {};}})();
   this.layout=this.app.loadLocalStorage?.('rssd-works-layout')==='list'?'list':'cards';}
@@ -941,7 +942,7 @@ class WorksView extends ItemView{
   return {document:work=>documents[work.locale]?.[work.id],has:(locale,document)=>!!document&&!!present[locale]?.has(document)};
  }
  writerKey(work){return this.plugin.settings.workspaceId+':'+work.locale+':'+work.id+':'+work.version;}
- /** The writer as {agent, model}, null when the Center has no record, undefined while not yet read. */
+ /** The writer as {agent, model, machine}, null when the Center has no record, undefined while not yet read. */
  writerFor(work){const key=this.writerKey(work);return Object.hasOwn(this.writers,key)?this.writers[key]:undefined;}
  /** Read who wrote each work from the Center's private writing record, one work at a time, the ones on screen
   * first. Read only; a lost connection stops the pass and the next drawing resumes it. */
@@ -951,10 +952,13 @@ class WorksView extends ItemView{
   if(typeof client.privateNotes!=='function')return;
   this.fetchingWriters=true;let added=0,stopped=false;
   // Four reads at a time: each is a separate request, and one at a time takes minutes for a whole space.
-  const queue=[...new Set(works)].filter(work=>{const version=Number(work.version);return Number.isSafeInteger(version)&&version>=1&&this.writerFor(work)===undefined;});
+  // A writer kept without a machine is asked again once per session: the Center may have learnt to name it since.
+  const queue=[...new Set(works)].filter(work=>{const version=Number(work.version),known=this.writerFor(work);return Number.isSafeInteger(version)&&version>=1&&(known===undefined||known&&!known.machine&&!this.machineAsked.has(this.writerKey(work)));});
   const read=async work=>{
    let writer=null;
-   try{const found=writerOf((await client.privateNotes(this.plugin.settings.workspaceId,work.id,Number(work.version)))?.privateEditorial);writer=found?{agent:found.agent,model:found.model}:null;}
+   this.machineAsked.add(this.writerKey(work));
+   try{const notes=await client.privateNotes(this.plugin.settings.workspaceId,work.id,Number(work.version)),found=writerOf(notes?.privateEditorial),machine=typeof notes?.firstMachine?.name==='string'?notes.firstMachine.name:'';
+    writer=found||machine?{agent:found?.agent||'',model:found?.model||'',machine}:null;}
    catch(error){if(error?.status!==404){stopped=true;return;}}
    this.writers[this.writerKey(work)]=writer;added++;this.refreshItem(work.file.path);
    if(added%25===0)this.saveWriters();
@@ -964,7 +968,7 @@ class WorksView extends ItemView{
    await Promise.all([lane(),lane(),lane(),lane()]);
   }finally{this.fetchingWriters=false;if(added)this.saveWriters();}
   // Writer filters and the panel's counts depend on the writers read in this pass.
-  if(added&&(this.filterState.agents.length||this.filterState.models.length||this.panel))this.render();
+  if(added&&(this.filterState.agents.length||this.filterState.models.length||this.filterState.machines.length||this.panel))this.render();
  }
  saveWriters(){try{this.app.saveLocalStorage?.(WRITERS_KEY,this.writers);}catch{}}
  sectionNames(){
@@ -1048,7 +1052,11 @@ class WorksView extends ItemView{
   const other=work.locale==='en'?'zh-CN':'en',doc=this.pairs?.document(work);
   if(doc){const has=this.pairs.has(other,doc),name=other==='en'?'English':'Chinese';fact('languages',other==='en'?'EN':'中',(has?'Has a ':'No ')+name+' edition',{absent:!has});}
   const writer=this.writerFor(work),label=writerLabel(writer);
-  if(writer!==undefined){const line=card.createDiv({cls:'rssd-works-writer'+(label?'':' is-missing')});setIcon(line.createSpan({cls:'rssd-works-fact-icon'}),'bot');line.createSpan({text:label||'Writer not recorded'});line.setAttribute('aria-label',label?'Written by '+label:'The Center has no record of the agent that wrote this');}
+  if(writer!==undefined){
+   const line=card.createDiv({cls:'rssd-works-writer'+(label?'':' is-missing')});setIcon(line.createSpan({cls:'rssd-works-fact-icon'}),'bot');line.createSpan({text:label||'Writer not recorded'});line.setAttribute('aria-label',label?'Written by '+label:'The Center has no record of the agent that wrote this');
+   // The machine that saved the first version, by its device name.
+   if(writer?.machine){const machine=line.createSpan({cls:'rssd-works-machine'});setIcon(machine.createSpan({cls:'rssd-works-fact-icon'}),'laptop');machine.createSpan({text:writer.machine});machine.setAttribute('aria-label','First written on '+writer.machine);}
+  }
   card.addEventListener('click',()=>void this.openWork(work.file));
   return card;
  }
