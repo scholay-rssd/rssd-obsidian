@@ -640,6 +640,9 @@ export default class RssdPlugin extends Plugin{
    });
   }catch(error){new Notice(error?.code==='operation_busy'?error.message:saveFailureMessage(error),10000);return null;}
   new Notice(saveManySummary(outcome),outcome.failed.length?15000:6000);
+  // A receipt beside the plugin, so a refused save can be diagnosed without the developer console.
+  await this.writeRun({action:'save',workspaceId:this.settings.workspaceId,state:outcome.failed.length?'partial':'completed',ok:!outcome.failed.length,
+   saved:outcome.saved.length,unchanged:outcome.unchanged.length,failed:outcome.failed.map(({file,error})=>({path:file.path,...diagnosticError(error)}))});
   return outcome;
  }
 
