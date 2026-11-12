@@ -9,6 +9,7 @@ import {outputManifest,outputFields,checkSource} from '../../contracts/output-pa
 import {workFingerprint,localMediaPaths,bytesToBase64} from './sync-model.mjs';
 import {MEDIA_HOST,mediaType} from './reader.mjs';
 import {wechatSource} from './wechat.mjs';
+import {extractMath,formulaIndex,formulaPictures} from './math.mjs';
 
 // The engine lays out at 720×960; drawing at 1.5× gives the usual 1080×1440 card.
 export const CARD_SCALE=1.5,CARD_SIZE=Object.freeze({width:1080,height:1440});
@@ -45,13 +46,18 @@ const dataUrl=(name,bytes)=>{const data=bytesToBase64(bytes);return 'data:'+medi
  * is left out and named in `missing`; the engine itself refuses to produce a set with lost text or pictures.
  */
 export async function buildCards({doc,content,parseYaml,render,readMedia,frame,template=null,site=null,url,style='site',engineVersion='0',version=null,publishedVersion=null,
- signal,onProgress=()=>{},now=()=>new Date(),clean=cleanRendered,engine={paginate,rasterPage}}){
+ signal,onProgress=()=>{},now=()=>new Date(),clean=cleanRendered,engine={paginate,rasterPage},math={extractMath,formulaPictures}}){
  const source=wechatSource(content,parseYaml),host=doc.createElement('div'),missing=[],images=new Map();
  // `template` is the section's page template, or a function that picks one from the parsed work.
  const look=typeof template==='function'?template(source):template;
- await render(source.markdown,host);signal?.throwIfAborted();clean(host);
+ // Formulas are drawn as vector pictures at the card's text size (see math.mjs).
+ const formulas=math.extractMath(source.markdown);
+ await render(formulas.markdown,host);signal?.throwIfAborted();clean(host);
+ const pictures=await math.formulaPictures(doc,formulas.formulas,{fontSize:Number(look?.fontSize)||DEFAULT_CARD_TEMPLATE.fontSize,color:look?.ink||DEFAULT_CARD_TEMPLATE.ink});
  for(const img of [...host.querySelectorAll('img')]){
-  const src=img.getAttribute('src')||'';let value=images.get(src)||null;
+  const src=img.getAttribute('src')||'',index=formulaIndex(src);
+  if(index>=0){const picture=pictures[index];if(!picture){img.remove();continue;}images.set(src,picture.svg);img.setAttribute('alt',picture.tex);img.className=picture.display?'rssd-math-block':'rssd-math';continue;}
+  let value=images.get(src)||null;
   if(!value&&src.startsWith(MEDIA_HOST)){
    let name='';try{name=decodeURIComponent(src.slice(MEDIA_HOST.length));}catch{}
    // Only images this work references are read, never an arbitrary vault path.
@@ -75,6 +81,6 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
  const captionBytes=new TextEncoder().encode(caption);files.push({path:'caption.txt',role:'text',type:'text/plain',bytes:captionBytes.length,sha256:await sha256(captionBytes)});
  const manifest=outputManifest({format:'cards',source:record,site:{id:site?.id||'unknown',name:site?.name||''},style,createdAt:now().toISOString(),engine:{name:'rssd-obsidian',version:engineVersion},
   sourceHash:await workFingerprint(work.data,localMediaPaths(work.media)),fields,files,
-  warnings:[...checkSource(record).warnings,...warnings,...missing.map(name=>({code:'image_missing',message:'Picture could not be read and was left out: '+name}))]});
+  warnings:[...checkSource(record).warnings,...warnings,...(formulas.error?[{code:'formula_unreadable',message:'A formula delimiter is not closed, so formulas were left as text: '+formulas.error}]:[]),...missing.map(name=>({code:'image_missing',message:'Picture could not be read and was left out: '+name}))]});
  return {title:source.title,pages,caption,missing,manifest,sectionId:source.sectionId,styled:!!look,size:CARD_SIZE};
 }

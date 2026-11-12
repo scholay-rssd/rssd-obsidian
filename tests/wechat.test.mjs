@@ -9,7 +9,8 @@ import {wechatTemplates,wechatSites} from '../build-templates.mjs';
 import {WECHAT_DESIGNS,colours} from '../src/wechat-designs.mjs';
 import {buildCards,cardModel,DEFAULT_CARD_TEMPLATE,CARD_SIZE} from '../src/cards.mjs';
 import {cardTemplate} from '../src/wechat-template.mjs';
-import {cardTemplates} from '../build-templates.mjs';
+import {cardTemplates,katexAssets} from '../build-templates.mjs';
+import {extractMath,formulaIndex,formulaStyle,MATH_HOST} from '../src/math.mjs';
 
 const note=(body,title='A title')=>'---\ntitle: '+title+'\nrssd-id: one\nrssd-section: frontiers\n---\n'+body;
 // Just enough of an element for the orchestration; the styling engine itself needs a real browser.
@@ -36,7 +37,7 @@ test('vault images are inlined, unknown ones are left out, and nothing else is r
  assert.deepEqual(read,['a.png','gone.png']);
  assert.match(images[0].attrs.src,/^data:image\/png;base64,iVBOR/);
  assert.equal(images[1].removed,true);assert.equal(images[2].removed,true);assert.equal(images[3].attrs.src,'https://example.org/x.jpg');
- assert.deepEqual(result,{html:'<section>styled</section>',plain:'Body text\n\nMore',title:'A title',images:2,missing:['gone.png','../secret.png'],sectionId:'frontiers',styled:false,manifest:null});
+ assert.deepEqual(result,{html:'<section>styled</section>',plain:'Body text\n\nMore',title:'A title',images:2,formulas:0,missing:['gone.png','../secret.png'],sectionId:'frontiers',styled:false,manifest:null});
 });
 test('rich and plain text go to the clipboard together, or the copy is refused',async()=>{
  const written=[];class Item{constructor(parts){this.parts=parts;}}
@@ -147,4 +148,36 @@ test('cards are built from the note, lose no readable picture, and come with a v
  const frame2={removed:false,remove(){this.removed=true;}};
  await assert.rejects(buildCards({doc,content:note('Text\n'),parseYaml:yaml.parse,render:async()=>{},clean:()=>{},readMedia:async()=>null,frame:()=>frame2,url:'https://x.example',engine:{paginate:async()=>{throw Error('lost text');},rasterPage:async()=>null}}),/lost text/);
  assert.equal(frame2.removed,true);
+});
+test('every formula form the website writes becomes a picture placeholder, and code and prices are left alone',()=>{
+ const body='Inline $a^2$ and \\(b_i\\).\n\n\\[\nD_i=\\frac{r_i^2}{p s^2}\n\\]\n\n$$x+y$$\n\nCosts $5 and $6.\n\n`$not math$` and\n\n```\n\\[ also not \\]\n```\n';
+ const {markdown,formulas,error}=extractMath(body);
+ assert.equal(error,null);
+ assert.deepEqual(formulas,[{tex:'a^2',display:false},{tex:'b_i',display:false},{tex:'D_i=\\frac{r_i^2}{p s^2}',display:true},{tex:'x+y',display:true}]);
+ for(let i=0;i<4;i++)assert.ok(markdown.includes('![]('+MATH_HOST+i+')'),i);
+ assert.ok(markdown.includes('Costs $5 and $6.'));assert.ok(markdown.includes('`$not math$`'));assert.ok(markdown.includes('\\[ also not \\]'));
+ assert.equal(formulaIndex(MATH_HOST+'3'),3);assert.equal(formulaIndex(MATH_HOST+'x'),-1);assert.equal(formulaIndex('https://example.org/3'),-1);
+ // An unclosed delimiter leaves the body as it is and says why.
+ const broken=extractMath('Start \\[ x+1');assert.equal(broken.markdown,'Start \\[ x+1');assert.deepEqual(broken.formulas,[]);assert.match(broken.error,/./);
+ assert.match(formulaStyle({display:false,width:40,height:20,depth:5}),/display:inline-block;width:40px;max-width:100%;.*vertical-align:-5px/);
+ assert.match(formulaStyle({display:true,width:300,height:60,depth:0}),/display:block;width:300px;max-width:100%;height:auto;margin:12px auto/);
+});
+test('KaTeX fonts are built in as separate faces, one per family and style',()=>{
+ const {css,faces}=katexAssets();
+ assert.ok(faces.length>=19);assert.doesNotMatch(css,/@font-face|url\(fonts\//);assert.match(css,/\.katex\{/);
+ for(const face of faces){assert.match(face.css,/^@font-face\{.*src:url\(data:font\/woff2;base64,[A-Za-z0-9+/=]+\) format\("woff2"\)/);assert.match(face.family,/^KaTeX_/);}
+ assert.ok(faces.some(f=>f.family==='KaTeX_Math')&&faces.some(f=>f.family==='KaTeX_Main'));
+});
+test('an article turns formulas into sized pictures and keeps their LaTeX in plain text',async()=>{
+ const placeholders=[image(MATH_HOST+'0'),image(MATH_HOST+'1')];let rendered;
+ // Only the article holds the placeholders; the later scratch elements are empty.
+ let made=0;const doc={createElement:()=>{const first=made++===0;return {innerHTML:'',textContent:'Body',querySelectorAll:selector=>first&&selector==='img'?placeholders.filter(i=>!i.removed):[]};}};
+ const result=await wechatHtml({doc,content:note('Body $a^2$\n\n\\[ D \\]\n'),parseYaml:yaml.parse,readMedia:async()=>null,
+  render:async markdown=>{rendered=markdown;},
+  math:{extractMath,formulaPictures:async(_doc,formulas,{fontSize})=>{assert.equal(fontSize,16);return formulas.map((f,i)=>({...f,svg:'svg'+i,width:30+i,height:20,depth:4}));},formulaPng:async(_doc,picture)=>'data:image/png;base64,F'+picture.width},
+  engine:{embedClipboardImages:async()=>{},wechatClipboardHtml:()=>'<section>styled</section>'}});
+ assert.ok(rendered.includes('![]('+MATH_HOST+'0)')&&rendered.includes('![]('+MATH_HOST+'1)'));
+ assert.equal(placeholders[0].attrs.src,'data:image/png;base64,F30');assert.equal(placeholders[0].attrs.alt,'a^2');
+ assert.equal(placeholders[1].attrs.src,'data:image/png;base64,F31');assert.equal(placeholders[1].attrs.alt,'D');
+ assert.equal(result.formulas,2);assert.equal(result.images,0);
 });

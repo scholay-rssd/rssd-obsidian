@@ -1,6 +1,6 @@
 // RSSD for Obsidian, stage 1: open a space from the RSSD Center as a vault of drafts, see each work's sync
 // state, and save edits back as private drafts. Publishing is never done here.
-import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu} from 'obsidian';
+import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu,setIcon} from 'obsidian';
 import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
 import {deviceLogin} from './device-login.mjs';
@@ -29,16 +29,29 @@ const LOCALES=['zh-CN','en'];
 const TITLE_STYLE=`
 .rssd-work-note .inline-title,.rssd-work-note .view-header-title-parent,.rssd-work-note .view-header-title{display:none}
 .rssd-work-header{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:var(--font-semibold);padding:0 var(--size-2-2)}
-.rssd-preview-tabs{display:flex;gap:var(--size-2-1);padding:var(--size-4-1) var(--size-4-3) 0;border-bottom:1px solid var(--background-modifier-border)}
-.rssd-preview-tabs.rssd-preview-styles{padding:0;border-bottom:0}
-.rssd-preview-tab,.rssd-preview-tab:hover{padding:var(--size-2-2) var(--size-4-2);height:auto;border:0;border-bottom:2px solid transparent;border-radius:0;background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-small);cursor:pointer}
-.rssd-preview-tab.is-active{color:var(--text-normal);border-bottom-color:var(--interactive-accent);font-weight:var(--font-semibold)}
-.rssd-preview-styles .rssd-preview-tab{font-size:var(--font-ui-smaller)}
-/* The bar wraps in a narrow sidebar: style tabs and buttons share the first line, the status takes a line of its own. */
-.rssd-preview-bar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--size-2-2) var(--size-4-2);padding:var(--size-4-2) var(--size-4-3);border-bottom:1px solid var(--background-modifier-border)}
-.rssd-preview-bar>button{flex:0 0 auto;white-space:nowrap}.rssd-preview-bar>button:first-of-type{margin-left:auto}
-.rssd-preview-bar .rssd-preview-info{order:9;flex:1 0 100%;min-width:0;color:var(--text-muted);font-size:var(--font-ui-smaller);line-height:var(--line-height-tight)}
+/* One row: view icons | that view's styles … refresh and the view's action as icons. The status sits under it. */
+.rssd-preview-bar{display:flex;align-items:center;gap:var(--size-4-2);padding:var(--size-4-1) var(--size-4-2);border-bottom:1px solid var(--background-modifier-border)}
+.rssd-preview-views,.rssd-preview-actions{display:flex;align-items:center;gap:var(--size-2-1);flex:0 0 auto}
+.rssd-preview-styles{display:flex;align-items:center;gap:var(--size-2-1);flex:1 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
+.rssd-preview-divider{flex:0 0 1px;align-self:stretch;margin:var(--size-2-2) 0;background:var(--background-modifier-border)}
+.rssd-preview-bar button.rssd-preview-icon{display:flex;align-items:center;justify-content:center;height:auto;padding:var(--size-2-3);border:0;border-radius:var(--radius-s);background:none;box-shadow:none;color:var(--icon-color);cursor:pointer}
+.rssd-preview-bar button.rssd-preview-icon:hover{background:var(--background-modifier-hover);color:var(--icon-color-hover)}
+.rssd-preview-bar button.rssd-preview-icon.is-active{background:var(--background-modifier-active-hover);color:var(--interactive-accent)}
+.rssd-preview-bar button.rssd-preview-icon.mod-cta{background:var(--interactive-accent);color:var(--text-on-accent)}
+.rssd-preview-bar button.rssd-preview-icon.mod-cta:hover{background:var(--interactive-accent-hover)}
+.rssd-preview-bar button.rssd-preview-tab,.rssd-preview-bar button.rssd-preview-tab:hover{flex:0 0 auto;white-space:nowrap;padding:var(--size-2-2) var(--size-4-2);height:auto;border:0;border-bottom:2px solid transparent;border-radius:0;background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
+.rssd-preview-bar button.rssd-preview-tab:hover{color:var(--text-normal)}.rssd-preview-bar button.rssd-preview-tab.is-active{color:var(--text-normal);border-bottom-color:var(--interactive-accent);font-weight:var(--font-semibold)}
+.rssd-preview-info{padding:var(--size-2-2) var(--size-4-3);border-bottom:1px solid var(--background-modifier-border);color:var(--text-muted);font-size:var(--font-ui-smaller);line-height:var(--line-height-tight)}
 .rssd-preview-host{display:block}
+/* While a preview is built the last result stays visible, dimmed, under a spinner that follows the scroll. */
+.rssd-preview-stage{position:relative;min-height:180px}
+.rssd-preview-loading{position:absolute;inset:0;z-index:2;display:none;background:color-mix(in srgb,var(--background-primary) 78%,transparent)}
+.rssd-preview-stage.is-loading>.rssd-preview-loading{display:block}
+.rssd-preview-loading-box{position:sticky;top:56px;display:flex;align-items:center;gap:var(--size-4-2);width:max-content;max-width:calc(100% - 32px);margin:24px auto 0;padding:var(--size-4-2) var(--size-4-4);background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:var(--radius-m);box-shadow:var(--shadow-s)}
+.rssd-preview-spinner{flex:0 0 auto;width:18px;height:18px;border:2px solid var(--background-modifier-border);border-top-color:var(--interactive-accent);border-radius:50%;animation:rssd-spin .8s linear infinite}
+.rssd-preview-loading-text{color:var(--text-muted);font-size:var(--font-ui-small)}
+@keyframes rssd-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.rssd-preview-spinner{animation-duration:2.4s}}
 .rssd-work-header .rssd-date,.nav-file-title-content .rssd-date{color:var(--text-faint);font-size:var(--font-ui-smaller);margin-right:.5em;font-variant-numeric:tabular-nums}
 `;
 const http=request=>requestUrl(request);
@@ -581,10 +594,10 @@ class WorksView extends ItemView{
 // them are that view's styles. Views are named for what they produce, not for a platform: one view can serve
 // several destinations. Each says how to build its result and what its button does with it.
 const PREVIEW_TARGETS=[
- {id:'article',label:'Article',name:'Article view',copyLabel:'Copy article',
+ {id:'article',label:'Article',name:'Article view',icon:'file-text',copyLabel:'Copy article',actionIcon:'copy',
   styles:[{id:'site',label:'Site style'},{id:'plain',label:'Plain'}],
   build:(plugin,file,content,style)=>plugin.wechatResult(file,content,{style}),copy:(plugin,file,style)=>plugin.copyForWechat(file,{style})},
- {id:'cards',label:'Cards',name:'Card view',copyLabel:'Save cards',
+ {id:'cards',label:'Cards',name:'Card view',icon:'gallery-vertical-end',copyLabel:'Save cards',actionIcon:'download',
   styles:[{id:'site',label:'Site style'}],
   build:(plugin,file,content,style,options)=>plugin.cardsResult(file,content,{style,...options}),copy:(plugin,file,style,result)=>plugin.saveCards(file,result)},
 ];
@@ -593,28 +606,40 @@ const PREVIEW_TARGETS=[
 const PREVIEW_FRAME=':host{display:block;color-scheme:light}.page{background:#fff;color:#222;padding:20px 16px 32px;overflow-wrap:anywhere;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.title{margin:0 0 18px;font-size:22px;line-height:1.4;font-weight:700}.body img{max-width:100%}.cards{padding:12px;background:#e6e6e6}.cards img{display:block;width:100%;max-width:1080px;height:auto;margin:0 auto 12px;box-shadow:0 1px 6px rgba(0,0,0,.18)}.cards img:last-child{margin-bottom:0}';
 class LayoutPreview extends ItemView{
  constructor(leaf,plugin,type='rssd-preview'){super(leaf);this.plugin=plugin;this.type=type;this.target=PREVIEW_TARGETS[0];this.style=this.target.styles[0].id;this.file=null;this.content=null;this.result=null;this.urls=[];this.seq=0;}
- /** A row of tabs; choosing one re-renders the preview. */
- tabs(parent,items,current,choose){
-  parent.empty();
-  for(const item of items){const tab=parent.createEl('button',{text:item.label,cls:'rssd-preview-tab'+(item.id===current?' is-active':'')});tab.setAttribute('aria-pressed',String(item.id===current));tab.addEventListener('click',()=>{if(item.id!==current)choose(item);});}
- }
+ /** An icon button; its label is read out and shown as a tooltip. */
+ iconButton(parent,icon,label,cls=''){const button=parent.createEl('button',{cls:'rssd-preview-icon'+(cls?' '+cls:'')});setIcon(button,icon);button.setAttribute('aria-label',label);return button;}
+ /** Draw the view icons, the chosen view's style tabs and its action icon; choosing one re-renders the preview. */
  drawTabs(){
-  this.tabs(this.targetTabs,PREVIEW_TARGETS,this.target.id,target=>{this.target=target;this.style=target.styles[0].id;this.copyButton.setText(target.copyLabel);this.drawTabs();void this.show(this.file,{force:true});});
-  this.tabs(this.styleTabs,this.target.styles,this.style,style=>{this.style=style.id;this.drawTabs();void this.show(this.file,{force:true});});
+  this.viewTabs.empty();
+  for(const target of PREVIEW_TARGETS){
+   const active=target.id===this.target.id,button=this.iconButton(this.viewTabs,target.icon,target.name,active?'is-active':'');button.setAttribute('aria-pressed',String(active));
+   button.addEventListener('click',()=>{if(target.id===this.target.id)return;this.target=target;this.style=target.styles[0].id;this.drawTabs();void this.show(this.file,{force:true});});
+  }
+  this.styleTabs.empty();
+  for(const style of this.target.styles){
+   const active=style.id===this.style,tab=this.styleTabs.createEl('button',{text:style.label,cls:'rssd-preview-tab'+(active?' is-active':'')});tab.setAttribute('aria-pressed',String(active));
+   tab.addEventListener('click',()=>{if(style.id===this.style)return;this.style=style.id;this.drawTabs();void this.show(this.file,{force:true});});
+  }
+  setIcon(this.actionButton,this.target.actionIcon);this.actionButton.setAttribute('aria-label',this.target.copyLabel);
  }
  getViewType(){return this.type;}
  getDisplayText(){return 'Layout preview';}
  getIcon(){return 'eye';}
  async onOpen(){
   const el=this.contentEl;el.empty();el.style.padding='0';
-  this.targetTabs=el.createDiv({cls:'rssd-preview-tabs'});
-  const bar=el.createDiv({cls:'rssd-preview-bar'});this.styleTabs=bar.createDiv({cls:'rssd-preview-tabs rssd-preview-styles'});
-  this.info=bar.createDiv({cls:'rssd-preview-info'});
-  bar.createEl('button',{text:'Refresh'}).addEventListener('click',()=>this.show(this.file,{force:true}));
-  this.copyButton=bar.createEl('button',{text:this.target.copyLabel,cls:'mod-cta'});
-  this.copyButton.addEventListener('click',()=>{if(this.file)void this.target.copy(this.plugin,this.file,this.style,this.result);});
+  const bar=el.createDiv({cls:'rssd-preview-bar'});
+  this.viewTabs=bar.createDiv({cls:'rssd-preview-views'});bar.createDiv({cls:'rssd-preview-divider'});
+  this.styleTabs=bar.createDiv({cls:'rssd-preview-styles'});
+  const actions=bar.createDiv({cls:'rssd-preview-actions'});
+  this.iconButton(actions,'refresh-cw','Refresh').addEventListener('click',()=>this.show(this.file,{force:true}));
+  this.actionButton=this.iconButton(actions,this.target.actionIcon,this.target.copyLabel,'mod-cta');
+  this.actionButton.addEventListener('click',()=>{if(this.file)void this.target.copy(this.plugin,this.file,this.style,this.result);});
+  this.info=el.createDiv({cls:'rssd-preview-info'});
   this.drawTabs();
-  this.root=el.createDiv({cls:'rssd-preview-host'}).attachShadow({mode:'open'});
+  this.stage=el.createDiv({cls:'rssd-preview-stage'});
+  this.root=this.stage.createDiv({cls:'rssd-preview-host'}).attachShadow({mode:'open'});
+  const overlay=this.stage.createDiv({cls:'rssd-preview-loading'}),box=overlay.createDiv({cls:'rssd-preview-loading-box'});
+  overlay.setAttribute('role','status');box.createDiv({cls:'rssd-preview-spinner'});this.loadingText=box.createDiv({cls:'rssd-preview-loading-text'});
   // Links in the preview are for looking at, not for leaving the vault.
   this.root.addEventListener('click',event=>{if(event.target?.closest?.('a'))event.preventDefault();});
   this.registerEvent(this.app.workspace.on('file-open',file=>{if(file&&this.plugin.isWork(file))void this.show(file);}));
@@ -622,9 +647,21 @@ class LayoutPreview extends ItemView{
   this.registerEvent(this.app.vault.on('modify',file=>{if(file===this.file){window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.show(this.file),this.target.id==='cards'?2500:800);}}));
   const active=this.app.workspace.getActiveFile();void this.show(active&&this.plugin.isWork(active)?active:null);
  }
- async onClose(){window.clearTimeout(this.timer);this.seq++;this.abort?.abort();this.release();}
+ async onClose(){window.clearTimeout(this.timer);window.clearTimeout(this.loadingTimer);this.seq++;this.abort?.abort();this.release();}
+ /**
+  * Show or hide the loading cover. It appears only when building takes longer than a moment, so a quick
+  * refresh does not flicker; the action button waits until the result it would copy or save is ready.
+  */
+ loading(on,text=''){
+  if(text)this.loadingText.setText(text);
+  this.actionButton.disabled=on;
+  // The status describes a finished result; it waits for the new one.
+  if(on)this.info.setText('');
+  if(on){if(!this.stage.hasClass('is-loading')&&!this.loadingTimer)this.loadingTimer=window.setTimeout(()=>{this.loadingTimer=null;this.stage.addClass('is-loading');},150);return;}
+  window.clearTimeout(this.loadingTimer);this.loadingTimer=null;this.stage.removeClass('is-loading');
+ }
  release(){for(const url of this.urls)URL.revokeObjectURL(url);this.urls=[];}
- message(text){this.release();this.root.replaceChildren();this.info.setText(text);}
+ message(text){this.loading(false);this.release();this.root.replaceChildren();this.info.setText(text);}
  async show(file,{force=false}={}){
   const seq=++this.seq;
   if(!file){this.abort?.abort();this.file=null;this.content=null;this.result=null;this.message('Open a work to preview it.');return;}
@@ -633,10 +670,11 @@ class LayoutPreview extends ItemView{
    if(seq!==this.seq||(!force&&file===this.file&&content===this.content))return;
    // A newer request replaces one still being laid out.
    this.abort?.abort();const abort=this.abort=new AbortController();
+   this.loading(true,this.target.id==='cards'?'Preparing cards…':'Preparing the article…');
    const result=await this.target.build(this.plugin,file,content,this.style,{signal:abort.signal,
-    onProgress:step=>{if(seq===this.seq)this.info.setText(step.stage==='layout'?'Laying out card '+step.count+'…':'Drawing card '+step.count+' of '+step.total+'…');}});
+    onProgress:step=>{if(seq===this.seq)this.loading(true,step.stage==='layout'?'Laying out card '+step.count+'…':'Drawing card '+step.count+' of '+step.total+'…');}});
    if(seq!==this.seq)return;
-   this.file=file;this.content=content;this.result=result;
+   this.file=file;this.content=content;this.result=result;this.loading(false);
    const scroll=this.contentEl.scrollTop,style=document.createElement('style');style.textContent=PREVIEW_FRAME;this.release();
    if(result.pages){
     // Each card is shown as the picture that will be saved.
