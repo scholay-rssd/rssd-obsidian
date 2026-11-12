@@ -24,11 +24,13 @@ test('a card names what needs attention, most urgent first',()=>{
  assert.deepEqual(texts(cardChips({...work,state:'edited',version:3,publishedVersion:2})),['Edited'],'when it was edited is not the card\'s business');
  assert.deepEqual(texts(cardChips({...work,state:'edited',author:' '})),['Edited','No author']);
  assert.deepEqual(texts(cardChips({...work,state:'synced',category:''})),['No category']);
- assert.deepEqual(cardChips({...work,state:'synced',author:'',category:''}),[{text:'No author or category',tone:'danger',title:'Add the author and category in the work details'}],'one chip when both are missing');
+ assert.deepEqual(cardChips({...work,state:'synced',author:'',category:''}),[{text:'No author or category',icon:'user-x',tone:'danger',title:'Add the author and category in the work details'}],'one chip when both are missing');
  assert.deepEqual(texts(cardChips({...work,state:'conflict'})),['Conflict']);
  assert.deepEqual(texts(cardChips({...work,state:'synced',checks:true,author:''})),['Open checks','No author'],'open checks from the internal notes come before missing fields');
  assert.deepEqual(texts(cardChips({...work,state:'saving'})),['Saving…']);
  assert.equal(cardChips({...work,state:'edited'})[0].tone,'warning');
+ assert.deepEqual(cardChips({...work,state:'synced',checks:'核对第 2 节',author:''}).map(c=>c.icon),['list-checks','user-x'],'each has an icon for the card');
+ assert.equal(cardChips({...work,state:'synced',checks:'核对第 2 节'})[0].title,'核对与待办：核对第 2 节','hovering shows the open checks themselves');
 });
 
 test('a note not yet updated from the Center says so',()=>{

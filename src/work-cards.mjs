@@ -10,21 +10,23 @@ export function agoText(at,now=Date.now()){
 }
 
 /**
- * Chips for one work, most urgent first. Each is {text, tone, title}; tone is warning, danger, site or plain.
+ * What needs attention on one work, most urgent first. Each is {text, icon, tone, title}; tone is warning, danger,
+ * site or plain. Cards show it as a coloured icon at the start of the facts row, with `title` on hover.
  * `state` is the local sync state (synced, edited, saving, conflict, unlinked) or undefined while unknown. When a
  * work was edited is left out: the card describes the work, and the Save button says what is waiting. What the
  * website shows is left out too; a work with nothing to attend to has no chip.
  */
 export function cardChips({state,author,category,checks}){
  const chips=[];
- if(state==='edited')chips.push({text:'Edited',tone:'warning',title:'Changed since the last sync; not saved to the Center yet'});
- else if(state==='saving')chips.push({text:'Saving…',tone:'site',title:'Saving to the Center'});
- else if(state==='conflict')chips.push({text:'Conflict',tone:'danger',title:'Conflict: needs attention'});
- else if(state==='unlinked')chips.push({text:'Not linked',tone:'plain',title:'Not updated from the Center yet'});
- if(checks)chips.push({text:'Open checks',tone:'warning',title:'核对与待办 in the internal notes still has items; see Details'});
+ if(state==='edited')chips.push({text:'Edited',icon:'pencil',tone:'warning',title:'Edited: changed since the last sync; not saved to the Center yet'});
+ else if(state==='saving')chips.push({text:'Saving…',icon:'loader-2',tone:'site',title:'Saving to the Center'});
+ else if(state==='conflict')chips.push({text:'Conflict',icon:'triangle-alert',tone:'danger',title:'Conflict: needs attention'});
+ else if(state==='unlinked')chips.push({text:'Not linked',icon:'unlink',tone:'plain',title:'Not updated from the Center yet'});
+ // `checks` is the text of 核对与待办, shown in full when the icon is hovered.
+ if(checks)chips.push({text:'Open checks',icon:'list-checks',tone:'warning',title:'核对与待办'+(typeof checks==='string'?'：'+checks:' still has items; see Details')});
  // Many works miss both; one chip says so without filling the card with red.
  const missing=[!String(author??'').trim()&&'author',!String(category??'').trim()&&'category'].filter(Boolean);
- if(missing.length)chips.push({text:'No '+missing.join(' or '),tone:'danger',title:'Add the '+missing.join(' and ')+' in the work details'});
+ if(missing.length)chips.push({text:'No '+missing.join(' or '),icon:'user-x',tone:'danger',title:'Add the '+missing.join(' and ')+' in the work details'});
  return chips;
 }
 
