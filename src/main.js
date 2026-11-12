@@ -346,6 +346,7 @@ export default class RssdPlugin extends Plugin{
   const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],metadataPending:[],unchanged:0,removedFromCenter:[],transportByLocale:{}},engine=this.engine();
   const info=spaceInfo(await this.client().registry(),space);
   if(!info.found)throw Object.assign(Error(readOnlyReason(info,space)),{code:'forbidden'});
+  let finished=false;
   try{
   for(const locale of LOCALES){
    if(info.writable){
@@ -363,10 +364,11 @@ export default class RssdPlugin extends Plugin{
     for(const key of ['updated','conflicts','pending'])for(const id of overlay[key]||[]){const name=locale==='zh-CN'?id:locale+'/'+id;if(!summary[key].includes(name))summary[key].push(name);}
    }
   }
-  this.settings.lastPullAt=Date.now();
+  this.settings.lastPullAt=Date.now();finished=true;
   return summary;
   // Fold this pull's journal into the settings file. If that fails the journal still holds every change.
-  }finally{if(this.log().pending)await this.saveSettings().catch(()=>{});}
+  // A pull that changed nothing is written too, so the Works list still knows when the space was last pulled.
+  }finally{if(this.log().pending||finished)await this.saveSettings().catch(()=>{});}
  }
  async statesAll(space){
   const states={},engine=this.engine();
