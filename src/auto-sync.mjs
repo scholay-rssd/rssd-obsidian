@@ -1,11 +1,12 @@
 // A bounded in-memory scheduler. The catalog scan rediscovers local edits after
 // restart; it never treats deletion or a rename as a remote delete.
-const SPACES=['academic','design','enter','legis','lingxi','metho','personal','pets','study','xsiching'];
+import {renamedSiteId} from '../../contracts/site-renames.mjs';
+const SPACES=['academic','design','enter','legis','xsime','metho','personal','pets','study','xsiching'];
 // Distribute the ten known vaults across twenty minutes after opening Obsidian.
 // Edits still enter the regular debounce queue immediately. This is a fallback
 // for hosts where Web Locks are unavailable or do not span vault windows.
 export function startupDelay(space,random=Math.random){
- const index=SPACES.indexOf(space),slot=index<0?Math.floor(random()*SPACES.length):index;
+ const index=SPACES.indexOf(renamedSiteId(space)),slot=index<0?Math.floor(random()*SPACES.length):index;
  return 15000+slot*120000+Math.floor(random()*30000);
 }
 // Web Locks can coordinate same-origin windows where the host supports them;

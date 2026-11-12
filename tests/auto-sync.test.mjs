@@ -57,8 +57,9 @@ test('same-origin Web Locks refuse concurrent automatic cycles without silently 
  const active=a.tick({scan:true});assert.equal(await b.tick({scan:true}),false);release({});assert.equal(await active,true);assert.equal(await b.tick({scan:true}),true);
 });
 test('known vault startup scans are separated by two minutes',()=>{
- const spaces=['academic','design','enter','legis','lingxi','metho','personal','pets','study','xsiching'];
+ const spaces=['academic','design','enter','legis','xsime','metho','personal','pets','study','xsiching'];
  const values=spaces.map(space=>startupDelay(space,()=>0));assert.equal(new Set(values).size,spaces.length);
+ assert.equal(startupDelay('lingxi',()=>0),startupDelay('xsime',()=>0),'the retired ID keeps its slot');
  for(let i=1;i<values.length;i++)assert.equal(values[i]-values[i-1],120000);
 });
 test('gate readiness, stop and changed generation prevent overlapping operations',async()=>{
