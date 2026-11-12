@@ -1,6 +1,7 @@
 // RSSD for Obsidian, stage 1: open a space from the RSSD Center as a vault of drafts, see each work's sync
 // state, and save edits back as private drafts. Publishing is never done here.
 import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu,setIcon} from 'obsidian';
+import {OUTPUT_ATTRIBUTE,inOutput,stripReadingMarks} from './reading-marks.mjs';
 import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
 import {deviceLogin} from './device-login.mjs';
@@ -411,6 +412,7 @@ export default class RssdPlugin extends Plugin{
  }
  /** Marks a work note's reading view as a proofreading view. Runs on each rendered block; never edits the note. */
  decorateReading(el,ctx){
+  if(inOutput(el))return;
   const file=ctx?.sourcePath?this.app.vault.getAbstractFileByPath(ctx.sourcePath):null;
   if(!(file instanceof TFile)||!this.isWork(file))return;
   const front=this.app.metadataCache.getFileCache(file)?.frontmatter||{},origin=wechatSite(this.settings.workspaceId)?.origin||'';
@@ -777,9 +779,18 @@ export default class RssdPlugin extends Plugin{
    return await wechatHtml({doc:document,content,parseYaml,template:source=>wechatTemplate(space,source.sectionId),
     decorate:(html,{look,source})=>decorateWechat(document,html,{site,look,category:source.category,theme,locale:source.work.data.locale}),
     pack:{site:wechatSite(space)||{id:space||'unknown',name:''},style:own?'site:'+theme:style,engineVersion:this.manifest?.version||'0',...this.noteVersions(file)},
-    render:(markdown,el)=>MarkdownRenderer.render(this.app,markdown,el,file.path,component),
+    render:(markdown,el)=>this.renderOutput(markdown,el,file,component),
     readMedia:async name=>{const path=MEDIA_FOLDER+'/'+name;return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;}});
   }finally{component.unload();}
+ }
+ /**
+  * Renders a work for an output (Article preview, WeChat copy, picture cards). The reading view's proofreading marks
+  * never reach an output: the host is marked so they are not added, and any that were are taken out afterwards.
+  */
+ async renderOutput(markdown,el,file,component){
+  el.setAttribute(OUTPUT_ATTRIBUTE,'');
+  try{await MarkdownRenderer.render(this.app,markdown,el,file.path,component);}
+  finally{stripReadingMarks(el);}
  }
  /** The Center versions a note records in its properties, for an output's manifest. */
  noteVersions(file){
@@ -823,7 +834,7 @@ export default class RssdPlugin extends Plugin{
    const space=this.settings.workspaceId,site=wechatSite(space);
    return await buildCards({doc:document,content,parseYaml,signal,onProgress,style,cardTheme:style==='site'?'text':style,site,url:site?.origin||centerOrigin(this.settings.origin),
     template:source=>cardTemplate(space,source.sectionId),engineVersion:this.manifest?.version||'0',...this.noteVersions(file),
-    render:(markdown,el)=>MarkdownRenderer.render(this.app,markdown,el,file.path,component),
+    render:(markdown,el)=>this.renderOutput(markdown,el,file,component),
     readMedia:async name=>{const path=MEDIA_FOLDER+'/'+name;return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;},
     // The page engine measures in a document of its own, kept off screen.
     frame:()=>{const frame=document.createElement('iframe');frame.setAttribute('aria-hidden','true');frame.tabIndex=-1;frame.style.cssText='position:fixed;left:-10000px;top:0;width:720px;height:960px;border:0;visibility:hidden';document.body.append(frame);return frame;}});
