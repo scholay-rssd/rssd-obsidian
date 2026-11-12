@@ -11,7 +11,7 @@ import {AutoSync,startupDelay,syncLease} from './auto-sync.mjs';
 import {saveFailureMessage,saveManySummary} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
-import {workLabel,labelText} from './titles.mjs';
+import {workLabel,labelText,tabTitle} from './titles.mjs';
 import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf} from './work-cards.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
@@ -31,10 +31,9 @@ const LOCALES=['zh-CN','en'];
 // The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
 // between them.
 const SIDEBAR_VIEWS=Object.freeze([['rssd-article','article'],['rssd-cards','cards'],['rssd-outline','outline'],['rssd-details','details']]);
-// Article and Cards open as tabs in the note's own tab bar, where each has the full width; the right sidebar
-// keeps the narrow panels. Wherever a tab is moved afterwards, it is reopened there.
-const EDITOR_VIEWS=Object.freeze(['rssd-article','rssd-cards']);
-const RIGHT_VIEWS=Object.freeze(SIDEBAR_VIEWS.map(([type])=>type).filter(type=>!EDITOR_VIEWS.includes(type)));
+// All four open as tabs in the note's own tab bar, where each has the full width, and the right sidebar is left
+// to Obsidian. Wherever a tab is moved afterwards, it is reopened there.
+const EDITOR_VIEWS=Object.freeze(SIDEBAR_VIEWS.map(([type])=>type));
 // Work notes show their title and date; the stable ID file name stays underneath. The inline title and the
 // header title are hidden for them because editing either one renames the file and would stop its sync.
 const TITLE_STYLE=`
@@ -64,10 +63,8 @@ const TITLE_STYLE=`
 .rssd-works-top{position:sticky;top:0;z-index:2;padding:var(--size-4-2) var(--size-4-2) var(--size-4-1);background:var(--background-secondary);border-bottom:1px solid var(--background-modifier-border)}
 .rssd-works-bar{display:flex;align-items:center;gap:var(--size-2-2)}
 .rssd-works-search{flex:1 1 auto;min-width:0;width:100%;font-size:var(--font-ui-small)}
-.rssd-works-layout{flex:0 0 auto}
-.rssd-works-filters{display:flex;gap:var(--size-2-2);margin-top:var(--size-4-1);flex-wrap:wrap}
-.rssd-works button.rssd-works-chip{height:auto;padding:1px 8px;border-radius:999px;border:1px solid var(--background-modifier-border);background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
-.rssd-works button.rssd-works-chip.is-active{background:var(--interactive-accent);border-color:var(--interactive-accent);color:var(--text-on-accent)}
+.rssd-works-layout,.rssd-works-filter{flex:0 0 auto}
+.rssd-works-filter.is-active{color:var(--interactive-accent)}
 .rssd-works-list{flex:1 1 auto;padding:var(--size-2-2) var(--size-2-2) var(--size-4-2)}
 .rssd-works-head{display:flex;align-items:center;gap:4px;padding:6px 4px 3px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-weight:var(--font-semibold);cursor:pointer;user-select:none}
 .rssd-works-caret{display:flex;width:14px;height:14px;transition:transform .12s}.rssd-works-caret svg{width:14px;height:14px}
@@ -80,9 +77,6 @@ const TITLE_STYLE=`
 .rssd-works-dot.is-synced{background:var(--color-green)}.rssd-works-dot.is-edited{background:var(--color-orange)}.rssd-works-dot.is-saving{background:var(--color-blue)}.rssd-works-dot.is-conflict{background:var(--color-red)}.rssd-works-dot.is-unlinked{background:var(--text-faint)}
 .rssd-works-date{flex:0 0 auto;color:var(--text-faint);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
 .rssd-works-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rssd-works-langs{display:flex;margin-left:auto;border:1px solid var(--background-modifier-border);border-radius:999px;overflow:hidden}
-.rssd-works button.rssd-works-lang{height:auto;padding:1px 8px;border:0;border-radius:0;background:none;box-shadow:none;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
-.rssd-works button.rssd-works-lang.is-active{background:var(--background-modifier-active-hover);color:var(--text-normal);font-weight:var(--font-semibold)}
 .rssd-works-more,.rssd-works-empty{padding:4px 6px;color:var(--text-muted);font-size:var(--font-ui-smaller);cursor:pointer}
 .rssd-works-empty{cursor:default;padding:var(--size-4-3) var(--size-4-2)}
 .rssd-works-foot{position:sticky;bottom:0;display:flex;align-items:center;gap:var(--size-4-2);padding:var(--size-4-1) var(--size-4-2);border-top:1px solid var(--background-modifier-border);background:var(--background-secondary);color:var(--text-muted);font-size:var(--font-ui-smaller)}
@@ -110,7 +104,8 @@ const TITLE_STYLE=`
 .rssd-works-fact.is-absent>span:last-child{text-decoration:line-through}
 .rssd-works-writer{grid-column:1/-1;min-width:0;overflow:hidden;color:var(--text-muted);font-size:var(--font-ui-smaller);text-overflow:ellipsis}
 .rssd-works-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px;margin-top:2px;padding-top:6px;border-top:1px solid var(--background-modifier-border)}
-.rssd-works button.rssd-works-action{height:auto;padding:2px 8px;font-size:var(--font-ui-smaller)}
+.rssd-works button.rssd-works-action{display:inline-flex;align-items:center;gap:4px;height:auto;padding:2px 8px;font-size:var(--font-ui-smaller)}
+.rssd-works-action-icon{display:flex}.rssd-works-action-icon svg{width:12px;height:12px}
 .rssd-details,.rssd-outline{padding:var(--size-4-2) var(--size-4-3);font-size:var(--font-ui-small)}
 .rssd-outline-item{display:block;width:100%;text-align:left;padding:3px var(--size-2-2);border-radius:var(--radius-s);color:var(--text-muted);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rssd-outline-item:hover{background:var(--background-modifier-hover);color:var(--text-normal)}
@@ -219,12 +214,9 @@ export default class RssdPlugin extends Plugin{
   for(const event of ['layout-change','file-open','active-leaf-change'])this.registerEvent(this.app.workspace.on(event,relabel));
   for(const event of ['create','rename','delete'])this.registerEvent(this.app.vault.on(event,relabel));
   // First launch: one button logs in and opens the reader. Afterwards the reader opens from the ribbon.
-  // A vault that edits works gets the layout preview in its sidebar the first time it starts with this version.
-  // Work details are a view of the RSSD panel; the properties block in the article is hidden once they are there.
+  // Work details have a tab of their own; the properties block in the article is hidden once they are there.
   this.addCommand({id:'details',name:'Show work details',callback:()=>this.openDetails()});
   this.app.workspace.onLayoutReady(()=>{void this.tidySidebar().catch(error=>console.error('RSSD sidebar',error));});
-  // Obsidian's core plugins put their tabs back on every start, so they are moved out again after it settles.
-  this.app.workspace.onLayoutReady(()=>{for(const delay of [800,3000])window.setTimeout(()=>this.closeDefaultTabs(),delay);});
   this.app.workspace.onLayoutReady(()=>{if(!this.token())new WelcomeModal(this.app,this).open();});
   this.autoSync=new AutoSync({
    ready:()=>this.settings.autoSync!==false&&!!this.settings.origin&&!!this.settings.workspaceId&&!!this.token()&&!this.operations.active,
@@ -663,59 +655,39 @@ export default class RssdPlugin extends Plugin{
   }catch(error){console.error('RSSD cards save',error);new Notice('Could not save the cards: '+error.message,10000);}
  }
  /**
-  * Once per vault that edits works, arrange the right sidebar: the RSSD Outline and Details tabs, with Details
-  * in front, and none of Obsidian's link, tag, vault-properties or outline
-  * tabs (any of them can be reopened from the command palette). On the first arrangement, now that the
-  * properties have a place of their own, the properties block at the top of each note is hidden; the vault's
-  * earlier choice is kept so it can be restored. Panels left by earlier versions are replaced, and the Article
-  * and Card previews that earlier versions kept in the right sidebar, or in a pane of their own beside the note,
-  * are closed there once: they now open as tabs next to the note when asked for.
+  * Once per vault that edits works, arrange the layout: the Works list in the left sidebar, and the RSSD tabs
+  * (Article, Cards, Outline, Details) only as tabs next to the note. Tabs that earlier versions kept in the right
+  * sidebar, or in a pane of their own beside the note, are closed once; they open next to the note when asked
+  * for, and the right sidebar is left to Obsidian. On the first arrangement, now that the properties have a place
+  * of their own, the properties block at the top of each note is hidden; the vault's earlier choice is kept so it
+  * can be restored. Panels left by earlier versions are removed.
   */
  async tidySidebar(){
   const version=this.settings.layoutVersion||0;
-  if(version>=8||!this.settings.workspaceId||Platform.isMobile)return false;
-  const workspace=this.app.workspace,created=new Set();
-  if(version<5){
-  // Add the new tabs before closing anything: an emptied sidebar is refilled by Obsidian with its default tabs.
-  for(const type of RIGHT_VIEWS){const leaf=workspace.getRightLeaf(false);if(!leaf)break;await leaf.setViewState({type,active:false});created.add(leaf);}
-  for(const type of ['rssd-preview','rssd-wechat',...SIDEBAR_VIEWS.map(([type])=>type)])for(const leaf of workspace.getLeavesOfType(type))if(!created.has(leaf))leaf.detach();
-  for(const type of ['backlink','outgoing-link','tag','all-properties','outline'])for(const leaf of workspace.getLeavesOfType(type))if(leaf.getRoot?.()===workspace.rightSplit)leaf.detach();
-  const front=[...created].at(-1);if(front)workspace.revealLeaf(front);
-  }
+  if(version>=9||!this.settings.workspaceId||Platform.isMobile)return false;
+  const workspace=this.app.workspace,notes=workspace.getLeavesOfType('markdown');
+  for(const type of ['rssd-preview','rssd-wechat'])for(const leaf of workspace.getLeavesOfType(type))leaf.detach();
   for(const type of EDITOR_VIEWS)for(const leaf of workspace.getLeavesOfType(type)){
-   if(leaf.getRoot?.()===workspace.rightSplit){leaf.detach();continue;}
-   // Version 7 split them into a pane of their own; one that shares a tab bar with a note is already in place.
-   if(version<8&&leaf.getRoot?.()===workspace.rootSplit&&leaf.parent&&!workspace.getLeavesOfType('markdown').some(note=>note.parent===leaf.parent))leaf.detach();
+   const root=leaf.getRoot?.();
+   // A tab that already shares a tab bar with a note is in place.
+   if(root===workspace.rightSplit||root===workspace.rootSplit&&leaf.parent&&!notes.some(note=>note.parent===leaf.parent))leaf.detach();
   }
   // The Works list sits in the left sidebar, in front of the file tree.
   await this.openWorks();
   const vault=this.app.vault,before=vault.getConfig?.('propertiesInDocument');
   // Only on the first arrangement, so a vault that brought the properties back keeps them.
   if(version<2&&typeof vault.setConfig==='function'&&before!=='hidden'){this.settings.propertiesBefore=before||'visible';vault.setConfig('propertiesInDocument','hidden');}
-  this.settings.layoutVersion=8;await this.saveSettings();
+  this.settings.layoutVersion=9;await this.saveSettings();
   return true;
  }
- /**
-  * Close Obsidian's backlinks, outgoing links, tags, all-properties and outline tabs in the right sidebar, where
-  * the RSSD tabs take their place. Only while the RSSD tabs are there, so the sidebar is never emptied, and
-  * only when the setting is on (Settings → RSSD → Right sidebar).
-  */
- closeDefaultTabs(){
-  if(this.settings.tidyRightSidebar===false||!this.settings.workspaceId||Platform.isMobile)return 0;
-  const workspace=this.app.workspace,inRight=leaf=>leaf.getRoot?.()===workspace.rightSplit;
-  if(!SIDEBAR_VIEWS.some(([type])=>workspace.getLeavesOfType(type).some(inRight)))return 0;
-  let closed=0;
-  for(const type of ['backlink','outgoing-link','tag','all-properties','outline'])for(const leaf of workspace.getLeavesOfType(type))if(inRight(leaf)){leaf.detach();closed++;}
-  return closed;
- }
- /** Show one of the RSSD tabs where it is, or open it: the previews next to the note, the panels in the right sidebar. */
+ /** Show one of the RSSD tabs where it is, or open it as a tab next to the note. */
  async openView(type){
   const workspace=this.app.workspace;let leaf=workspace.getLeavesOfType(type)[0];
-  if(!leaf){leaf=EDITOR_VIEWS.includes(type)?this.previewTab(type):workspace.getRightLeaf(false);if(!leaf)return;await leaf.setViewState({type,active:true});}
+  if(!leaf){leaf=this.previewTab(type);if(!leaf)return;await leaf.setViewState({type,active:true});}
   workspace.revealLeaf(leaf);
  }
- /** A new tab for a preview in the note's own tab bar: next to the other preview if that is open in the editor
-  * area, else next to the note. */
+ /** A new RSSD tab in the note's own tab bar: next to another RSSD tab if one is open in the editor area, else
+  * next to the note. */
  previewTab(type){
   const workspace=this.app.workspace;
   const sibling=EDITOR_VIEWS.filter(t=>t!==type).flatMap(t=>workspace.getLeavesOfType(t)).find(leaf=>leaf.getRoot?.()===workspace.rootSplit);
@@ -724,6 +696,7 @@ export default class RssdPlugin extends Plugin{
   return workspace.getLeaf('tab');
  }
  openDetails(){return this.openView('rssd-details');}
+ openOutline(){return this.openView('rssd-outline');}
  /** The work open in the editor, even while a sidebar tab has the focus. */
  currentWork(){
   const workspace=this.app.workspace,active=workspace.getActiveFile();
@@ -763,9 +736,7 @@ class RssdSettings extends PluginSettingTab{
    .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
   new Setting(containerEl).setName('Command links').setDesc('Allow local commands to drive this vault. Each request has its own receipt.').addToggle(t=>t.setValue(!!s.allowAutomation).onChange(async v=>{s.allowAutomation=v;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Automatic sync').setDesc('Periodically update from the Center and save changed works as private drafts. Conflicts and read-only spaces need attention; this never publishes.').addToggle(t=>t.setValue(s.autoSync!==false).onChange(async v=>{s.autoSync=v;await this.plugin.saveSettings();}));
-  new Setting(containerEl).setName('Right sidebar').setDesc('Keep only the RSSD tabs (Outline, Details) in the right sidebar. Turn off to let Obsidian keep its backlinks, outgoing links, tags, all-properties and outline tabs there.')
-   .addToggle(t=>t.setValue(s.tidyRightSidebar!==false).onChange(async v=>{s.tidyRightSidebar=v;await this.plugin.saveSettings();if(v)this.plugin.closeDefaultTabs();}));
-  new Setting(containerEl).setName('Properties in the article').setDesc('Work details are edited under Details in the RSSD panel in the right sidebar, so the properties block at the top of each note is hidden. Show it again here.')
+  new Setting(containerEl).setName('Properties in the article').setDesc('Work details are edited in the Details tab next to the note, so the properties block at the top of each note is hidden. Show it again here.')
    .addButton(b=>b.setButtonText('Show in article').onClick(async()=>{await this.plugin.restoreProperties();new Notice('The properties block is shown in notes again.');}));
   new Setting(containerEl).setName('Update works').setDesc('Download new and changed works into '+WORKS_FOLDER+'/ (images go to '+MEDIA_FOLDER+'/). Notes with local changes are never overwritten.')
    .addButton(b=>b.setButtonText('Update').onClick(()=>this.plugin.pull()));
@@ -795,6 +766,11 @@ class WorksView extends ItemView{
   const bar=top.createDiv({cls:'rssd-works-bar'});
   const search=bar.createEl('input',{type:'search',cls:'rssd-works-search',attr:{placeholder:'Search titles and summaries'}});
   search.addEventListener('input',()=>{this.query=search.value;this.render();});
+  // One button for what is listed: All, Edited or To check, and which language. It turns the accent colour while
+  // the list is narrowed.
+  this.filterButton=bar.createDiv({cls:'clickable-icon rssd-works-filter',attr:{role:'button',tabindex:'0','aria-haspopup':'menu'}});setIcon(this.filterButton,'list-filter');
+  this.filterButton.addEventListener('click',event=>this.filterMenu(event));
+  this.filterButton.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();this.filterMenu();}});
   // Cards or one line per work; remembered on this device only.
   const layout=bar.createDiv({cls:'clickable-icon rssd-works-layout',attr:{role:'button',tabindex:'0'}});
   const showLayout=()=>{layout.empty();setIcon(layout,this.layout==='cards'?'list':'layout-list');layout.setAttribute('aria-label',this.layout==='cards'?'Show as a list':'Show as cards');};
@@ -802,7 +778,6 @@ class WorksView extends ItemView{
   layout.addEventListener('click',switchLayout);
   layout.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();switchLayout();}});
   showLayout();
-  this.filters=top.createDiv({cls:'rssd-works-filters'});
   this.list=el.createDiv({cls:'rssd-works-list'});
   this.foot=el.createDiv({cls:'rssd-works-foot'});
   const later=()=>{window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.render(),300);};
@@ -895,19 +870,10 @@ class WorksView extends ItemView{
   const all=this.lang==='en'?english:chinese,q=this.query.trim().toLowerCase(),names=this.sectionNames();
   const toCheck=work=>!work.author.trim()||!work.category.trim();
   const edited=work=>['edited','saving','conflict'].includes(this.states.get(work.file.path)?.state);
-  this.filters.empty();
-  for(const [id,label,count] of [['all','All',all.length],['edited','Edited',all.filter(edited).length],['check','To check',all.filter(toCheck).length]]){
-   const chip=this.filters.createEl('button',{cls:'rssd-works-chip'+(this.filter===id?' is-active':''),text:label+' '+count});
-   chip.addEventListener('click',()=>{this.filter=id;this.render();});
-  }
-  // One language at a time; the switch appears only when the space has English editions.
-  if(english.length){
-   const langs=this.filters.createDiv({cls:'rssd-works-langs'});
-   for(const [id,label,count] of [['zh','中文',chinese.length],['en','English',english.length]]){
-    const tab=langs.createEl('button',{cls:'rssd-works-lang'+(this.lang===id?' is-active':''),text:label});tab.setAttribute('aria-label',label+', '+count+' works');
-    tab.addEventListener('click',()=>{if(this.lang===id)return;this.lang=id;this.render();});
-   }
-  }
+  // The filter menu reads these counts; one language at a time, and the language choice only when the space
+  // has English editions.
+  this.counts={all:all.length,edited:all.filter(edited).length,check:all.filter(toCheck).length,zh:chinese.length,en:english.length};
+  this.markFilter();
   const shown=all.filter(work=>(!q||[work.title,work.summary].some(text=>text.toLowerCase().includes(q)))&&
    (this.filter==='all'||(this.filter==='edited'&&edited(work))||(this.filter==='check'&&toCheck(work))));
   this.contentEl.toggleClass('is-english',this.lang==='en');this.pairs=this.editionIndex();
@@ -933,6 +899,26 @@ class WorksView extends ItemView{
   // Save takes what the Edited filter counts: the edited works of the language on screen.
   this.edited=all.filter(work=>this.states.get(work.file.path)?.state==='edited').map(work=>work.file);
   this.mark();this.renderFoot();void this.fillStates(every);void this.fillWriters([...this.shown.values(),...all]);
+ }
+ /** The filter button's tooltip says what is listed, and it takes the accent colour while the list is narrowed. */
+ markFilter(){
+  if(!this.filterButton)return;
+  const names={all:'All',edited:'Edited',check:'To check'},language=this.counts?.en?(this.lang==='en'?' · English':' · 中文'):'';
+  this.filterButton.toggleClass('is-active',this.filter!=='all');
+  this.filterButton.setAttribute('aria-label','Showing: '+names[this.filter]+' '+(this.counts?.[this.filter]??'')+language);
+ }
+ /** A floating menu of what to list, with counts, and the language when the space has English editions. */
+ filterMenu(event){
+  const menu=new Menu(),counts=this.counts||{};
+  for(const [id,label] of [['all','All'],['edited','Edited'],['check','To check']])
+   menu.addItem(item=>item.setTitle(label+'  '+(counts[id]??0)).setChecked(this.filter===id).onClick(()=>{this.filter=id;this.render();}));
+  if(counts.en){
+   menu.addSeparator();
+   for(const [id,label] of [['zh','中文'],['en','English']])
+    menu.addItem(item=>item.setTitle(label+'  '+(counts[id]??0)).setChecked(this.lang===id).onClick(()=>{if(this.lang===id)return;this.lang=id;this.render();}));
+  }
+  if(event instanceof MouseEvent)menu.showAtMouseEvent(event);
+  else{const box=this.filterButton.getBoundingClientRect();menu.showAtPosition({x:box.left,y:box.bottom});}
  }
  item(group,work){this.shown.set(work.file.path,work);return this.layout==='cards'?this.card(group,work):this.row(group,work);}
  /** Draw one work again in place, after its state or length became known. */
@@ -972,11 +958,15 @@ class WorksView extends ItemView{
  /** Actions for the open work's card. Save appears only when there is something to save. */
  actions(card,work){
   const bar=card.createDiv({cls:'rssd-works-actions'}),state=this.states.get(work.file.path)?.state;
-  const add=(text,label,run)=>{const button=bar.createEl('button',{cls:'rssd-works-action',text});button.setAttribute('aria-label',label);button.addEventListener('click',event=>{event.stopPropagation();void run();});return button;};
-  if(state==='edited'&&!Platform.isMobile)add('Save','Save this work to the Center as a private draft. Nothing is published.',async()=>{await this.plugin.save(work.file);this.states.delete(work.file.path);this.render();}).addClass('mod-cta');
-  add('Preview','Preview the article layout',()=>this.plugin.openPreview());
-  add('Cards','Preview the work as cards',()=>this.plugin.openView('rssd-cards'));
-  add('Details','Edit the title, summary, author and category',()=>this.plugin.openDetails());
+  // Each button carries the icon of the tab it opens.
+  const add=(icon,text,label,run)=>{const button=bar.createEl('button',{cls:'rssd-works-action'});setIcon(button.createSpan({cls:'rssd-works-action-icon'}),icon);button.createSpan({text});
+   button.setAttribute('aria-label',label);button.addEventListener('click',event=>{event.stopPropagation();void run();});return button;};
+  if(state==='edited'&&!Platform.isMobile)add('upload','Save','Save this work to the Center as a private draft. Nothing is published.',async()=>{await this.plugin.save(work.file);this.states.delete(work.file.path);this.render();}).addClass('mod-cta');
+  const icon=id=>PREVIEW_TARGETS.find(target=>target.id===id).icon;
+  add(icon('article'),'Preview','Preview the article layout',()=>this.plugin.openPreview());
+  add(icon('cards'),'Cards','Preview the work as cards',()=>this.plugin.openView('rssd-cards'));
+  add(icon('outline'),'Outline','The work\'s headings',()=>this.plugin.openOutline());
+  add(icon('details'),'Details','Edit the title, summary, author and category',()=>this.plugin.openDetails());
  }
  row(group,work){
   const row=group.createDiv({cls:'rssd-works-row'});row.dataset.path=work.file.path;
@@ -1074,7 +1064,8 @@ class LayoutPreview extends ItemView{
   if(output){setIcon(this.actionButton,this.target.actionIcon);this.actionButton.setAttribute('aria-label',this.target.copyLabel);}
  }
  getViewType(){return this.type;}
- getDisplayText(){return this.target.name;}
+ // Named for the work it shows, so tabs of several works can be told apart.
+ getDisplayText(){return tabTitle(this.target.label,this.titleFile&&this.plugin.workLabel(this.titleFile))||this.target.name;}
  getIcon(){return this.target.icon;}
  async onOpen(){
   const el=this.contentEl;el.empty();el.style.padding='0';
@@ -1128,6 +1119,7 @@ class LayoutPreview extends ItemView{
   this.root.replaceChildren(style,note);
  }
  async show(file,{force=false}={}){
+  if(file&&file!==this.titleFile){this.titleFile=file;this.leaf.updateHeader?.();}
   // An output tab behind another is not built until it is shown; cards in particular take a while. Outline
   // and details are cheap and always drawn.
   if(!this.target.panel&&this.containerEl.isShown&&!this.containerEl.isShown()){this.waiting=true;this.pendingFile=file||null;return;}
@@ -1195,7 +1187,8 @@ class WorkOutline{
   const workspace=this.app.workspace;
   let leaf=workspace.getLeavesOfType('markdown').find(l=>l.view?.file===file);
   if(!leaf){leaf=workspace.getLeaf(false);await leaf.openFile(file);}
-  leaf.view.setEphemeralState?.({line});workspace.setActiveLeaf(leaf,{focus:true});
+  // The note may be a tab behind the outline in the same tab bar.
+  workspace.revealLeaf(leaf);leaf.view.setEphemeralState?.({line});workspace.setActiveLeaf(leaf,{focus:true});
  }
 }
 

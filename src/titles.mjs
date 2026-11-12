@@ -18,3 +18,6 @@ export function workLabel(frontmatter){
 
 /** One line for places that show plain text only, such as a tab: date first, then title. */
 export const labelText=label=>label?(label.date?label.date+' ':'')+label.title:'';
+
+/** An RSSD tab's title: what it shows, then the work's title. Empty when there is no work, so the caller falls back. */
+export const tabTitle=(kind,label)=>label?.title?kind+' · '+label.title:'';
