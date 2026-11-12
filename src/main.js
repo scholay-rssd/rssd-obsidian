@@ -121,6 +121,17 @@ const TITLE_STYLE=`
 .rssd-works button.rssd-works-pull.is-done{color:var(--color-green);animation:rssd-pop .45s ease-out}
 .rssd-works button.rssd-works-pull.is-failed{color:var(--color-red);animation:rssd-shake .4s ease-in-out}
 .rssd-works-pulled.is-fresh{animation:rssd-fade .6s ease-out}
+/* Update and Save in the sidebar's tab bar: icons with a count badge, a thin bar under them while busy. */
+.rssd-works-headbar{position:relative;display:flex;align-items:center;-webkit-app-region:no-drag}
+.rssd-works-headbar-body{display:flex;align-items:center;gap:2px}
+.rssd-works-headbar .rssd-works-progress{top:auto;bottom:-3px}
+.rssd-works-headbar button.rssd-works-headbutton{position:relative;height:auto;padding:var(--size-2-2);border:0;background:none;box-shadow:none}
+.rssd-works-headbar button.rssd-works-headbutton:disabled{opacity:.45;cursor:default}
+.rssd-works-headbar button.rssd-works-headbutton.has-edits{color:var(--interactive-accent)}
+.rssd-works-headbar button.is-busy svg{animation:rssd-spin .9s linear infinite}
+.rssd-works-headbar button.is-done{color:var(--color-green);animation:rssd-pop .45s ease-out}
+.rssd-works-headbar button.is-failed{color:var(--color-red);animation:rssd-shake .4s ease-in-out}
+.rssd-works-headbadge{position:absolute;top:-2px;right:-4px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:var(--interactive-accent);color:var(--text-on-accent);font-size:9px;line-height:14px;text-align:center;pointer-events:none}
 @keyframes rssd-slide{from{left:-30%}to{left:100%}}
 @keyframes rssd-spin{to{transform:rotate(360deg)}}
 @keyframes rssd-pop{0%{transform:scale(.92);opacity:.5}60%{transform:scale(1.06)}100%{transform:scale(1);opacity:1}}
@@ -951,9 +962,11 @@ class WorksView extends ItemView{
   for(const event of ['create','delete','rename'])this.registerEvent(this.app.vault.on(event,later));
   this.registerEvent(this.app.workspace.on('file-open',()=>this.mark()));
   this.registerInterval(window.setInterval(()=>this.renderFoot(),60000));
+  // The tab-bar buttons show only while the Works tab is the one shown in its sidebar.
+  for(const event of ['active-leaf-change','layout-change'])this.registerEvent(this.app.workspace.on(event,()=>this.placeHeadbar()));
   this.app.workspace.onLayoutReady(()=>this.render());
  }
- async onClose(){window.clearTimeout(this.timer);this.panel?.close();}
+ async onClose(){window.clearTimeout(this.timer);this.panel?.close();this.headbar?.remove();}
  /** Every work in the vault, each edition on its own. */
  works(){
   const items=[];
@@ -1175,20 +1188,45 @@ class WorksView extends ItemView{
   window.clearTimeout(this.flashTimer);this.flash={target,kind,text};this.renderFoot();
   this.flashTimer=window.setTimeout(()=>{this.flash=null;this.renderFoot();},2600);
  }
+ /**
+  * Put Update and Save in the sidebar's own tab bar, beside the tab icons, while the Works tab is the one shown.
+  * Returns whether they are there; where the tab bar cannot be found (mobile, an unusual layout) the footer stays.
+  */
+ placeHeadbar(){
+  if(Platform.isMobile)return false;
+  const container=this.leaf.tabHeaderEl?.closest?.('.workspace-tab-header-container');if(!container)return false;
+  if(!this.headbar||!container.contains(this.headbar)){
+   this.headbar?.remove();
+   this.headbar=createDiv({cls:'rssd-works-headbar'});this.headBody=this.headbar.createDiv({cls:'rssd-works-headbar-body'});this.headProgress=this.headbar.createDiv({cls:'rssd-works-progress'});
+   const spacer=container.querySelector(':scope > .workspace-tab-header-spacer');if(spacer)spacer.after(this.headbar);else container.append(this.headbar);
+  }
+  this.headbar.toggle(this.leaf.tabHeaderEl.classList.contains('is-active'));
+  return true;
+ }
  renderFoot(){
-  if(!this.foot)return;const body=this.footBody;body.empty();
+  if(!this.foot)return;
+  // In the tab bar the buttons are icons, with the count as a badge; the footer keeps words.
+  const compact=this.placeHeadbar();this.foot.toggle(!compact);
+  const body=compact?this.headBody:this.footBody,bar=compact?this.headProgress:this.progress;body.empty();
   const at=this.plugin.settings.lastPullAt,fresh=at&&this.seenPullAt&&at!==this.seenPullAt;this.seenPullAt=at;
-  body.createSpan({cls:'rssd-works-pulled'+(fresh?' is-fresh':''),text:at?'Updated '+agoText(at):'Not updated yet'});
+  const updated=at?'Updated '+agoText(at):'Not updated yet';
+  if(!compact)body.createSpan({cls:'rssd-works-pulled'+(fresh?' is-fresh':''),text:updated});
   // The bar slides while updating and fills while saving.
   const saving=this.saving,share=saving?.total?saving.done/saving.total:0;
-  this.progress.toggleClass('is-active',!!(this.updating||saving));this.progress.toggleClass('is-sliding',!!this.updating&&!saving);
-  this.progress.style.width=saving?Math.max(4,share*100)+'%':this.updating?'':'0';
-  const button=(cls,icon,text,state)=>{const b=body.createEl('button',{cls:'rssd-works-pull '+cls+(state?' is-'+state:'')});if(icon)setIcon(b.createSpan({cls:'rssd-works-pull-icon'}),icon);b.createSpan({text});return b;};
-  const flash=target=>this.flash?.target===target?this.flash:null;
+  bar.toggleClass('is-active',!!(this.updating||saving));bar.toggleClass('is-sliding',!!this.updating&&!saving);
+  bar.style.width=saving?Math.max(4,share*100)+'%':this.updating?'':'0';
+  const button=(cls,icon,text,state,badge='')=>{
+   if(compact){
+    const b=body.createEl('button',{cls:'clickable-icon rssd-works-headbutton '+cls+(state?' is-'+state:'')});setIcon(b,icon);
+    if(badge!=='')b.createSpan({cls:'rssd-works-headbadge',text:String(badge)});return b;
+   }
+   const b=body.createEl('button',{cls:'rssd-works-pull '+cls+(state?' is-'+state:'')});if(icon&&!['refresh-cw','upload'].includes(icon))setIcon(b.createSpan({cls:'rssd-works-pull-icon'}),icon);b.createSpan({text});return b;
+  };
+  const flash=target=>this.flash?.target===target?this.flash:null,mark=kind=>kind==='done'?'check':'x';
   // Two directions, always both shown: Update brings the Center's versions down, Save sends edits up as
   // private drafts. Save is greyed out while there is nothing to save, and on mobile, which is read-only.
-  const done=flash('update'),update=this.updating?button('','loader-2','Updating…','busy'):done?button('',done.kind==='done'?'check':'x',done.text,done.kind):button('','','Update');
-  update.setAttribute('aria-label','Get the latest versions from the Center');
+  const done=flash('update'),update=this.updating?button('','loader-2','Updating…','busy'):done?button('',mark(done.kind),done.text,done.kind):button('','refresh-cw','Update');
+  update.setAttribute('aria-label',compact?(this.updating?'Updating…':done?done.text:'Update: get the latest versions from the Center. '+updated):'Get the latest versions from the Center');
   update.disabled=!!saving||!!this.updating;
   update.addEventListener('click',async()=>{
    this.updating=true;this.renderFoot();let outcome='failed';
@@ -1197,8 +1235,9 @@ class WorksView extends ItemView{
   });
   const edited=saving?[]:this.edited||[],mobile=Platform.isMobile,result=flash('save');
   const label=saving?(saving.total?'Saving '+saving.done+'/'+saving.total:'Saving…'):result?result.text:edited.length?'Save '+edited.length:'Save';
-  const save=button('rssd-works-save'+(edited.length&&!mobile&&!result?' mod-cta':''),saving?'loader-2':result?(result.kind==='done'?'check':'x'):'',label,saving?'busy':result?.kind);
-  save.setAttribute('aria-label',saving?'Saving to the Center':mobile?'Saving is not available on mobile':edited.length?'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.':'Nothing to save: no work on screen is edited');
+  const badge=saving?(saving.total?saving.done+'/'+saving.total:''):result?'':edited.length||'';
+  const save=button('rssd-works-save'+(edited.length&&!mobile&&!result?(compact?' has-edits':' mod-cta'):''),saving?'loader-2':result?mark(result.kind):'upload',label,saving?'busy':result?.kind,badge);
+  save.setAttribute('aria-label',saving?label:result?result.text:mobile?'Saving is not available on mobile':edited.length?'Save '+edited.length+(edited.length===1?' edited work':' edited works')+' to the Center as private drafts. Nothing is published.':'Nothing to save: no work on screen is edited');
   save.disabled=!!saving||!edited.length||mobile;
   save.addEventListener('click',async()=>{
    const files=[...edited];if(!files.length)return;
@@ -1211,6 +1250,7 @@ class WorksView extends ItemView{
    }
   });
  }
+
 }
 
 // One preview panel for every layout a work can be exported in. The top tabs are the views and the tabs under
