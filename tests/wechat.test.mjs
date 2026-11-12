@@ -6,7 +6,8 @@ import {MEDIA_HOST} from '../src/reader.mjs';
 import {yaml,png} from './helpers.mjs';
 import {wechatTemplate,wechatSite} from '../src/wechat-template.mjs';
 import {wechatTemplates,wechatSites} from '../build-templates.mjs';
-import {WECHAT_DESIGNS,colours} from '../src/wechat-designs.mjs';
+import {SITE_MARKS,ARTICLE_THEMES,defaultArticleTheme,colours} from '../src/wechat-designs.mjs';
+import {CARD_THEMES} from '../src/cards.mjs';
 import {buildCards,cardModel,DEFAULT_CARD_TEMPLATE,CARD_SIZE} from '../src/cards.mjs';
 import {cardTemplate} from '../src/wechat-template.mjs';
 import {cardTemplates,katexAssets} from '../build-templates.mjs';
@@ -61,27 +62,34 @@ test('every space takes its site name and its sections\' templates from the webs
  assert.equal(wechatTemplate('metho','methods'),null,'a build without bundled templates keeps the default look');
  works.accent='changed';assert.notEqual(table.personal.works.accent,'changed');
 });
-test('every site has its own design and no two open a chapter or sign their name the same way',()=>{
- const sites=wechatSites(),c=colours({accent:'#436d70'});
- assert.deepEqual(Object.keys(WECHAT_DESIGNS).sort(),Object.values(sites).map(s=>s.id).sort());
- const seen={chapter:new Set(),masthead:new Set(),signature:new Set(),strong:new Set(),code:new Set()};
+test('themes are shared by kind of article, sites keep only their name marks, and no two of either look alike',()=>{
+ const sites=wechatSites(),c=colours({accent:'#436d70'}),s={name:'NAME',slogan:'SLOGAN',category:'CATEGORY'};
+ const safe=(value,label)=>{
+  // Pasted editors drop classes, scripts and positioned boxes; nothing may depend on them or overflow a column.
+  assert.doesNotMatch(value,/class=|<script|<style|position:|javascript:|url\(/i,label);
+  assert.doesNotMatch(value,/="[^"]*"[^\s>]/,label+' has a broken attribute');
+  for(const [,px] of value.matchAll(/(?:^|[;"\s])(?:min-|max-)?width:(\d+)px/g))assert.ok(Number(px)<=60,label+' has a fixed width of '+px+'px');
+  assert.doesNotMatch(value,/white-space:nowrap|overflow:hidden|float:/,label);
+ };
+ assert.deepEqual(Object.keys(SITE_MARKS).sort(),Object.values(sites).map(site=>site.id).sort());
+ const marks={masthead:new Set(),signature:new Set()};
  for(const site of Object.values(sites)){
-  const d=WECHAT_DESIGNS[site.id],s={name:'NAME',slogan:'SLOGAN',category:'CATEGORY'};
-  const parts={chapter:d.chapter({n:2,total:5,html:'<em>Heading</em> &amp; more'},c),masthead:d.masthead(s,c),signature:d.signature(s,c),strong:d.strong(c),code:d.code(c)};
-  assert.ok(parts.chapter.includes('<em>Heading</em> &amp; more'),site.id);assert.match(parts.chapter,/<h2 /,site.id);
-  assert.ok(parts.masthead.includes('NAME')||site.id==='lingxi',site.id);assert.ok(parts.signature.includes('NAME')&&parts.signature.includes('SLOGAN'),site.id);
-  for(const [key,value] of Object.entries(parts)){
-   // WeChat drops classes, scripts and positioned boxes; a design must not depend on them.
-   assert.doesNotMatch(value,/class=|<script|<style|position:|javascript:|url\(/i,site.id+' '+key);
-   // Nothing is given a fixed width wider than a small ornament, so the article fits any column.
-   for(const [,px] of value.matchAll(/(?:^|[;"\s])(?:min-|max-)?width:(\d+)px/g))assert.ok(Number(px)<=60,site.id+' '+key+' has a fixed width of '+px+'px');
-   assert.doesNotMatch(value,/white-space:nowrap|overflow:hidden|float:/,site.id+' '+key);
-   // A double quote inside a style value would end the attribute early and drop the rest of the style.
-   assert.doesNotMatch(value,/="[^"]*"[^\s>]/,site.id+' '+key+' has a broken attribute');
-   assert.ok(!seen[key].has(value),site.id+' repeats another site\'s '+key);seen[key].add(value);
-  }
-  assert.ok(d.masthead({name:'<b>&"x',slogan:'',category:''},c).indexOf('<b>')<0,site.id+' escapes its name');
+  const m=SITE_MARKS[site.id];assert.deepEqual(Object.keys(m).sort(),['masthead','signature'],site.id);
+  for(const key of ['masthead','signature']){const value=m[key](s,c);safe(value,site.id+' '+key);assert.ok(!marks[key].has(value),site.id+' repeats a '+key);marks[key].add(value);}
+  assert.ok(m.signature(s,c).includes('NAME')&&m.signature(s,c).includes('SLOGAN'),site.id);
+  assert.ok(m.masthead({name:'<b>&"x',slogan:'',category:''},c).indexOf('<b>')<0,site.id+' escapes its name');
  }
+ assert.deepEqual(Object.keys(ARTICLE_THEMES),['classic','journal','briefing','technical','visual']);
+ const seen={};
+ for(const [id,theme] of Object.entries(ARTICLE_THEMES)){
+  const parts={chapter:theme.chapter({n:2,total:5,html:'<em>Heading</em> &amp; more'},c),h3:theme.h3(c),strong:theme.strong(c),code:theme.code(c),quote:theme.quote(c),img:theme.img(c),body:theme.body(c)};
+  assert.ok(parts.chapter.includes('<em>Heading</em> &amp; more'),id);assert.match(parts.chapter,/<h2 /,id);assert.ok(theme.label,id);
+  for(const [key,value] of Object.entries(parts)){safe(value,id+' '+key);if(['chapter','quote','h3'].includes(key)){seen[key]??=new Set();assert.ok(!seen[key].has(value),id+' repeats another theme\'s '+key);seen[key].add(value);}}
+ }
+ assert.deepEqual(['dispatch','essay','ledger','archive','technical','guide','gallery','unknown',undefined].map(defaultArticleTheme),['briefing','classic','journal','journal','technical','technical','visual','classic','classic']);
+ // Every layout the website gives a section maps to a theme of its own choosing, not the fallback by accident.
+ for(const sections of Object.values(cardTemplates()))for(const template of Object.values(sections))assert.ok(['dispatch','essay','ledger','archive','technical','guide','gallery'].includes(template.layout),template.layout);
+ assert.deepEqual(Object.keys(CARD_THEMES),['text','points','pictures']);
  assert.equal(colours({accent:'#ff0000'}).tint(.5),'rgba(255,0,0,0.5)');assert.equal(colours({accent:'red;x'}).accent,'#35695f');
 });
 test('decoration is applied last and plain text stays the article only',async()=>{
@@ -180,4 +188,18 @@ test('an article turns formulas into sized pictures and keeps their LaTeX in pla
  assert.equal(placeholders[0].attrs.src,'data:image/png;base64,F30');assert.equal(placeholders[0].attrs.alt,'a^2');
  assert.equal(placeholders[1].attrs.src,'data:image/png;base64,F31');assert.equal(placeholders[1].attrs.alt,'D');
  assert.equal(result.formulas,2);assert.equal(result.images,0);
+});
+test('work details measure each field against the outputs that use it and refuse a malformed date',async()=>{
+ const {DETAIL_FIELDS,counters,cleanValue,fieldText,IDENTITY_FIELDS}=await import('../src/details.mjs');
+ const field=key=>DETAIL_FIELDS.find(f=>f.key===key);
+ assert.deepEqual(DETAIL_FIELDS.map(f=>f.key),['title','summary','date','author','category']);
+ const title=counters(field('title'),'标'.repeat(30));
+ assert.deepEqual(title.map(c=>[c.name,c.length,c.over]),[['Article',30,false],['Cards',30,true]]);
+ assert.deepEqual(counters(field('summary'),'摘'.repeat(121)).map(c=>[c.name,c.max,c.over]),[['Digest',120,true]]);
+ assert.deepEqual(counters(field('category'),'x'),[]);
+ assert.equal(cleanValue(field('title'),'  A\n title '),'A title');assert.equal(cleanValue(field('summary'),' one\r\ntwo '),'one\ntwo');
+ assert.equal(cleanValue(field('date'),'2026-11-12'),'2026-11-12');assert.equal(cleanValue(field('date'),''),'');
+ assert.throws(()=>cleanValue(field('date'),'11/12/2026'),e=>e.code==='invalid_date');
+ assert.equal(fieldText(new Date('2026-11-12T00:00:00Z')),'2026-11-12');assert.equal(fieldText(null),'');assert.equal(fieldText(3),'3');
+ assert.ok(IDENTITY_FIELDS.some(([key])=>key==='rssd-id'));
 });

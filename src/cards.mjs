@@ -14,6 +14,26 @@ import {extractMath,formulaIndex,formulaPictures} from './math.mjs';
 // The engine lays out at 720×960; drawing at 1.5× gives the usual 1080×1440 card.
 export const CARD_SCALE=1.5,CARD_SIZE=Object.freeze({width:1080,height:1440});
 // Used when a section has no template of its own.
+// Card themes. Text fills each card in reading order; key points give each chapter a card of its own, in larger
+// type; pictures give each picture a card with its description underneath.
+export const CARD_THEMES=Object.freeze({text:{label:'Text'},points:{label:'Key points',template:{fontSize:30,lineHeight:1.6}},pictures:{label:'Pictures'}});
+const BREAK='<hr class="rssd-page-break">';
+const STRUCTURAL=/^\s*(参考文献|参考资料|延伸阅读|相关阅读|附录|致谢|注释|references?|further reading|notes?|appendix|acknowledge?ments?)\s*$/i;
+/** Arrange a work's rendered body for a card theme. Throws when the theme has nothing to show. */
+export function arrangeForCards(host,theme){
+ const doc=host.ownerDocument;
+ if(theme==='points'){
+  // A closing section such as 参考文献 stays with the last chapter instead of taking a card of its own.
+  for(const heading of [...host.querySelectorAll('h2')])if(heading.previousElementSibling&&!STRUCTURAL.test(heading.textContent||''))heading.insertAdjacentHTML('beforebegin',BREAK);
+  return;
+ }
+ if(theme==='pictures'){
+  const pictures=[...host.querySelectorAll('img')].filter(img=>!/\brssd-math/.test(img.className||''));
+  if(!pictures.length)throw Object.assign(Error('This work has no pictures to make picture cards from.'),{code:'no_pictures'});
+  const parts=pictures.map(img=>{const figure=doc.createElement('figure'),alt=(img.getAttribute('alt')||'').trim();figure.append(img.cloneNode());if(alt){const caption=doc.createElement('figcaption');caption.textContent=alt;figure.append(caption);}return figure.outerHTML;});
+  host.innerHTML=parts.join(BREAK);
+ }
+}
 export const DEFAULT_CARD_TEMPLATE=Object.freeze({ink:'#23352f',accent:'#35695f',muted:'#637169',paper:'#fcfdfb',family:'sans',layout:'guide',width:720,height:960,fontSize:26,lineHeight:1.65});
 const CHROME='svg,button,.heading-collapse-indicator,.collapse-indicator,.list-collapse-indicator,.list-bullet,.markdown-embed-link,.frontmatter,.frontmatter-container,.mod-header,.mod-footer';
 
@@ -45,11 +65,12 @@ const dataUrl=(name,bytes)=>{const data=bytesToBase64(bytes);return 'data:'+medi
  * for measuring. Returns {title,pages:[{name,blob}],caption,missing,manifest}. A picture that cannot be read
  * is left out and named in `missing`; the engine itself refuses to produce a set with lost text or pictures.
  */
-export async function buildCards({doc,content,parseYaml,render,readMedia,frame,template=null,site=null,url,style='site',engineVersion='0',version=null,publishedVersion=null,
- signal,onProgress=()=>{},now=()=>new Date(),clean=cleanRendered,engine={paginate,rasterPage},math={extractMath,formulaPictures}}){
+export async function buildCards({doc,content,parseYaml,render,readMedia,frame,template=null,site=null,url,style='text',engineVersion='0',version=null,publishedVersion=null,
+ cardTheme='text',signal,onProgress=()=>{},now=()=>new Date(),clean=cleanRendered,engine={paginate,rasterPage},math={extractMath,formulaPictures}}){
  const source=wechatSource(content,parseYaml),host=doc.createElement('div'),missing=[],images=new Map();
  // `template` is the section's page template, or a function that picks one from the parsed work.
- const look=typeof template==='function'?template(source):template;
+ const sectionLook=typeof template==='function'?template(source):template,themeLook=CARD_THEMES[cardTheme]?.template;
+ const look=sectionLook||themeLook?{...(sectionLook||{}),...(themeLook||{})}:null;
  // Formulas are drawn as vector pictures at the card's text size (see math.mjs).
  const formulas=math.extractMath(source.markdown);
  await render(formulas.markdown,host);signal?.throwIfAborted();clean(host);
@@ -66,6 +87,7 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
   }else if(!value)missing.push(src||'(image without an address)');
   if(value)images.set(src,value);else img.remove();
  }
+ arrangeForCards(host,cardTheme);
  const measure=frame();let result,blobs=[];
  try{
   const model=cardModel({source,site,url,template:look,html:host.innerHTML});
@@ -82,5 +104,5 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
  const manifest=outputManifest({format:'cards',source:record,site:{id:site?.id||'unknown',name:site?.name||''},style,createdAt:now().toISOString(),engine:{name:'rssd-obsidian',version:engineVersion},
   sourceHash:await workFingerprint(work.data,localMediaPaths(work.media)),fields,files,
   warnings:[...checkSource(record).warnings,...warnings,...(formulas.error?[{code:'formula_unreadable',message:'A formula delimiter is not closed, so formulas were left as text: '+formulas.error}]:[]),...missing.map(name=>({code:'image_missing',message:'Picture could not be read and was left out: '+name}))]});
- return {title:source.title,pages,caption,missing,manifest,sectionId:source.sectionId,styled:!!look,size:CARD_SIZE};
+ return {title:source.title,pages,caption,missing,manifest,sectionId:source.sectionId,styled:!!sectionLook,size:CARD_SIZE};
 }
