@@ -175,7 +175,7 @@ test('tabs Obsidian has not loaded yet are named for their work too, even before
 });
 test('a card click replaces the work everywhere and keeps the tab in front; a ⌘-click opens a new tab',async()=>{
  const p=plugin(),root={},file=name=>Object.assign(new mock.TFile(),{path:'Works/'+name+'.md',extension:'md',basename:name}),old=file('old'),next=file('next'),other=file('other');
- const opened=[],shown=[],note=(held,activeTime)=>({view:{file:held},activeTime,getRoot:()=>root,openFile:async(f,state)=>{opened.push([held.basename,f.basename,state]);}});
+ const opened=[],shown=[],note=(held,activeTime)=>{const l={view:{file:held},activeTime,getRoot:()=>root,openFile:async(f,state)=>{opened.push([l.view.file.basename,f.basename,state]);l.view.file=f;}};return l;};
  const first=note(old,5),second=note(other,9),cards={view:{getViewType:()=>'rssd-cards',show:async f=>shown.push(f.basename)},getRoot:()=>root};
  let front=cards;const newTabs=[];p.refreshTitles=()=>{};
  p.app.workspace={rootSplit:root,getLeavesOfType:type=>type==='markdown'?[first,second]:type==='rssd-cards'?[cards]:[],getMostRecentLeaf:()=>front,getActiveFile:()=>null,
@@ -185,7 +185,7 @@ test('a card click replaces the work everywhere and keeps the tab in front; a �
  assert.deepEqual(opened,[['old','next',{active:false}]],'the note tab the plug-in used last is reused, behind the Cards tab that stays in front');
  assert.deepEqual(shown,['next'],'the RSSD tabs switch to the new work');assert.equal(p.shownWork,next);
  front=first;opened.length=0;await p.openWorkFile(old);
- assert.deepEqual(opened,[['old','old',{active:true}]],'with the note in front, the note shows the new work');
+ assert.deepEqual(opened,[['next','old',{active:true}]],'with the note in front, the same note tab shows the new work');
  await p.openWorkFile(other,{newTab:true});assert.deepEqual(newTabs,['other'],'⌘-click opens a new tab');
 });
 test('the panel finds the open work even while a sidebar tab has the focus',()=>{
