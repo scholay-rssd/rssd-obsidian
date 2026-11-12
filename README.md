@@ -76,7 +76,7 @@ Publishing, live production logs, the chat sidebar, merge view, logged-in source
 
 ## Works panel and command links
 
-Run **Open RSSD works** (or use the ribbon icon) to see readable titles and current sync states. Space selection lists authorized spaces; after downloading works the vault is bound to that space. A staged private draft is a separate migration branch and does not activate its site. Mobile cannot save private drafts.
+The **Works** tab in the left sidebar (or the command **Show the Works list**) shows readable titles and current sync states. Space selection lists authorized spaces; after downloading works the vault is bound to that space. A staged private draft is a separate migration branch and does not activate its site. Mobile cannot save private drafts.
 
 Command links are off by default and can be enabled in RSSD settings for an operator-controlled vault. Example:
 
