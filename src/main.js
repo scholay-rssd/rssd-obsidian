@@ -95,15 +95,15 @@ const TITLE_STYLE=`
 .rssd-works-card.is-active{border-color:var(--interactive-accent)}
 .rssd-works-card-body{min-width:0}
 .rssd-works-card-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;color:var(--text-normal);font-size:var(--font-ui-small);font-weight:var(--font-medium);line-height:1.35}
-.rssd-works-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;min-height:18px}
+.rssd-works-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
 .rssd-works-badge{padding:0 6px;border:1px solid var(--background-modifier-border);border-radius:999px;color:var(--text-muted);font-size:var(--font-ui-smaller);line-height:16px;white-space:nowrap}
 .rssd-works-badge.is-warning{border-color:transparent;background:color-mix(in srgb,var(--color-orange) 16%,transparent);color:var(--color-orange)}
 .rssd-works-badge.is-danger{border-color:transparent;background:color-mix(in srgb,var(--color-red) 14%,transparent);color:var(--color-red)}
 .rssd-works-badge.is-site{border-color:transparent;background:color-mix(in srgb,var(--color-blue) 14%,transparent);color:var(--color-blue)}
-.rssd-works-thumb{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:40px;height:40px;border:1px solid var(--background-modifier-border);border-radius:var(--radius-s);overflow:hidden;background:var(--background-secondary);color:var(--text-faint)}
+.rssd-works-thumb{grid-row:span 2;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:40px;height:40px;border:1px solid var(--background-modifier-border);border-radius:var(--radius-s);overflow:hidden;background:var(--background-secondary);color:var(--text-faint)}
 .rssd-works-thumb img{display:block;width:100%;height:100%;object-fit:cover}
 .rssd-works-thumb svg{width:16px;height:16px}
-.rssd-works-facts{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
+.rssd-works-facts{grid-column:1;align-self:end;display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
 .rssd-works-fact,.rssd-works-writer{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
 .rssd-works-fact-icon{display:flex}.rssd-works-fact-icon svg{width:12px;height:12px}
 .rssd-works-fact.is-missing,.rssd-works-writer.is-missing{color:var(--text-faint)}
@@ -942,8 +942,9 @@ class WorksView extends ItemView{
   const state=this.states.get(work.file.path)?.state,facts=this.facts.get(work.file.path);
   const body=card.createDiv({cls:'rssd-works-card-body'});
   body.createDiv({cls:'rssd-works-card-title',text:work.title});
-  const badges=body.createDiv({cls:'rssd-works-badges'});
-  for(const chip of cardChips({...work,state})){const badge=badges.createSpan({cls:'rssd-works-badge is-'+chip.tone,text:chip.text});badge.setAttribute('aria-label',chip.title);}
+  // Most works need nothing, so the chip row is only there when there is a chip.
+  const chips=cardChips({...work,state}),badges=chips.length?body.createDiv({cls:'rssd-works-badges'}):null;
+  for(const chip of chips){const badge=badges.createSpan({cls:'rssd-works-badge is-'+chip.tone,text:chip.text});badge.setAttribute('aria-label',chip.title);}
   // The first picture, read from the vault's media folder; nothing is downloaded.
   const thumb=card.createDiv({cls:'rssd-works-thumb'}),picture=work.media[0]?this.app.vault.getAbstractFileByPath(MEDIA_FOLDER+'/'+work.media[0]):null;
   if(picture instanceof TFile)thumb.createEl('img',{attr:{src:this.app.vault.getResourcePath(picture),alt:'',loading:'lazy',decoding:'async'}});
