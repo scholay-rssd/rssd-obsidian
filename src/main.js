@@ -749,10 +749,12 @@ class RssdSettings extends PluginSettingTab{
 // offline; "edited" means changed since the last sync with the Center.
 const WORK_STATES={synced:'Synced',edited:'Edited since the last sync',saving:'Saving to the Center',conflict:'Conflict: needs attention',unlinked:'Not updated from the Center yet'};
 const WORKS_PAGE=60;
+// Where writer labels are kept on this device. A new name makes every label be read again after a wording fix.
+const WRITERS_KEY='rssd-writers-2';
 class WorksView extends ItemView{
  constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.filter='all';this.lang='zh';this.collapsed=new Set();this.limits=new Map();this.states=new Map();this.facts=new Map();this.shown=new Map();this.timer=null;this.filling=false;this.fetchingWriters=false;
   // Who wrote each edition, read from the Center once per version and kept on this device.
-  this.writers=(()=>{try{const kept=this.app.loadLocalStorage?.('rssd-writers');return kept&&typeof kept==='object'?kept:{};}catch{return {};}})();
+  this.writers=(()=>{try{const kept=this.app.loadLocalStorage?.(WRITERS_KEY);return kept&&typeof kept==='object'?kept:{};}catch{return {};}})();
   this.layout=this.app.loadLocalStorage?.('rssd-works-layout')==='list'?'list':'cards';}
  getViewType(){return 'rssd-works';}
  getDisplayText(){return 'Works';}
@@ -855,7 +857,7 @@ class WorksView extends ItemView{
    }
   }finally{this.fetchingWriters=false;if(added)this.saveWriters();}
  }
- saveWriters(){try{this.app.saveLocalStorage?.('rssd-writers',this.writers);}catch{}}
+ saveWriters(){try{this.app.saveLocalStorage?.(WRITERS_KEY,this.writers);}catch{}}
  sectionNames(){
   const site=wechatSite(this.plugin.settings.workspaceId);
   return new Map((SITE_SECTIONS[site?.id]||[]).map((section,index)=>[section.id,{name:section.name,order:index}]));
