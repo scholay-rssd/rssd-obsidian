@@ -6,7 +6,7 @@ import {MEDIA_HOST} from '../src/reader.mjs';
 import {yaml,png} from './helpers.mjs';
 import {wechatTemplate,wechatSite} from '../src/wechat-template.mjs';
 import {wechatTemplates,wechatSites} from '../build-templates.mjs';
-import {SITE_MARKS,ARTICLE_THEMES,defaultArticleTheme,colours} from '../src/wechat-designs.mjs';
+import {SITE_MARKS,ARTICLE_THEMES,defaultArticleTheme,colours,articleDesign} from '../src/wechat-designs.mjs';
 import {CARD_THEMES} from '../src/cards.mjs';
 import {buildCards,cardModel,DEFAULT_CARD_TEMPLATE,CARD_SIZE} from '../src/cards.mjs';
 import {cardTemplate} from '../src/wechat-template.mjs';
@@ -62,7 +62,7 @@ test('every space takes its site name and its sections\' templates from the webs
  assert.equal(wechatTemplate('metho','methods'),null,'a build without bundled templates keeps the default look');
  works.accent='changed';assert.notEqual(table.personal.works.accent,'changed');
 });
-test('themes are shared by kind of article, sites keep only their name marks, and no two of either look alike',()=>{
+test('themes are shared by kind of article, each site has its own marks, and no two of either look alike',()=>{
  const sites=wechatSites(),c=colours({accent:'#436d70'}),s={name:'NAME',slogan:'SLOGAN',category:'CATEGORY'};
  const safe=(value,label)=>{
   // Pasted editors drop classes, scripts and positioned boxes; nothing may depend on them or overflow a column.
@@ -72,12 +72,24 @@ test('themes are shared by kind of article, sites keep only their name marks, an
   assert.doesNotMatch(value,/white-space:nowrap|overflow:hidden|float:/,label);
  };
  assert.deepEqual(Object.keys(SITE_MARKS).sort(),Object.values(sites).map(site=>site.id).sort());
- const marks={masthead:new Set(),signature:new Set()};
+ const marks={masthead:new Set(),signature:new Set(),chapter:new Set()},h={n:2,total:5,html:'<em>Heading</em> &amp; more'};
  for(const site of Object.values(sites)){
-  const m=SITE_MARKS[site.id];assert.deepEqual(Object.keys(m).sort(),['masthead','signature'],site.id);
-  for(const key of ['masthead','signature']){const value=m[key](s,c);safe(value,site.id+' '+key);assert.ok(!marks[key].has(value),site.id+' repeats a '+key);marks[key].add(value);}
+  const m=SITE_MARKS[site.id];assert.deepEqual(Object.keys(m).sort(),['chapter','code','masthead','signature','strong'],site.id);
+  for(const key of ['masthead','signature','chapter']){const value=key==='chapter'?m.chapter(h,c):m[key](s,c);safe(value,site.id+' '+key);assert.ok(!marks[key].has(value),site.id+' repeats a '+key);marks[key].add(value);}
+  const chapter=m.chapter(h,c);assert.ok(chapter.includes(h.html),site.id+' keeps the heading');assert.match(chapter,/<h2 /,site.id);
+  safe(m.strong(c),site.id+' strong');safe(m.code(c),site.id+' code');
   assert.ok(m.signature(s,c).includes('NAME')&&m.signature(s,c).includes('SLOGAN'),site.id);
   assert.ok(m.masthead({name:'<b>&"x',slogan:'',category:''},c).indexOf('<b>')<0,site.id+' escapes its name');
+  // The title sits in the header as information, quieter than WeChat's own title and the site's name.
+  const bare=m.masthead(s,c),titled=m.masthead({...s,title:'A <title> & more'},c);
+  let start=0;while(bare[start]===titled[start])start++;
+  let end=0;while(end<bare.length-start&&bare[bare.length-1-end]===titled[titled.length-1-end])end++;
+  const added=titled.slice(start,titled.length-end);
+  assert.ok(added.includes('A &lt;title&gt; &amp; more'),site.id+' shows the escaped title');safe(titled,site.id+' titled masthead');
+  for(const [,px] of added.matchAll(/font-size:(\d+)px/g))assert.ok(Number(px)<=15,site.id+' sets its title at '+px+'px');
+  for(const [,weight] of added.matchAll(/font-weight:(\d+)/g))assert.ok(Number(weight)<=600,site.id+' sets its title at weight '+weight);
+  assert.doesNotMatch(added,/<h\d/,site.id+' does not make the title a heading');
+  assert.equal(m.masthead({...s,title:''},c),bare,site.id+' without a title keeps its plain header');
  }
  assert.deepEqual(Object.keys(ARTICLE_THEMES),['classic','journal','briefing','technical','visual']);
  const seen={};
@@ -86,6 +98,18 @@ test('themes are shared by kind of article, sites keep only their name marks, an
   assert.ok(parts.chapter.includes('<em>Heading</em> &amp; more'),id);assert.match(parts.chapter,/<h2 /,id);assert.ok(theme.label,id);
   for(const [key,value] of Object.entries(parts)){safe(value,id+' '+key);if(['chapter','quote','h3'].includes(key)){seen[key]??=new Set();assert.ok(!seen[key].has(value),id+' repeats another theme\'s '+key);seen[key].add(value);}}
  }
+ // The site's own style opens chapters and marks terms the site's way; the rest is the section's theme.
+ const own=articleDesign('briefing',{id:'xsiching'}),plain=articleDesign('briefing',null);
+ assert.equal(own.chapter,SITE_MARKS.xsiching.chapter);assert.equal(own.strong,SITE_MARKS.xsiching.strong);assert.equal(own.code,SITE_MARKS.xsiching.code);
+ for(const key of ['h3','body'])assert.equal(own[key],ARTICLE_THEMES.briefing[key],key);
+ for(const key of ['quote','img'])assert.equal(own[key](c),ARTICLE_THEMES.briefing[key](c),key+' of a column in the plain variation');
+ assert.equal(plain,ARTICLE_THEMES.briefing,'a general theme is the theme alone');
+ assert.equal(articleDesign('briefing',{id:'unknown'}),ARTICLE_THEMES.briefing,'a site without marks keeps the theme');
+ assert.equal(articleDesign('nope',{id:'metho'}),null);
+ assert.match(SITE_MARKS.xsiching.chapter({n:3,total:4,html:'x'},c),/卷三[\s\S]*☲/,'xsiching opens 卷三 with its trigram');
+ assert.match(SITE_MARKS.study.chapter({n:2,total:4,html:'x'},c),/LESSON 02[\s\S]*\/ 04[\s\S]*width:50%/,'study fills its bar as the lessons go');
+ assert.match(SITE_MARKS.legis.chapter({n:1,total:2,html:'x'},c),/第一部分/);
+ assert.match(SITE_MARKS.xsime.chapter({n:3,total:4,html:'x'},c),/>F3</,'xsime numbers chapters as keys');
  assert.deepEqual(['dispatch','essay','ledger','archive','technical','guide','gallery','unknown',undefined].map(defaultArticleTheme),['briefing','classic','journal','journal','technical','technical','visual','classic','classic']);
  // Every layout the website gives a section maps to a theme of its own choosing, not the fallback by accident.
  for(const sections of Object.values(cardTemplates()))for(const template of Object.values(sections))assert.ok(['dispatch','essay','ledger','archive','technical','guide','gallery'].includes(template.layout),template.layout);

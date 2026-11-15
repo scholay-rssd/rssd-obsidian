@@ -777,7 +777,7 @@ export default class RssdPlugin extends Plugin{
    // carries no site marks, only the section's colours and fonts.
    const space=this.settings.workspaceId,own=style==='site',theme=own?this.sectionTheme(file):Object.prototype.hasOwnProperty.call(ARTICLE_THEMES,style)?style:null,site=own?wechatSite(space):null;
    return await wechatHtml({doc:document,content,parseYaml,template:source=>wechatTemplate(space,source.sectionId),
-    decorate:(html,{look,source})=>decorateWechat(document,html,{site,look,category:source.category,theme,locale:source.work.data.locale}),
+    decorate:(html,{look,source})=>decorateWechat(document,html,{site,look,category:source.category,theme,locale:source.work.data.locale,section:source.sectionId,title:source.title}),
     pack:{site:wechatSite(space)||{id:space||'unknown',name:''},style:own?'site:'+theme:style,engineVersion:this.manifest?.version||'0',...this.noteVersions(file)},
     render:(markdown,el)=>this.renderOutput(markdown,el,file,component),
     readMedia:async name=>{const path=MEDIA_FOLDER+'/'+name;return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;}});
@@ -820,7 +820,7 @@ export default class RssdPlugin extends Plugin{
   try{
    const result=await this.wechatResult(file,undefined,options);
    await copyRich(result);
-   new Notice('Copied as a formatted article'+(result.images?' with '+result.images+(result.images===1?' image':' images'):'')+'. Paste it into your editor; the title is not part of it and goes in the editor\'s own title field.',8000);
+   new Notice('Copied as a formatted article'+(result.images?' with '+result.images+(result.images===1?' image':' images'):'')+'. Paste it into your editor and put the title in the editor\'s own title field; the small title plate in the header is meant to stay.',8000);
    if(result.missing.length)new Notice('Left out '+result.missing.length+' image'+(result.missing.length===1?'':'s')+' not found in '+MEDIA_FOLDER+'/: '+result.missing.join(', '),10000);
    return result;
   }catch(error){console.error('RSSD article copy',error);new Notice('Could not copy the article: '+error.message,10000);}
