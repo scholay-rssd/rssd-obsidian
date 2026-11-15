@@ -1,6 +1,6 @@
 // RSSD for Obsidian, stage 1: open a space from the RSSD Center as a vault of drafts, see each work's sync
 // state, and save edits back as private drafts. Publishing is never done here.
-import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu,setIcon} from 'obsidian';
+import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu,setIcon,getIcon} from 'obsidian';
 import {OUTPUT_ATTRIBUTE,inOutput,stripReadingMarks} from './reading-marks.mjs';
 import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
@@ -777,7 +777,7 @@ export default class RssdPlugin extends Plugin{
    // carries no site marks, only the section's colours and fonts.
    const space=this.settings.workspaceId,own=style==='site',theme=own?this.sectionTheme(file):Object.prototype.hasOwnProperty.call(ARTICLE_THEMES,style)?style:null,site=own?wechatSite(space):null;
    return await wechatHtml({doc:document,content,parseYaml,template:source=>wechatTemplate(space,source.sectionId),
-    decorate:(html,{look,source})=>decorateWechat(document,html,{site,look,category:source.category,theme,locale:source.work.data.locale,section:source.sectionId,title:source.title}),
+    decorate:(html,{look,source})=>decorateWechat(document,html,{site,look,category:source.category,theme,locale:source.work.data.locale,section:source.sectionId,title:source.title,icons:name=>getIcon(name)?.outerHTML||null}),
     pack:{site:wechatSite(space)||{id:space||'unknown',name:''},style:own?'site:'+theme:style,engineVersion:this.manifest?.version||'0',...this.noteVersions(file)},
     render:(markdown,el)=>this.renderOutput(markdown,el,file,component),
     readMedia:async name=>{const path=MEDIA_FOLDER+'/'+name;return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;}});

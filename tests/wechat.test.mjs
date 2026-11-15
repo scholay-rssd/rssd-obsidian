@@ -67,17 +67,19 @@ test('themes are shared by kind of article, each site has its own marks, and no 
  const safe=(value,label)=>{
   // Pasted editors drop classes, scripts and positioned boxes; nothing may depend on them or overflow a column.
   assert.doesNotMatch(value,/class=|<script|<style|position:|javascript:|url\(/i,label);
-  assert.doesNotMatch(value,/="[^"]*"[^\s>]/,label+' has a broken attribute');
+  assert.doesNotMatch(value,/\s[\w-]+="[^"]*"[^\s>]/,label+' has a broken attribute');
   for(const [,px] of value.matchAll(/(?:^|[;"\s])(?:min-|max-)?width:(\d+)px/g))assert.ok(Number(px)<=60,label+' has a fixed width of '+px+'px');
   assert.doesNotMatch(value,/white-space:nowrap|overflow:hidden|float:/,label);
  };
  assert.deepEqual(Object.keys(SITE_MARKS).sort(),Object.values(sites).map(site=>site.id).sort());
  const marks={masthead:new Set(),signature:new Set(),chapter:new Set()},h={n:2,total:5,html:'<em>Heading</em> &amp; more'};
  for(const site of Object.values(sites)){
-  const m=SITE_MARKS[site.id];assert.deepEqual(Object.keys(m).sort(),['chapter','code','masthead','signature','strong'],site.id);
+  const m=SITE_MARKS[site.id];assert.deepEqual(Object.keys(m).filter(k=>k!=='chapters').sort(),['chapter','code','masthead','signature','strong'],site.id);
   for(const key of ['masthead','signature','chapter']){const value=key==='chapter'?m.chapter(h,c):m[key](s,c);safe(value,site.id+' '+key);assert.ok(!marks[key].has(value),site.id+' repeats a '+key);marks[key].add(value);}
   const chapter=m.chapter(h,c);assert.ok(chapter.includes(h.html),site.id+' keeps the heading');assert.match(chapter,/<h2 /,site.id);
   safe(m.strong(c),site.id+' strong');safe(m.code(c),site.id+' code');
+  // Icons are drawn, never emoji, which depend on the reader's emoji font.
+  for(const value of [m.masthead(s,c),m.signature(s,c),chapter,...Object.values(m.chapters||{}).map(f=>f(h,c))])assert.doesNotMatch(value,/\p{Emoji_Presentation}|\uFE0F/u,site.id+' uses an emoji');
   assert.ok(m.signature(s,c).includes('NAME')&&m.signature(s,c).includes('SLOGAN'),site.id);
   assert.ok(m.masthead({name:'<b>&"x',slogan:'',category:''},c).indexOf('<b>')<0,site.id+' escapes its name');
   // The title sits in the header as information, quieter than WeChat's own title and the site's name.
@@ -110,6 +112,33 @@ test('themes are shared by kind of article, each site has its own marks, and no 
  assert.match(SITE_MARKS.study.chapter({n:2,total:4,html:'x'},c),/LESSON 02[\s\S]*\/ 04[\s\S]*width:50%/,'study fills its bar as the lessons go');
  assert.match(SITE_MARKS.legis.chapter({n:1,total:2,html:'x'},c),/第一部分/);
  assert.match(SITE_MARKS.xsime.chapter({n:3,total:4,html:'x'},c),/>F3</,'xsime numbers chapters as keys');
+ // 小猪萌宠 opens each column's chapters with that column's animal, and never counts them as stops.
+ const pets=SITE_MARKS.pets,columns=Object.keys(cardTemplates().pets),petOpenings=new Set();
+ assert.deepEqual(Object.keys(pets.chapters).sort(),['daily-cat','daily-dog','exotic-pets','pet-news']);
+ for(const column of columns){
+  const opening=articleDesign(defaultArticleTheme(cardTemplates().pets[column].layout),{id:'pets'},column).chapter({n:2,total:3,html:'<em>标题</em>'},colours({accent:'#436d70'},name=>`<svg viewBox="0 0 24 24" class="lucide-${name}" stroke="currentColor"><path id="${name}" d="M0 0"/></svg>`));
+  safe(opening,'pets '+column);assert.ok(opening.includes('<em>标题</em>'),column);assert.match(opening,/02/,column+' numbers its chapters');
+  assert.doesNotMatch(opening.replace('<em>标题</em>',''),/[\u4e00-\u9fff]/,column+' labels a chapter with its icon and number only, no words');
+  if(Object.hasOwn(pets.chapters,column)){assert.ok(!petOpenings.has(opening),column+' repeats another column');petOpenings.add(opening);}
+ }
+ // Icons are Obsidian's ready-made ones, asked for by name and drawn in the column's colour as a picture.
+ const asked=[],set=name=>{asked.push(name);return name==='turtle'?null:`<svg xmlns="http://www.w3.org/2000/svg" class="svg-icon lucide-${name}" width="24" height="24" viewBox="0 0 24 24" stroke="currentColor"><path id="${name}" d="M0 0"/></svg>`;};
+ const withIcons=colours({accent:'#436d70'},set),icon=html=>{const m=/src="data:image\/svg\+xml;base64,([^"]+)"/.exec(html);return m?Buffer.from(m[1],'base64').toString():'';};
+ const petsOpening=column=>articleDesign('visual',{id:'pets'},column).chapter({n:1,total:2,html:'x'},withIcons);
+ assert.match(icon(petsOpening('daily-cat')),/id="paw-print"/,'cats open with a paw');
+ assert.match(icon(petsOpening('daily-dog')),/id="bone"/,'dogs open with a bone');
+ assert.match(icon(petsOpening('exotic-pets')),/id="egg"/,'exotic pets fall back to the egg when the set has no turtle');
+ assert.ok(asked.includes('turtle'),'the turtle is asked for first');
+ assert.match(icon(petsOpening('pet-news')),/id="newspaper"/);
+ for(const column of ['daily-cat','daily-dog','exotic-pets','pet-news']){
+  const opening=petsOpening(column),svg=icon(opening);
+  assert.match(opening,/>01</,column+' numbers its chapter');assert.match(svg,/stroke="#436d70"/,column+' draws its icon in the column colour');
+  assert.match(svg,/^<svg width="18" height="18"/,column+' sizes its icon');assert.doesNotMatch(svg,/class=/);safe(opening,'pets '+column+' with icons');
+ }
+ assert.doesNotMatch(petsOpening.call(null,'daily-cat').replace(/<img [^>]*>/,''),/<img/,'one icon per opening');
+ assert.doesNotMatch(SITE_MARKS.pets.chapters['daily-cat']({n:1,total:2,html:'x'},c),/<img/,'without an icon set an opening is its number alone');
+ assert.match(SITE_MARKS.pets.masthead({name:'小猪萌宠',slogan:'',category:''},withIcons),/data:image\/svg\+xml/,'the site signs with a paw icon');
+ assert.equal(articleDesign('journal',{id:'pets'},'history').chapter,pets.chapter,'other columns keep the site\'s paw print');
  assert.deepEqual(['dispatch','essay','ledger','archive','technical','guide','gallery','unknown',undefined].map(defaultArticleTheme),['briefing','classic','journal','journal','technical','technical','visual','classic','classic']);
  // Every layout the website gives a section maps to a theme of its own choosing, not the fallback by accident.
  for(const sections of Object.values(cardTemplates()))for(const template of Object.values(sections))assert.ok(['dispatch','essay','ledger','archive','technical','guide','gallery'].includes(template.layout),template.layout);

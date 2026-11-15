@@ -11,10 +11,25 @@ const SERIF="'Songti SC','STSong','Noto Serif CJK SC',Georgia,'Times New Roman',
 const MONO="'SF Mono',Menlo,Consolas,'Courier New',monospace";
 export const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const hex=(value,fallback)=>/^#[0-9a-fA-F]{6}$/.test(value||'')?value:fallback;
-export function colours(look={}){
+export function colours(look={},icons=null){
  const ink=hex(look.ink,'#23352f'),accent=hex(look.accent,'#35695f'),muted=hex(look.muted,'#637169'),paper=hex(look.paper,'#fcfdfb');
  const [r,g,b]=[1,3,5].map(i=>parseInt(accent.slice(i,i+2),16));
- return {ink,accent,muted,paper,tint:alpha=>`rgba(${r},${g},${b},${alpha})`};
+ return {ink,accent,muted,paper,tint:alpha=>`rgba(${r},${g},${b},${alpha})`,icon:(names,size,colour)=>iconPicture(icons,names,size,colour)};
+}
+/**
+ * A ready-made icon as a small picture: the first of `names` that `icons(name)` knows (Obsidian's own Lucide
+ * set, via getIcon), drawn in `colour` at `size` px. Its source is an SVG data URL, which the copy turns into
+ * a PNG (see wechat.mjs) because pasted editors take pictures, not inline SVG. Empty without an icon set.
+ */
+function iconPicture(icons,names,size,colour){
+ if(typeof icons!=='function')return '';
+ for(const name of [].concat(names)){
+  const markup=icons(name);if(typeof markup!=='string'||!/^<svg[\s>]/.test(markup.trim()))continue;
+  const svg=markup.trim().replace(/currentColor/g,colour).replace(/\s(width|height)="[^"]*"/g,'').replace(/^<svg/,`<svg width="${size}" height="${size}"`).replace(/\sclass="[^"]*"/g,'');
+  const data=btoa(Array.from(new TextEncoder().encode(svg),byte=>String.fromCharCode(byte)).join(''));
+  return `<img src="data:image/svg+xml;base64,${data}" alt="" width="${size}" height="${size}" style="display:inline-block;width:${size}px;height:${size}px;margin:0;vertical-align:middle;">`;
+ }
+ return '';
 }
 const two=n=>String(n).padStart(2,'0');
 const ROMAN=['Ⅰ','Ⅱ','Ⅲ','Ⅳ','Ⅴ','Ⅵ','Ⅶ','Ⅷ','Ⅸ','Ⅹ','Ⅺ','Ⅻ'];
@@ -30,6 +45,11 @@ const label=s=>esc(s.category?s.name+' · '+s.category:s.name);
 // as a heading; the plate is quiet enough to stay when the article is pasted. A header on a tinted panel of its own
 // gets a white plate so it still reads as one.
 const plate=(s,c,onTint=false)=>s.title?`<section style="margin:12px 0 0;text-align:center;"><section style="display:inline-block;max-width:100%;box-sizing:border-box;padding:5px 14px;background:${onTint?'#fff':c.tint(.07)};border:1px solid ${c.tint(.35)};border-radius:4px;"><p style="margin:0;font-size:13px;line-height:1.6;letter-spacing:.5px;color:${c.ink};">${esc(s.title)}</p></section></section>`:'';
+
+// 小猪萌宠's icons are ready-made Lucide icons (Obsidian's own set), never drawn here and never emoji.
+const PAW=['paw-print'];
+// 小猪萌宠's chapter opening: the column's icon and the chapter's number above the title in a bubble. No words.
+const petChapter=names=>(h,c)=>`<section style="margin:42px 0 18px;text-align:center;"><p style="margin:0 0 8px;line-height:1.6;">${c.icon(names,18,c.accent)}<span style="margin-left:8px;font-size:14px;line-height:1.6;font-weight:700;letter-spacing:1px;vertical-align:middle;color:${c.accent};">${two(h.n)}</span></p><section style="display:inline-block;padding:7px 22px;background:${c.tint(.14)};border-radius:999px;">${title(`font-size:17px;line-height:1.6;color:${c.ink};`,h.html)}</section></section>`;
 
 // Each site's own marks, used by its default style: how it signs the top and the end of an article, how a chapter
 // opens, and how a marked term (bold) and a name or command (inline code) read inside a sentence. The site's
@@ -108,11 +128,19 @@ export const SITE_MARKS={
   strong:c=>`font-weight:700;color:${c.ink};text-decoration:underline wavy ${c.tint(.7)};text-underline-offset:4px;`,
   code:c=>`font-family:${MONO};font-size:13px;color:${c.accent};background:${c.tint(.1)};border-radius:3px;padding:1px 5px;`,
  },
- // 小猪萌宠 — a walk: paw prints count the stops, headings sit in round bubbles.
+ // 小猪萌宠 — pets: a paw icon signs the site, each column's own icon opens a chapter, headings sit in round bubbles.
  pets:{
-  masthead:(s,c)=>`<section style="margin:0 0 24px;text-align:center;"><section style="display:inline-block;padding:7px 20px;background:${c.tint(.14)};border-radius:999px;"><span style="font-size:15px;line-height:1.6;font-weight:700;color:${c.ink};">🐾 ${esc(s.name)}</span><span style="font-size:12px;line-height:1.6;color:${c.muted};">　${esc(s.category||s.slogan)}</span></section>${plate(s,c)}</section>`,
-  signature:(s,c)=>`<section style="margin:40px 0 0;padding:12px 14px;border:1px dashed ${c.tint(.6)};border-radius:16px;text-align:center;"><p style="margin:0;font-size:13px;line-height:1.8;color:${c.muted};">🐾 <span style="font-weight:700;color:${c.ink};">${esc(s.name)}</span> · ${esc(s.slogan)}</p></section>`,
-  chapter:(h,c)=>`<section style="margin:42px 0 18px;text-align:center;"><p style="margin:0 0 6px;font-size:12px;line-height:1.6;letter-spacing:2px;color:${c.muted};">${'🐾'.repeat(Math.min(h.n,5))} 第 ${h.n} 站</p><section style="display:inline-block;padding:7px 22px;background:${c.tint(.14)};border-radius:999px;">${title(`font-size:17px;line-height:1.6;color:${c.ink};`,h.html)}</section></section>`,
+  masthead:(s,c)=>`<section style="margin:0 0 24px;text-align:center;"><section style="display:inline-block;padding:7px 20px;background:${c.tint(.14)};border-radius:999px;"><span style="font-size:15px;line-height:1.6;font-weight:700;color:${c.ink};">${c.icon(PAW,16,c.ink)} ${esc(s.name)}</span><span style="font-size:12px;line-height:1.6;color:${c.muted};">　${esc(s.category||s.slogan)}</span></section>${plate(s,c)}</section>`,
+  signature:(s,c)=>`<section style="margin:40px 0 0;padding:12px 14px;border:1px dashed ${c.tint(.6)};border-radius:16px;text-align:center;"><p style="margin:0;font-size:13px;line-height:1.8;color:${c.muted};">${c.icon(PAW,14,c.accent)} <span style="font-weight:700;color:${c.ink};">${esc(s.name)}</span> · ${esc(s.slogan)}</p></section>`,
+  chapter:petChapter(PAW),
+  // Each column opens its chapters with its own icon and the chapter's number, no words: a paw for cats, a bone for
+  // dogs, a turtle for exotic pets (an egg where the icon set has no turtle), a newspaper beside the news tag.
+  chapters:{
+   'daily-cat':petChapter(PAW),
+   'daily-dog':petChapter(['bone']),
+   'exotic-pets':petChapter(['turtle','egg']),
+   'pet-news':(h,c)=>`<section style="margin:34px 0 14px;padding-bottom:8px;border-bottom:1px dashed ${c.tint(.5)};"><p style="margin:0 0 6px;line-height:1.6;">${c.icon(['newspaper'],18,c.accent)}<span style="display:inline-block;margin-left:6px;vertical-align:middle;padding:1px 10px;background:${c.accent};border-radius:999px;font-size:12px;line-height:1.7;font-weight:700;letter-spacing:1px;color:#fff;">${two(h.n)}</span></p>${title(`font-size:17px;line-height:1.6;color:${c.ink};`,h.html)}</section>`,
+  },
   strong:c=>`font-weight:700;color:${c.ink};background:${c.tint(.18)};border-radius:6px;padding:0 4px;`,
   code:c=>`font-family:${SANS};font-size:13px;color:${c.accent};border:1px dashed ${c.accent};border-radius:999px;padding:0 8px;`,
  },
@@ -219,14 +247,15 @@ export function articleDesign(theme,site,section=''){
  const base=theme&&Object.prototype.hasOwnProperty.call(ARTICLE_THEMES,theme)?ARTICLE_THEMES[theme]:null,marks=siteMarks(site);
  if(!base||!marks)return base;
  const variant=columnVariant(site.id,section);
- return {...base,chapter:marks.chapter,strong:marks.strong,code:marks.code,variant:variant.id,h3Mark:variant.h3Mark,
+ const chapter=marks.chapters&&Object.prototype.hasOwnProperty.call(marks.chapters,section)?marks.chapters[section]:marks.chapter;
+ return {...base,chapter,strong:marks.strong,code:marks.code,variant:variant.id,h3Mark:variant.h3Mark,
   quote:c=>base.quote(c)+variant.quote(c),img:c=>base.img(c)+variant.img(c)};
 }
-export function decorateWechat(doc,html,{site,look,category='',theme=null,locale='zh-CN',section='',title=''}={}){
+export function decorateWechat(doc,html,{site,look,category='',theme=null,locale='zh-CN',section='',title='',icons=null}={}){
  const marks=siteMarks(site),design=articleDesign(theme,site,section);
  const host=doc.createElement('div');host.innerHTML=html;
  const root=host.firstElementChild;if(!root)return html;
- const c=colours(look);
+ const c=colours(look,icons);
  // The article has no frame and no width of its own: it fills the editor it is pasted into, at any width.
  // Long links and identifiers wrap, and a picture never grows past its own size or the column.
  root.setAttribute('style',(root.getAttribute('style')||'')+'font-size:15px;'+(design?design.body(c):'')+'overflow-wrap:anywhere;max-width:100%;box-sizing:border-box;');
