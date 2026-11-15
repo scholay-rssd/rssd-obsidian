@@ -5,7 +5,7 @@ import {wechatClipboardHtml,embedClipboardImages} from '../../web/engine/browser
 import {outputManifest,outputFields,checkSource} from '../../contracts/output-package.mjs';
 import {noteToWork,bytesToBase64,workFingerprint,localMediaPaths} from './sync-model.mjs';
 import {MEDIA_HOST,mediaType} from './reader.mjs';
-import {extractMath,formulaIndex,formulaPictures,formulaPng,formulaStyle} from './math.mjs';
+import {extractMath,formulaIndex,formulaPictures,formulaPng,formulaStyle,iconPng} from './math.mjs';
 
 /** The body to render: images point at MEDIA_HOST placeholders and a leading copy of the title is dropped. */
 export function wechatSource(content,parseYaml){
@@ -26,7 +26,7 @@ export function wechatSource(content,parseYaml){
  * is the look to apply, or a function that picks one from the parsed work (null keeps the default look).
  */
 export async function wechatHtml({doc,content,parseYaml,render,readMedia,template={},decorate,pack,signal,engine={wechatClipboardHtml,embedClipboardImages},
- math={extractMath,formulaPictures,formulaPng}}){
+ math={extractMath,formulaPictures,formulaPng,iconPng}}){
  const source=wechatSource(content,parseYaml),article=doc.createElement('article'),missing=[];
  const look=(typeof template==='function'?template(source):template)||{};
  // Formulas are drawn as pictures (see math.mjs); the editor would otherwise receive raw LaTeX.
@@ -53,6 +53,16 @@ export async function wechatHtml({doc,content,parseYaml,render,readMedia,templat
  const styled=engine.wechatClipboardHtml(article,look);
  // The site's own chapter openings and name marks go on last, over the engine's plain styling.
  let html=decorate?decorate(styled,{look,source}):styled;
+ // Icons arrive as SVG data URLs; pasted editors take pictures, so each becomes a PNG at its own size.
+ if(html.includes('data:image/svg+xml')){
+  const box=doc.createElement('div');box.innerHTML=html;
+  for(const img of [...box.querySelectorAll('img')]){
+   const src=img.getAttribute('src')||'';if(!src.startsWith('data:image/svg+xml'))continue;
+   const size=Number(img.getAttribute('width'))||16;
+   try{img.setAttribute('src',await math.iconPng(doc,src,size));}catch{img.remove();}
+  }
+  html=box.innerHTML;
+ }
  // A formula keeps its own size and sits on the text baseline, not stretched like a photo.
  if(placed.size){const box=doc.createElement('div');box.innerHTML=html;for(const img of box.querySelectorAll('img')){const picture=placed.get(img.getAttribute('src'));if(picture)img.setAttribute('style',formulaStyle(picture));}html=box.innerHTML;}
  // Plain text comes from the styled result, so it has no editor buttons and keeps one block per line.

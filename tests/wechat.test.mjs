@@ -67,7 +67,7 @@ test('themes are shared by kind of article, each site has its own marks, and no 
  const safe=(value,label)=>{
   // Pasted editors drop classes, scripts and positioned boxes; nothing may depend on them or overflow a column.
   assert.doesNotMatch(value,/class=|<script|<style|position:|javascript:|url\(/i,label);
-  assert.doesNotMatch(value,/="[^"]*"[^\s>]/,label+' has a broken attribute');
+  assert.doesNotMatch(value,/\s[\w-]+="[^"]*"[^\s>]/,label+' has a broken attribute');
   for(const [,px] of value.matchAll(/(?:^|[;"\s])(?:min-|max-)?width:(\d+)px/g))assert.ok(Number(px)<=60,label+' has a fixed width of '+px+'px');
   assert.doesNotMatch(value,/white-space:nowrap|overflow:hidden|float:/,label);
  };
@@ -116,16 +116,28 @@ test('themes are shared by kind of article, each site has its own marks, and no 
  const pets=SITE_MARKS.pets,columns=Object.keys(cardTemplates().pets),petOpenings=new Set();
  assert.deepEqual(Object.keys(pets.chapters).sort(),['daily-cat','daily-dog','exotic-pets','pet-news']);
  for(const column of columns){
-  const opening=articleDesign(defaultArticleTheme(cardTemplates().pets[column].layout),{id:'pets'},column).chapter({n:2,total:3,html:'<em>标题</em>'},c);
+  const opening=articleDesign(defaultArticleTheme(cardTemplates().pets[column].layout),{id:'pets'},column).chapter({n:2,total:3,html:'<em>标题</em>'},colours({accent:'#436d70'},name=>`<svg viewBox="0 0 24 24" class="lucide-${name}" stroke="currentColor"><path id="${name}" d="M0 0"/></svg>`));
   safe(opening,'pets '+column);assert.ok(opening.includes('<em>标题</em>'),column);assert.match(opening,/02/,column+' numbers its chapters');
   assert.doesNotMatch(opening.replace('<em>标题</em>',''),/[\u4e00-\u9fff]/,column+' labels a chapter with its icon and number only, no words');
   if(Object.hasOwn(pets.chapters,column)){assert.ok(!petOpenings.has(opening),column+' repeats another column');petOpenings.add(opening);}
  }
- const petsOpening=column=>articleDesign('visual',{id:'pets'},column).chapter({n:1,total:2,html:'x'},c);
- assert.match(petsOpening('daily-cat'),/／／／[\s\S]*>01</,'cats open with claw scratches');
- assert.match(petsOpening('daily-dog'),/width:12px;height:4px[\s\S]*>01</,'dogs open with a drawn bone');
- assert.match(petsOpening('exotic-pets'),/60% 60% 40% 40%[\s\S]*>01</,'exotic pets open with a drawn egg');
- assert.match(petsOpening('pet-news'),/>01</);
+ // Icons are Obsidian's ready-made ones, asked for by name and drawn in the column's colour as a picture.
+ const asked=[],set=name=>{asked.push(name);return name==='turtle'?null:`<svg xmlns="http://www.w3.org/2000/svg" class="svg-icon lucide-${name}" width="24" height="24" viewBox="0 0 24 24" stroke="currentColor"><path id="${name}" d="M0 0"/></svg>`;};
+ const withIcons=colours({accent:'#436d70'},set),icon=html=>{const m=/src="data:image\/svg\+xml;base64,([^"]+)"/.exec(html);return m?Buffer.from(m[1],'base64').toString():'';};
+ const petsOpening=column=>articleDesign('visual',{id:'pets'},column).chapter({n:1,total:2,html:'x'},withIcons);
+ assert.match(icon(petsOpening('daily-cat')),/id="paw-print"/,'cats open with a paw');
+ assert.match(icon(petsOpening('daily-dog')),/id="bone"/,'dogs open with a bone');
+ assert.match(icon(petsOpening('exotic-pets')),/id="egg"/,'exotic pets fall back to the egg when the set has no turtle');
+ assert.ok(asked.includes('turtle'),'the turtle is asked for first');
+ assert.match(icon(petsOpening('pet-news')),/id="newspaper"/);
+ for(const column of ['daily-cat','daily-dog','exotic-pets','pet-news']){
+  const opening=petsOpening(column),svg=icon(opening);
+  assert.match(opening,/>01</,column+' numbers its chapter');assert.match(svg,/stroke="#436d70"/,column+' draws its icon in the column colour');
+  assert.match(svg,/^<svg width="18" height="18"/,column+' sizes its icon');assert.doesNotMatch(svg,/class=/);safe(opening,'pets '+column+' with icons');
+ }
+ assert.doesNotMatch(petsOpening.call(null,'daily-cat').replace(/<img [^>]*>/,''),/<img/,'one icon per opening');
+ assert.doesNotMatch(SITE_MARKS.pets.chapters['daily-cat']({n:1,total:2,html:'x'},c),/<img/,'without an icon set an opening is its number alone');
+ assert.match(SITE_MARKS.pets.masthead({name:'小猪萌宠',slogan:'',category:''},withIcons),/data:image\/svg\+xml/,'the site signs with a paw icon');
  assert.equal(articleDesign('journal',{id:'pets'},'history').chapter,pets.chapter,'other columns keep the site\'s paw print');
  assert.deepEqual(['dispatch','essay','ledger','archive','technical','guide','gallery','unknown',undefined].map(defaultArticleTheme),['briefing','classic','journal','journal','technical','technical','visual','classic','classic']);
  // Every layout the website gives a section maps to a theme of its own choosing, not the fallback by accident.

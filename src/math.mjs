@@ -74,6 +74,15 @@ export async function formulaPng(doc,picture,{scale=3}={}){
  const url=canvas.toDataURL('image/png');canvas.width=1;canvas.height=1;return url;
 }
 
+/** An icon (an SVG data URL) as a PNG data URL, `size` px square, drawn at `scale` for sharp screens. */
+export async function iconPng(doc,src,size,{scale=3}={}){
+ const image=new (doc.defaultView.Image)();image.src=src;await image.decode();
+ const canvas=doc.createElement('canvas');canvas.width=canvas.height=Math.max(1,Math.round(size*scale));
+ const context=canvas.getContext('2d');if(!context)throw Error('An icon could not be drawn');
+ context.drawImage(image,0,0,canvas.width,canvas.height);
+ const url=canvas.toDataURL('image/png');canvas.width=1;canvas.height=1;return url;
+}
+
 /** How a formula picture sits in a copied article: inline on the text baseline, or centred on its own line. */
 export const formulaStyle=picture=>picture.display
  ?`display:block;width:${picture.width}px;max-width:100%;height:auto;margin:12px auto;`
