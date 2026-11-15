@@ -80,6 +80,16 @@ test('themes are shared by kind of article, each site has its own marks, and no 
   safe(m.strong(c),site.id+' strong');safe(m.code(c),site.id+' code');
   assert.ok(m.signature(s,c).includes('NAME')&&m.signature(s,c).includes('SLOGAN'),site.id);
   assert.ok(m.masthead({name:'<b>&"x',slogan:'',category:''},c).indexOf('<b>')<0,site.id+' escapes its name');
+  // The title sits in the header as information, quieter than WeChat's own title and the site's name.
+  const bare=m.masthead(s,c),titled=m.masthead({...s,title:'A <title> & more'},c);
+  let start=0;while(bare[start]===titled[start])start++;
+  let end=0;while(end<bare.length-start&&bare[bare.length-1-end]===titled[titled.length-1-end])end++;
+  const added=titled.slice(start,titled.length-end);
+  assert.ok(added.includes('A &lt;title&gt; &amp; more'),site.id+' shows the escaped title');safe(titled,site.id+' titled masthead');
+  for(const [,px] of added.matchAll(/font-size:(\d+)px/g))assert.ok(Number(px)<=15,site.id+' sets its title at '+px+'px');
+  for(const [,weight] of added.matchAll(/font-weight:(\d+)/g))assert.ok(Number(weight)<=600,site.id+' sets its title at weight '+weight);
+  assert.doesNotMatch(added,/<h\d/,site.id+' does not make the title a heading');
+  assert.equal(m.masthead({...s,title:''},c),bare,site.id+' without a title keeps its plain header');
  }
  assert.deepEqual(Object.keys(ARTICLE_THEMES),['classic','journal','briefing','technical','visual']);
  const seen={};
