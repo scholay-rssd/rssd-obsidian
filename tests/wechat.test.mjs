@@ -74,10 +74,12 @@ test('themes are shared by kind of article, each site has its own marks, and no 
  assert.deepEqual(Object.keys(SITE_MARKS).sort(),Object.values(sites).map(site=>site.id).sort());
  const marks={masthead:new Set(),signature:new Set(),chapter:new Set()},h={n:2,total:5,html:'<em>Heading</em> &amp; more'};
  for(const site of Object.values(sites)){
-  const m=SITE_MARKS[site.id];assert.deepEqual(Object.keys(m).sort(),['chapter','code','masthead','signature','strong'],site.id);
+  const m=SITE_MARKS[site.id];assert.deepEqual(Object.keys(m).filter(k=>k!=='chapters').sort(),['chapter','code','masthead','signature','strong'],site.id);
   for(const key of ['masthead','signature','chapter']){const value=key==='chapter'?m.chapter(h,c):m[key](s,c);safe(value,site.id+' '+key);assert.ok(!marks[key].has(value),site.id+' repeats a '+key);marks[key].add(value);}
   const chapter=m.chapter(h,c);assert.ok(chapter.includes(h.html),site.id+' keeps the heading');assert.match(chapter,/<h2 /,site.id);
   safe(m.strong(c),site.id+' strong');safe(m.code(c),site.id+' code');
+  // Icons are drawn, never emoji, which depend on the reader's emoji font.
+  for(const value of [m.masthead(s,c),m.signature(s,c),chapter,...Object.values(m.chapters||{}).map(f=>f(h,c))])assert.doesNotMatch(value,/\p{Emoji_Presentation}|\uFE0F/u,site.id+' uses an emoji');
   assert.ok(m.signature(s,c).includes('NAME')&&m.signature(s,c).includes('SLOGAN'),site.id);
   assert.ok(m.masthead({name:'<b>&"x',slogan:'',category:''},c).indexOf('<b>')<0,site.id+' escapes its name');
   // The title sits in the header as information, quieter than WeChat's own title and the site's name.
@@ -110,6 +112,21 @@ test('themes are shared by kind of article, each site has its own marks, and no 
  assert.match(SITE_MARKS.study.chapter({n:2,total:4,html:'x'},c),/LESSON 02[\s\S]*\/ 04[\s\S]*width:50%/,'study fills its bar as the lessons go');
  assert.match(SITE_MARKS.legis.chapter({n:1,total:2,html:'x'},c),/第一部分/);
  assert.match(SITE_MARKS.xsime.chapter({n:3,total:4,html:'x'},c),/>F3</,'xsime numbers chapters as keys');
+ // 小猪萌宠 opens each column's chapters with that column's animal, and never counts them as stops.
+ const pets=SITE_MARKS.pets,columns=Object.keys(cardTemplates().pets),petOpenings=new Set();
+ assert.deepEqual(Object.keys(pets.chapters).sort(),['daily-cat','daily-dog','exotic-pets','pet-news']);
+ for(const column of columns){
+  const opening=articleDesign(defaultArticleTheme(cardTemplates().pets[column].layout),{id:'pets'},column).chapter({n:2,total:3,html:'<em>标题</em>'},c);
+  safe(opening,'pets '+column);assert.ok(opening.includes('<em>标题</em>'),column);assert.match(opening,/02/,column+' numbers its chapters');
+  assert.doesNotMatch(opening.replace('<em>标题</em>',''),/[\u4e00-\u9fff]/,column+' labels a chapter with its icon and number only, no words');
+  if(Object.hasOwn(pets.chapters,column)){assert.ok(!petOpenings.has(opening),column+' repeats another column');petOpenings.add(opening);}
+ }
+ const petsOpening=column=>articleDesign('visual',{id:'pets'},column).chapter({n:1,total:2,html:'x'},c);
+ assert.match(petsOpening('daily-cat'),/／／／[\s\S]*>01</,'cats open with claw scratches');
+ assert.match(petsOpening('daily-dog'),/width:12px;height:4px[\s\S]*>01</,'dogs open with a drawn bone');
+ assert.match(petsOpening('exotic-pets'),/60% 60% 40% 40%[\s\S]*>01</,'exotic pets open with a drawn egg');
+ assert.match(petsOpening('pet-news'),/>01</);
+ assert.equal(articleDesign('journal',{id:'pets'},'history').chapter,pets.chapter,'other columns keep the site\'s paw print');
  assert.deepEqual(['dispatch','essay','ledger','archive','technical','guide','gallery','unknown',undefined].map(defaultArticleTheme),['briefing','classic','journal','journal','technical','technical','visual','classic','classic']);
  // Every layout the website gives a section maps to a theme of its own choosing, not the fallback by accident.
  for(const sections of Object.values(cardTemplates()))for(const template of Object.values(sections))assert.ok(['dispatch','essay','ledger','archive','technical','guide','gallery'].includes(template.layout),template.layout);
