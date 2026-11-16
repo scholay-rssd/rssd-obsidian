@@ -5,6 +5,7 @@
 // for that engine and describes the result as a package (contracts/output-package.mjs).
 import {paginate} from '../../web/engine/browser-export/pagination.mjs';
 import {rasterPage} from '../../web/engine/browser-export/raster.mjs';
+import {checkVisibleText} from './card-stylesheet.mjs';
 import {outputManifest,outputFields,checkSource} from '../../contracts/output-package.mjs';
 import {workFingerprint,localMediaPaths,bytesToBase64} from './sync-model.mjs';
 import {MEDIA_HOST,mediaType} from './reader.mjs';
@@ -64,12 +65,16 @@ const dataUrl=(name,bytes)=>{const data=bytesToBase64(bytes);return 'data:'+medi
  * `readMedia(name)` returns a vault image's bytes or null, `frame()` returns an iframe attached to the page
  * for measuring. Returns {title,pages:[{name,blob}],caption,missing,manifest}. A picture that cannot be read
  * is left out and named in `missing`; the engine itself refuses to produce a set with lost text or pictures.
+ * `cardCss` is a column's AI stylesheet (or a function of the parsed work returning it), already checked by checkCardStylesheet: the engine measures and draws
+ * with it, and a set whose text it hides, fades, shrinks or pushes off a card is refused.
  */
 export async function buildCards({doc,content,parseYaml,render,readMedia,frame,template=null,site=null,url,style='text',engineVersion='0',version=null,publishedVersion=null,
- cardTheme='text',signal,onProgress=()=>{},now=()=>new Date(),clean=cleanRendered,engine={paginate,rasterPage},math={extractMath,formulaPictures}}){
+ cardTheme='text',cardCss='',signal,onProgress=()=>{},now=()=>new Date(),clean=cleanRendered,engine={paginate,rasterPage},math={extractMath,formulaPictures}}){
  const source=wechatSource(content,parseYaml),host=doc.createElement('div'),missing=[],images=new Map();
  // `template` is the section's page template, or a function that picks one from the parsed work.
  const sectionLook=typeof template==='function'?template(source):template,themeLook=CARD_THEMES[cardTheme]?.template;
+ // `cardCss`, like `template`, may be chosen from the parsed work (its column's stylesheet).
+ const css=typeof cardCss==='function'?await cardCss(source):cardCss||'';signal?.throwIfAborted();
  const look=sectionLook||themeLook?{...(sectionLook||{}),...(themeLook||{})}:null;
  // Formulas are drawn as vector pictures at the card's text size (see math.mjs).
  const formulas=math.extractMath(source.markdown);
@@ -91,8 +96,9 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
  const measure=frame();let result,blobs=[];
  try{
   const model=cardModel({source,site,url,template:look,html:host.innerHTML});
-  result=await engine.paginate(measure,model,{signal,pause,onProgress:count=>onProgress({stage:'layout',count}),
+  result=await engine.paginate(measure,model,{signal,pause,extraStyle:css,onProgress:count=>onProgress({stage:'layout',count}),
    loadImage:async address=>{const value=images.get(address);if(!value)throw Object.assign(Error('A picture could not be read: '+address),{code:'image_unreadable'});return value;}});
+  if(css){const problems=checkVisibleText(result.pages);if(problems.length)throw Object.assign(Error('The card style hides part of the work: '+problems.slice(0,3).join('; ')+(problems.length>3?' and '+(problems.length-3)+' more':'')),{code:'card_style_hides_text',problems});}
   for(let i=0;i<result.pages.length;i++){signal?.throwIfAborted();onProgress({stage:'draw',count:i+1,total:result.pages.length});blobs.push(await engine.rasterPage(result.pages[i],result.style,{scale:CARD_SCALE,signal}));}
  }finally{measure.remove?.();}
  const width=String(Math.max(2,String(blobs.length).length)),pages=blobs.map((blob,i)=>({name:String(i+1).padStart(Number(width),'0')+'.png',blob}));
@@ -104,5 +110,5 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
  const manifest=outputManifest({format:'cards',source:record,site:{id:site?.id||'unknown',name:site?.name||''},style,createdAt:now().toISOString(),engine:{name:'rssd-obsidian',version:engineVersion},
   sourceHash:await workFingerprint(work.data,localMediaPaths(work.media)),fields,files,
   warnings:[...checkSource(record).warnings,...warnings,...(formulas.error?[{code:'formula_unreadable',message:'A formula delimiter is not closed, so formulas were left as text: '+formulas.error}]:[]),...missing.map(name=>({code:'image_missing',message:'Picture could not be read and was left out: '+name}))]});
- return {title:source.title,pages,caption,missing,manifest,sectionId:source.sectionId,styled:!!sectionLook,size:CARD_SIZE};
+ return {title:source.title,pages,caption,missing,manifest,sectionId:source.sectionId,styled:!!sectionLook||!!css,size:CARD_SIZE};
 }

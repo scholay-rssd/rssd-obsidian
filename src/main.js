@@ -22,6 +22,7 @@ import {wechatHtml,copyRich} from './wechat.mjs';
 import {wechatTemplate,wechatSite,cardTemplate} from './wechat-template.mjs';
 import {decorateWechat,ARTICLE_THEMES,defaultArticleTheme} from './wechat-designs.mjs';
 import {buildCards,CARD_THEMES} from './cards.mjs';
+import {CARD_STYLE_FOLDER,cardStylePath,checkCardStylesheet,cardStyleBrief} from './card-stylesheet.mjs';
 import {DETAIL_FIELDS,IDENTITY_FIELDS,fieldText,counters,cleanValue} from './details.mjs';
 import {checkSource} from '../../contracts/output-package.mjs';
 import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,notePath,noteToWork,workFingerprint,localMediaPaths} from './sync-model.mjs';
@@ -288,6 +289,8 @@ export default class RssdPlugin extends Plugin{
   this.addCommand({id:'pull',name:'Update works from the Center',callback:()=>this.pull()});
   this.addCommand({id:'save',name:'Save this work to the Center as a private draft',checkCallback:checking=>{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)this.save(file);return true;}});
+  this.addCommand({id:'copy-card-style-brief',name:'Copy the AI card style brief for this column',checkCallback:checking=>{
+   const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.copyCardStyleBrief(file);return true;}});
   this.addCommand({id:'copy-article',name:'Copy this work as a formatted article',checkCallback:checking=>{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.copyForWechat(file);return true;}});
   for(const [type,id] of SIDEBAR_VIEWS)this.registerView(type,leaf=>new LayoutPreview(leaf,this,type,id));
@@ -832,13 +835,38 @@ export default class RssdPlugin extends Plugin{
   try{
    const adapter=this.app.vault.adapter;content??=await this.app.vault.read(file);
    const space=this.settings.workspaceId,site=wechatSite(space);
-   return await buildCards({doc:document,content,parseYaml,signal,onProgress,style,cardTheme:style==='site'?'text':style,site,url:site?.origin||centerOrigin(this.settings.origin),
+   // The AI style is the site's own layout with the column's stylesheet on top.
+   const ai=style==='ai';
+   return await buildCards({doc:document,content,parseYaml,signal,onProgress,style,cardTheme:style==='site'||ai?'text':style,site,url:site?.origin||centerOrigin(this.settings.origin),
+    ...(ai?{cardCss:source=>this.cardStylesheet(source.sectionId)}:{}),
     template:source=>cardTemplate(space,source.sectionId),engineVersion:this.manifest?.version||'0',...this.noteVersions(file),
     render:(markdown,el)=>this.renderOutput(markdown,el,file,component),
     readMedia:async name=>{const path=MEDIA_FOLDER+'/'+name;return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;},
     // The page engine measures in a document of its own, kept off screen.
     frame:()=>{const frame=document.createElement('iframe');frame.setAttribute('aria-hidden','true');frame.tabIndex=-1;frame.style.cssText='position:fixed;left:-10000px;top:0;width:720px;height:960px;border:0;visibility:hidden';document.body.append(frame);return frame;}});
   }finally{component.unload();}
+ }
+ /** Copies, as plain text, what an agent needs to write this column's AI card stylesheet. */
+ async copyCardStyleBrief(file){
+  const space=this.settings.workspaceId,site=wechatSite(space),sectionId=String(this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']||'');
+  if(!sectionId){new Notice('This work has no column (rssd-section), so it has no card style.');return;}
+  const section=(SITE_SECTIONS[site?.id]||[]).find(item=>item.id===sectionId);
+  const brief=cardStyleBrief({siteName:site?.name||'',sectionId,sectionName:section?.name||'',look:cardTemplate(space,sectionId)||{}});
+  try{await navigator.clipboard.writeText(brief);new Notice('Copied the AI card style brief for '+(section?.name||sectionId)+'. Give it to the agent; it writes '+cardStylePath(sectionId)+'.',8000);}
+  catch(error){new Notice('Could not copy the brief: '+error.message,8000);}
+ }
+ /** The column's AI card stylesheet file (card-styles/<section>.css), or null when the column has none. */
+ cardStyleFile(file){
+  const section=file?String(this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']||''):'';
+  if(!/^[a-z0-9][a-z0-9-]{0,63}$/.test(section))return null;
+  const found=this.app.vault.getAbstractFileByPath(cardStylePath(section));return found instanceof TFile?found:null;
+ }
+ /** Reads and checks a column's AI card stylesheet. Throws, naming the file, when it is missing or not allowed. */
+ async cardStylesheet(sectionId){
+  const path=cardStylePath(sectionId),found=this.app.vault.getAbstractFileByPath(path);
+  if(!(found instanceof TFile))throw Error('This column has no AI card style yet: add '+path);
+  try{return checkCardStylesheet(await this.app.vault.read(found)).css;}
+  catch(error){throw Error(path+' cannot be used: '+error.message);}
  }
  /** Writes the cards as a package into the vault: the pictures, their caption and the manifest. Nothing is sent anywhere. */
  async saveCards(file,result){
@@ -1396,7 +1424,9 @@ const PREVIEW_TARGETS=[
   styles:[{id:'site',site:true},...Object.entries(ARTICLE_THEMES).map(([id,theme],index)=>({id,label:String(index+1),name:theme.label}))],
   build:(plugin,file,content,style)=>plugin.wechatResult(file,content,{style}),copy:(plugin,file,style)=>plugin.copyForWechat(file,{style})},
  {id:'cards',label:'Cards',name:'Card view',icon:'gallery-vertical-end',copyLabel:'Save cards',actionIcon:'download',
-  styles:[{id:'site',site:true},...Object.entries(CARD_THEMES).filter(([id])=>id!=='text').map(([id,theme],index)=>({id,label:String(index+1),name:theme.label}))],
+  styles:[{id:'site',site:true},...Object.entries(CARD_THEMES).filter(([id])=>id!=='text').map(([id,theme],index)=>({id,label:String(index+1),name:theme.label})),
+   // Shown only for a column that has an AI stylesheet in card-styles/.
+   {id:'ai',label:'AI',name:'AI style written for this column (card-styles/)',when:(plugin,file)=>!!plugin.cardStyleFile(file)}],
   build:(plugin,file,content,style,options)=>plugin.cardsResult(file,content,{style,...options}),copy:(plugin,file,style,result)=>plugin.saveCards(file,result)},
  // Outline and details are not outputs: they show how the work is built and what it is, beside the outputs.
  {id:'outline',label:'Outline',name:'Outline',icon:'list',styles:[],panel:'outline'},
@@ -1413,9 +1443,11 @@ class LayoutPreview extends ItemView{
  /** An icon button; its label is read out and shown as a tooltip. */
  iconButton(parent,icon,label,cls=''){const button=parent.createEl('button',{cls:'rssd-preview-icon'+(cls?' '+cls:'')});setIcon(button,icon);button.setAttribute('aria-label',label);return button;}
  /** Draw the output's style tabs and its action icon; choosing a style re-renders the preview. */
- drawTabs(){
+ drawTabs(file=this.file){
   this.styleTabs.empty();
-  for(const style of this.target.styles){
+  const styles=this.target.styles.filter(style=>!style.when||style.when(this.plugin,file));
+  if(!styles.some(style=>style.id===this.style))this.style=styles[0]?.id||'';
+  for(const style of styles){
    const label=style.site?'Default':style.label,name=style.site?'Default: '+this.plugin.siteName()+'\'s own style for this section':style.name;
    const active=style.id===this.style,tab=this.styleTabs.createEl('button',{text:label,cls:'rssd-preview-tab'+(style.site?'':' is-number')+(active?' is-active':'')});tab.setAttribute('aria-pressed',String(active));
    tab.setAttribute('aria-label',name);
@@ -1451,6 +1483,12 @@ class LayoutPreview extends ItemView{
   this.registerEvent(this.app.workspace.on('file-open',file=>{if(file&&this.plugin.isWork(file))void this.show(file);}));
   // Cards are redrawn page by page, so they wait longer for typing to pause.
   this.registerEvent(this.app.vault.on('modify',file=>{if(file===this.file){window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.show(this.file),this.target.id==='cards'?2500:800);}}));
+  // A column stylesheet added, changed or removed: the AI tab comes or goes, and AI cards are drawn again.
+  if(this.target.id==='cards')for(const event of ['create','modify','delete','rename'])this.registerEvent(this.app.vault.on(event,(file,oldPath)=>{
+   const inFolder=path=>typeof path==='string'&&path.startsWith(CARD_STYLE_FOLDER+'/');if(!inFolder(file?.path)&&!inFolder(oldPath))return;
+   const before=this.style;this.drawTabs();
+   if(this.file&&(before==='ai'||this.style!==before)){window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.show(this.file,{force:true}),1200);}
+  }));
   this.registerEvent(this.app.workspace.on('active-leaf-change',leaf=>{if(leaf===this.leaf){this.catchUp();return;}const file=leaf?.view?.file;if(file&&this.plugin.isWork(file)&&file!==this.file)void this.show(file);}));
   // Details redraw after the note changes, but never under a field that is being edited.
   this.registerEvent(this.app.metadataCache.on('changed',file=>{if(file!==this.file)return;if(this.target.panel==='details'&&!this.detailsEl.contains(document.activeElement))void this.details.show(file);if(this.target.panel==='outline')this.outline.show(file);}));
@@ -1497,7 +1535,7 @@ class LayoutPreview extends ItemView{
   if(!this.target.panel&&this.containerEl.isShown&&!this.containerEl.isShown()){this.waiting=true;this.pendingFile=file||null;return;}
   this.waiting=false;this.pendingFile=null;
   // A newly opened work starts with its section's usual theme; a choice holds while the same work stays open.
-  if(!this.target.panel&&file&&file!==this.file){this.defaultStyle=this.plugin.defaultStyle(this.target.id,file);this.style=this.defaultStyle;this.drawTabs();
+  if(!this.target.panel&&file&&file!==this.file){this.defaultStyle=this.plugin.defaultStyle(this.target.id,file);this.style=this.defaultStyle;this.drawTabs(file);
    // The theme tabs take the colour of the work's section.
    const accent=this.plugin.sectionAccent(file);if(accent)this.controls.style.setProperty('--rssd-accent',accent);else this.controls.style.removeProperty('--rssd-accent');}
   const seq=++this.seq,panel=this.target.panel;
