@@ -7,7 +7,7 @@ export function memoryVault(){
     throw Object.assign(Error('Local edits were kept'),{code:'local_edit_during_pull'});
    files.set(p,c);
   },
-  readBinary:async p=>files.has(p)?files.get(p):null,writeBinary:async(p,b)=>{if(!files.has(p))files.set(p,b);}};
+  readBinary:async p=>files.has(p)?files.get(p):null,writeBinary:async(p,b)=>{if(!files.has(p))files.set(p,b);},remove:async p=>{files.delete(p);}};
 }
 export function memoryStore(){
  const data={},byLocale={};

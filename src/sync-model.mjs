@@ -166,7 +166,7 @@ export const STATE_LABELS={not_downloaded:'Not downloaded',missing:'Note missing
 
 const fail=message=>{throw Error(message);};
 /** The exact-base private save the Center expects. Problems are reported before anything is sent. */
-export function draftEnvelope({work,base,requestKey,assets,allowEmptyOptional=false,allowStructured=false}){
+export function draftEnvelope({work,base,requestKey,assets,allowEmptyOptional=false,allowStructured=false,privateAppend=null}){
  const {data}=work;
  if(!base)fail('Update this work from the Center before saving it');
  if(base.readOnly||work.kind!=='news')if(!allowStructured||!base.readOnly||!isStructuredKind(work.kind))fail('Structured records cannot be edited in Obsidian yet');
@@ -177,7 +177,17 @@ export function draftEnvelope({work,base,requestKey,assets,allowEmptyOptional=fa
  if(!/^[a-zA-Z0-9_-]{12,128}$/.test(requestKey||''))fail('Invalid request key');
  return {requestKey,expectedVersion:base.version,expectedPublishedVersion:base.publishedVersion??null,
   data:{id:data.id,title:data.title,summary:data.summary,markdown:data.markdown,date:data.date,author:data.author,category:data.category,
-   sectionId:data.sectionId,...(data.locale!=='zh-CN'?{locale:data.locale}:{}),assets}};
+   sectionId:data.sectionId,...(data.locale!=='zh-CN'?{locale:data.locale}:{}),assets,...(privateAppend?{privateAppend}:{})}};
+}
+
+/** Where a work's pending private record waits for its next save (for example who drew its pictures). Hidden from the vault. */
+export const privateAdditionPath=(id,locale)=>'.rssd/private-additions/'+id+'.'+(locale||'zh-CN')+'.json';
+/** A private addition: completed runs and appended internal notes only. Anything else is refused, not sent. */
+export function parsePrivateAddition(text){
+ if(text==null)return null;let value;try{value=JSON.parse(text);}catch{fail('The private record waiting for this work is not valid JSON');}
+ if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!['modelSignatures','internalNotes'].includes(key)))fail('The private record waiting for this work has unknown fields');
+ if(value.modelSignatures!==undefined&&(!Array.isArray(value.modelSignatures)||value.modelSignatures.some(run=>!run||run.status!=='completed'||typeof run.runId!=='string')))fail('The private record waiting for this work has an unfinished run');
+ return value;
 }
 
 export function bytesToBase64(bytes){

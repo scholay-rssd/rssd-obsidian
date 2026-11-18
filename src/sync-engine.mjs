@@ -3,7 +3,7 @@
 // note with local changes; a save carries the exact base and is refused when the Center moved; saving never
 // publishes; a save whose answer was lost is recovered by its original request key, never resent.
 import {workToNote,noteToWork,updateNoteVersion,workFingerprint,centerMediaPaths,localMediaPaths,workState,draftEnvelope,isReadOnlyWork,isStructuredKind,verifyStructuredDetail,mediaHash,packWorkMedia,
- bytesToBase64,base64ToBytes,notePath,checkLocale,MEDIA_FOLDER} from './sync-model.mjs';
+ bytesToBase64,base64ToBytes,notePath,checkLocale,MEDIA_FOLDER,privateAdditionPath,parsePrivateAddition} from './sync-model.mjs';
 import {checkCanonicalPull} from './path-guard.mjs';
 
 const PAGE=100,DETAIL_CONCURRENCY=3,BATCH_SIZE=8;
@@ -395,8 +395,11 @@ export class SyncEngine{
     return repaired.metadataUpdated?{state:'unchanged'}:{state:'unchanged',...repaired};
    }
   }
+  // A private record waiting for this work (who drew its pictures) goes with the save, only to a Center that keeps it private.
+  const additionPath=privateAdditionPath(work.data.id,work.data.locale),privateAppend=parsePrivateAddition(await this.vault.read(additionPath));
+  if(privateAppend&&current.acceptsPrivateAppendOnSave!==true)throw Object.assign(Error('This Center cannot keep the private picture record yet; local edits were kept. Update the Center before saving'),{code:'private_append_unavailable'});
   const packed=await packWorkMedia(work,mediaBytes);
-  const requestKey=newRequestKey(),envelope=draftEnvelope({work:packed.work,base,requestKey,assets:packed.assets,allowEmptyOptional:blank.length>0,allowStructured:structured});
+  const requestKey=newRequestKey(),envelope=draftEnvelope({work:packed.work,base,requestKey,assets:packed.assets,allowEmptyOptional:blank.length>0,allowStructured:structured,privateAppend});
   // Keep the key before the first request so a lost answer can be recovered rather than resent.
   await this.store.set(workspaceId,work.data.id,{...base,pending:{requestKey,fingerprint,mediaHashes}},work.data.locale);
   let receipt;
@@ -408,7 +411,10 @@ export class SyncEngine{
    if(error.status>=400&&error.status<500&&error.status!==408){await this.store.set(workspaceId,work.data.id,base,work.data.locale);throw error;}
    throw Object.assign(error,{retained:true});
   }
-  return this.confirm(workspaceId,work.data.id,base,fingerprint,receipt,requestKey,mediaHashes);
+  const confirmed=await this.confirm(workspaceId,work.data.id,base,fingerprint,receipt,requestKey,mediaHashes);
+  // Saved with the draft; a copy left behind would only be skipped by the Center as already recorded.
+  if(privateAppend&&this.vault.remove)await this.vault.remove(additionPath).catch(()=>{});
+  return confirmed;
  }
 
  async recover(workspaceId,path,base){
