@@ -173,20 +173,64 @@ test('tabs Obsidian has not loaded yet are named for their work too, even before
  p.refreshTitles();
  assert.deepEqual(Object.fromEntries(texts),{note:'10-19 生存分析如何读懂未完的随访',article:'Article · 生存分析如何读懂未完的随访',details:'Details · 生存分析如何读懂未完的随访'});
 });
-test('a card click replaces the work everywhere and keeps the tab in front; a ⌘-click opens a new tab',async()=>{
- const p=plugin(),root={},file=name=>Object.assign(new mock.TFile(),{path:'Works/'+name+'.md',extension:'md',basename:name}),old=file('old'),next=file('next'),other=file('other');
- const opened=[],shown=[],note=(held,activeTime)=>{const l={view:{file:held},activeTime,getRoot:()=>root,openFile:async(f,state)=>{opened.push([l.view.file.basename,f.basename,state]);l.view.file=f;}};return l;};
- const first=note(old,5),second=note(other,9),cards={view:{getViewType:()=>'rssd-cards',show:async f=>shown.push(f.basename)},getRoot:()=>root};
- let front=cards;const newTabs=[];p.refreshTitles=()=>{};
- p.app.workspace={rootSplit:root,getLeavesOfType:type=>type==='markdown'?[first,second]:type==='rssd-cards'?[cards]:[],getMostRecentLeaf:()=>front,getActiveFile:()=>null,
-  getLeaf:kind=>{assert.equal(kind,'tab');const l={openFile:async f=>newTabs.push(f.basename)};return l;}};
- p.shownWork=old;
- await p.openWorkFile(next);
- assert.deepEqual(opened,[['old','next',{active:false}]],'the note tab the plug-in used last is reused, behind the Cards tab that stays in front');
- assert.deepEqual(shown,['next'],'the RSSD tabs switch to the new work');assert.equal(p.shownWork,next);
- front=first;opened.length=0;await p.openWorkFile(old);
- assert.deepEqual(opened,[['next','old',{active:true}]],'with the note in front, the same note tab shows the new work');
- await p.openWorkFile(other,{newTab:true});assert.deepEqual(newTabs,['other'],'⌘-click opens a new tab');
+test('a list click keeps four tabs in one section and replaces the work inside them',async()=>{
+ const p=plugin(),root={},group={type:'tabs',children:[]},shown=[],revealed=[],leaves=[];
+ const make=(type)=>{const leaf={type,parent:group,view:{getViewType:()=>leaf.type,show:async file=>shown.push(leaf.type+':'+file.basename)},getRoot:()=>root,detach(){leaf.detached=true;},setViewState:async state=>{leaf.type=state.type;},openFile:async file=>{leaf.type='markdown';leaf.view.file=file;}};group.children.push(leaf);leaves.push(leaf);return leaf;};
+ const cards=make('rssd-cards');let front=cards;p.refreshTitles=()=>{};
+ p.app.workspace={rootSplit:root,getMostRecentLeaf:()=>front,getActiveFile:()=>null,revealLeaf:leaf=>revealed.push(leaf),
+  getLeavesOfType:type=>leaves.filter(leaf=>leaf.type===type&&!leaf.detached),
+  createLeafInParent:(parent)=>{assert.equal(parent,group,'a new view joins the open section');return make(null);},
+  getLeaf:()=>assert.fail('a new view is a tab, not another section')};
+ const file=name=>Object.assign(new mock.TFile(),{path:'Works/'+name+'.md',extension:'md',basename:name});
+ await p.openWorkFile(file('next'));
+ const note=()=>leaves.find(leaf=>leaf.type==='markdown'&&!leaf.detached);
+ assert.deepEqual(leaves.filter(leaf=>!leaf.detached).map(leaf=>leaf.type),['rssd-cards','markdown','rssd-article','rssd-outline','rssd-details']);
+ assert.equal(note().view.file.basename,'next','the editable note opens beside the four views');
+ assert.equal(new Set(leaves.filter(leaf=>!leaf.detached).map(leaf=>leaf.parent)).size,1);
+ assert.deepEqual(shown,['rssd-article:next','rssd-cards:next','rssd-outline:next','rssd-details:next']);
+ assert.equal(revealed.at(-1),note(),'the note comes forward the first time');
+ shown.length=0;await p.openWorkFile(file('later'));
+ assert.equal(leaves.filter(leaf=>!leaf.detached).length,5,'a later choice does not add a tab');
+ assert.equal(note().view.file.basename,'later');
+ assert.deepEqual(shown,['rssd-article:later','rssd-cards:later','rssd-outline:later','rssd-details:later']);
+ assert.equal(revealed.at(-1),cards,'a view already in front stays in front once the note is open');
+});
+test('a list click opens four tabs in the editor tab bar and does not split out a new region',async()=>{
+ const p=plugin(),root={type:'split',children:[]},group={type:'tabs',children:[]};root.children.push(group);
+ const leaves=[],parents=[];
+ const empty={type:'empty',parent:group,view:{getViewType:()=>'empty'},getRoot:()=>root,openFile:async file=>{empty.type='markdown';empty.view.file=file;empty.view.getViewType=()=>'markdown';}};
+ group.children.push(empty);leaves.push(empty);
+ const revealed=[];
+ const make=()=>{const leaf={type:null,parent:group,view:{getViewType:()=>leaf.type,show:async()=>{}},getRoot:()=>root,detach(){leaf.detached=true;},setViewState:async state=>{leaf.type=state.type;},openFile:async file=>{leaf.type='markdown';leaf.view.file=file;}};group.children.push(leaf);leaves.push(leaf);return leaf;};
+ p.refreshTitles=()=>{};
+ p.app.workspace={rootSplit:root,getMostRecentLeaf:asked=>asked===root||asked===undefined?empty:null,getActiveFile:()=>null,revealLeaf:leaf=>revealed.push(leaf),
+  getLeavesOfType:type=>leaves.filter(leaf=>leaf.type===type&&!leaf.detached),
+  createLeafInParent:parent=>{parents.push(parent);assert.equal(parent,group,'the four views join the open tab bar');return make();},
+  getLeaf:()=>assert.fail('asking for a leaf while the Works list is active opens another region'),
+  createLeafBySplit:()=>assert.fail('a new region is not a tab')};
+ await p.openWorkFile(Object.assign(new mock.TFile(),{path:'Works/next.md',extension:'md',basename:'next'}));
+ assert.deepEqual(parents,[group,group,group,group]);
+ assert.equal(empty.type,'markdown');assert.equal(empty.view.file.basename,'next','the empty tab becomes the editable note');
+ assert.equal(revealed.at(-1),empty);
+ assert.deepEqual(leaves.filter(leaf=>!leaf.detached&&String(leaf.type).startsWith('rssd-')).map(leaf=>leaf.type),['rssd-article','rssd-cards','rssd-outline','rssd-details']);
+});
+test('views that an earlier click left in their own regions are gathered back into one tab bar',async()=>{
+ const p=plugin(),root={type:'split',children:[]},group={type:'tabs',children:[]};root.children.push(group);
+ const leaves=[],made=[];
+ const empty={type:'empty',parent:group,view:{getViewType:()=>'empty'},getRoot:()=>root,openFile:async file=>{empty.type='markdown';empty.view.file=file;}};
+ group.children.push(empty);leaves.push(empty);
+ const region=type=>{const leaf={type,parent:root,view:{getViewType:()=>type,show:async()=>{}},getRoot:()=>root,detach(){leaf.detached=true;},setViewState:async()=>{}};root.children.push(leaf);leaves.push(leaf);return leaf;};
+ for(const type of ['rssd-article','rssd-cards','rssd-outline','rssd-details'])region(type);
+ const make=()=>{const leaf={type:null,parent:group,view:{getViewType:()=>leaf.type,show:async()=>{}},getRoot:()=>root,detach(){leaf.detached=true;},setViewState:async state=>{leaf.type=state.type;}};group.children.push(leaf);leaves.push(leaf);made.push(leaf);return leaf;};
+ p.refreshTitles=()=>{};
+ p.app.workspace={rootSplit:root,getMostRecentLeaf:()=>empty,getActiveFile:()=>null,revealLeaf(){},
+  getLeavesOfType:type=>leaves.filter(leaf=>leaf.type===type&&!leaf.detached),
+  createLeafInParent:parent=>{assert.equal(parent,group);return make();},
+  getLeaf:()=>assert.fail('gathering must not open another region')};
+ await p.openWorkFile(Object.assign(new mock.TFile(),{path:'Works/next.md',extension:'md',basename:'next'}));
+ assert.equal(made.length,4);
+ assert.equal(leaves.filter(leaf=>leaf.parent===root&&!leaf.detached).length,0,'the old regions lose their views');
+ assert.equal(new Set(leaves.filter(leaf=>String(leaf.type).startsWith('rssd-')&&!leaf.detached).map(leaf=>leaf.parent)).size,1);
 });
 test('the panel finds the open work even while a sidebar tab has the focus',()=>{
  const p=plugin(),work={extension:'md',path:'Works/one.md'},note={extension:'md',path:'Notes/x.md'};
@@ -220,21 +264,18 @@ test('RSSD tabs that earlier versions put in the right sidebar or a pane of thei
   assert.equal(p.settings.layoutVersion,9);assert.equal(await p.tidySidebar(),false,'only once');
  }
 });
-test('every RSSD tab opens in the note\'s own tab bar, next to another RSSD tab when one is open, and an open tab is shown where it is',async()=>{
- const p=plugin(),root={},right={},work={extension:'md',path:'Works/one.md'},leaves=[],made=[],revealed=[];let active=null;
- const leaf=(type,where)=>{const l={type,where,getRoot(){return this.where;},setViewState:async state=>{l.type=state.type;l.state=state;}};leaves.push(l);return l;};
- const note=leaf('markdown',root);note.view={file:work};
- p.app.workspace={rootSplit:root,rightSplit:right,getActiveFile:()=>work,getMostRecentLeaf:()=>null,getLeavesOfType:type=>leaves.filter(l=>l.type===type),
+test('the four center tabs open in the note\'s section, and an open one is shown where it is',async()=>{
+ const p=plugin(),root={},group={type:'tabs',children:[]},work={extension:'md',path:'Works/one.md'},leaves=[],made=[],revealed=[];
+ const leaf=(type)=>{const l={type,parent:group,getRoot:()=>root,setViewState:async state=>{l.type=state.type;l.state=state;}};group.children.push(l);leaves.push(l);return l;};
+ const note=leaf('markdown');note.view={file:work,getViewType:()=>'markdown'};
+ p.app.workspace={rootSplit:root,getActiveFile:()=>work,getMostRecentLeaf:()=>null,getLeavesOfType:type=>leaves.filter(l=>l.type===type),
   createLeafBySplit:()=>assert.fail('a tab never splits the editor area'),getRightLeaf:()=>assert.fail('nothing opens in the right sidebar'),
-  setActiveLeaf:(l,options)=>{active=l;assert.deepEqual(options,{focus:false});},
-  getLeaf:kind=>{assert.equal(kind,'tab');made.push('tab');const l=leaf(null,root);l.besideOf=active;return l;},revealLeaf:l=>revealed.push(l)};
+  createLeafInParent:(parent)=>{assert.equal(parent,group);made.push('tab');return leaf(null);},
+  getLeaf:()=>assert.fail('a new view joins the open section'),revealLeaf:l=>revealed.push(l)};
  await p.openView('rssd-article');await p.openView('rssd-cards');await p.openDetails();await p.openOutline();await p.openView('rssd-article');
  assert.equal(made.length,4);
- const of=type=>leaves.find(l=>l.type===type);
- assert.equal(of('rssd-article').besideOf,note,'the first opens next to the note');
- for(const type of ['rssd-cards','rssd-details','rssd-outline'])assert.ok(['rssd-article','rssd-cards','rssd-details'].includes(of(type).besideOf.type),type+' opens next to another RSSD tab');
- assert.deepEqual(of('rssd-details').state,{type:'rssd-details',active:true});
- assert.equal(revealed.at(-1),of('rssd-article'),'an open tab is shown where it is, not opened again');
+ assert.equal(new Set(leaves.map(l=>l.parent)).size,1);
+ assert.equal(revealed.at(-1).type,'rssd-article','an open tab is shown where it is, not opened again');
 });
 test('no view replaces Obsidian\'s own lifecycle methods',async()=>{
  const {readFileSync}=await import('node:fs');const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
