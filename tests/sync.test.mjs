@@ -863,3 +863,20 @@ test('canonical pulls and receipt recovery never overwrite or misroute staged dr
  await assert.rejects(engine.save('metho','Works/one.md'),e=>e.code==='staged_handler_required'&&e.retained===true);
  assert.equal(center.calls.filter(x=>x[0]==='draftReceipt').length,0);
 });
+
+test('a private picture record waiting for a work goes with its next save and is then cleared',async()=>{
+ const {engine,vault,center}=setup('a-one');
+ await engine.pull('metho');
+ const run={runId:'codex-image-1',agentId:'codex',agentName:'Codex',modelId:'gpt-image',modelName:'gpt-image',action:'image',status:'completed',startedAt:'2026-11-18T10:00:00.000Z'};
+ const record={modelSignatures:[run],internalNotes:{images:'题图：Codex · gpt-image'}};
+ await vault.write('.rssd/private-additions/a-one.zh-CN.json',JSON.stringify(record));
+ await edit(vault,'Works/a-one.md','Body','Body with a new picture');
+ // An older Center would drop the record silently, so nothing is sent to it.
+ await assert.rejects(engine.save('metho','Works/a-one.md'),{code:'private_append_unavailable'});
+ assert.equal(center.calls.filter(c=>c[0]==='saveDraft').length,0);
+ const get=center.client.work;center.client.work=async(...args)=>({...await get(...args),acceptsPrivateAppendOnSave:true});
+ assert.equal((await engine.save('metho','Works/a-one.md')).state,'saved');
+ const sent=center.calls.find(c=>c[0]==='saveDraft')[1];
+ assert.deepEqual(sent.data.privateAppend,record);assert.doesNotMatch(sent.data.markdown,/gpt-image|Codex/);
+ assert.equal(await vault.read('.rssd/private-additions/a-one.zh-CN.json'),null);
+});
