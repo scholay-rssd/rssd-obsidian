@@ -28,6 +28,10 @@ const fullTextStyle=muted=>`
 .rssd-page .rssd-body td,.rssd-page .rssd-body th{padding:8px 5px}
 .rssd-page .rssd-body figcaption,.rssd-page .rssd-body p.rssd-caption{font-size:.69em;line-height:1.6;margin:-8px 0 20px;color:${muted};text-align:center;text-indent:0}
 .rssd-page .rssd-body .rssd-indent{display:inline-block;width:2em}
+.rssd-page .rssd-body sup.rssd-cite{font-size:.58em;line-height:0;vertical-align:super;margin-left:.08em;color:${muted};font-variant-numeric:tabular-nums}
+.rssd-page .rssd-body .rssd-note{font-size:.69em;line-height:1.6;color:${muted}}
+.rssd-page .rssd-body .rssd-note .rssd-note{font-size:1em}
+.rssd-page .rssd-body p.rssd-note{margin-bottom:10px}
 `;
 const CAPTION_NUMBERED=/^(?:图|表)\s*[0-9一二三四五六七八九十]+\s*[｜|：:．.]/u;
 const CAPTION_LABEL=/^(?:(?:图|表)\s*[0-9一二三四五六七八九十]*\s*[｜|：:．.]|(?:figure|fig\.?|table)\s*\d*\s*[:.|｜])/iu;
@@ -39,21 +43,49 @@ export function isCardCaption(text,afterPicture){
  const value=String(text||'').trim();
  return CAPTION_NUMBERED.test(value)||(!!afterPicture&&CAPTION_LABEL.test(value));
 }
+const CITATION=/\[\d+(?:\s*[,，、–-]\s*\d+)*\]/g;
+/** Running text cut into plain pieces and citation markers such as [1] or [2, 3], in order. */
+export function citationParts(text){
+ const value=String(text??''),parts=[];let last=0;
+ for(const match of value.matchAll(CITATION)){
+  if(match.index>last)parts.push({text:value.slice(last,match.index),cite:false});
+  parts.push({text:match[0],cite:true});last=match.index+match[0].length;
+ }
+ if(last<value.length)parts.push({text:value.slice(last),cite:false});
+ return parts;
+}
 const pictureOnly=el=>!!el&&(el.tagName==='IMG'||el.tagName==='TABLE'||(el.tagName==='P'&&!(el.textContent||'').trim()&&!!el.querySelector('img')));
 /**
  * Mark the captions, and in Chinese give body paragraphs a two-character first-line indent (not captions,
  * lists, quotes, tables or the closing references). The indent is an empty leading box, not a paragraph
  * style, so a paragraph continued on the next card does not start with a second indent.
+ * Citation numbers in running text become shoulder marks, and everything under a closing heading such as
+ * 参考文献 is set as notes: smaller, with its own numbers left on the line.
  */
 export function typesetCardBody(host,locale='zh-CN'){
  const doc=host.ownerDocument,indent=/^zh/i.test(locale||'zh-CN');
  let notes=false;
  for(const el of [...host.children]){
-  if(/^H[1-6]$/.test(el.tagName)){if(el.tagName==='H2'||el.tagName==='H1')notes=STRUCTURAL.test(el.textContent||'');continue;}
+  // The closing heading is written at any level, or as a line of its own in bold.
+  if(/^H[1-6]$/.test(el.tagName)){notes=STRUCTURAL.test(el.textContent||'');continue;}
+  if(el.tagName==='P'&&STRUCTURAL.test(el.textContent||'')){notes=true;continue;}
+  // The engine rebuilds a list it splits across cards, so each item carries the mark as well.
+  if(notes){el.classList.add('rssd-note');for(const item of el.querySelectorAll?.('li')||[])item.classList.add('rssd-note');continue;}
   if(el.tagName!=='P'||!(el.textContent||'').trim())continue;
   if(isCardCaption(el.textContent,pictureOnly(el.previousElementSibling))){el.classList.add('rssd-caption');continue;}
-  if(!indent||notes)continue;
+  if(!indent)continue;
   const box=doc.createElement('span');box.className='rssd-indent';el.prepend(box);
+ }
+ // Citation markers in running text, never inside the notes, code or a link.
+ const walker=doc.createTreeWalker(host,4),texts=[];for(let node=walker.nextNode();node;node=walker.nextNode())texts.push(node);
+ for(const node of texts){
+  if(node.parentElement?.closest('.rssd-note,code,pre,a,sup'))continue;
+  const parts=citationParts(node.nodeValue);if(!parts.some(part=>part.cite))continue;
+  node.replaceWith(...parts.map(part=>{
+   if(!part.cite)return doc.createTextNode(part.text);
+   // A word joiner keeps the mark on the line of the text it belongs to.
+   const mark=doc.createElement('sup');mark.className='rssd-cite';mark.textContent='\u2060'+part.text;return mark;
+  }));
  }
 }
 const BREAK='<hr class="rssd-page-break">';
