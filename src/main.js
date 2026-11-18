@@ -404,7 +404,16 @@ export default class RssdPlugin extends Plugin{
   this.registerInterval(window.setInterval(()=>{
    // Fold journaled baselines into the settings file once saving has been quiet for half a minute.
    if(this.log().pending&&!this.operations.active&&Date.now()-this.log().lastRecord>30000)void this.saveSettings().catch(()=>{});
-   if(this.autoSync.running||!this.autoSync.ready())return;const scan=Date.now()>=nextScan;if(scan)nextScan=Date.now()+300000;void this.autoSync.tick({scan}).then(ok=>{if(scan&&ok)nextScan=Date.now()+3600000;});},10000));
+   if(this.autoSync.running||!this.autoSync.ready())return;const scan=Date.now()>=nextScan;if(scan){nextScan=Date.now()+300000;void this.queuePrivateAdditions();}void this.autoSync.tick({scan}).then(ok=>{if(scan&&ok)nextScan=Date.now()+3600000;});},10000));
+ }
+ /** Queue every work whose private record is waiting in .rssd/private-additions, so it is saved even if its note is unchanged. */
+ async queuePrivateAdditions(){
+  try{
+   const dir='.rssd/private-additions',adapter=this.app.vault.adapter;if(!await adapter.exists(dir))return;
+   for(const file of (await adapter.list(dir)).files){
+    const match=/([^/]+)\.(zh-CN|en)\.json$/.exec(file);if(match)this.autoSync.mark(notePath(match[1],match[2]));
+   }
+  }catch(error){console.error('RSSD private additions',error);}
  }
  async writeRun(record){
   try{await this.app.vault.adapter.write(this.manifest.dir+'/last-run.json',JSON.stringify({...record,at:new Date().toISOString()},null,2));}catch{}

@@ -90,8 +90,11 @@ export class SyncEngine{
   const base=await this.store.get(workspaceId,local.work.data.id,local.work.data.locale);
   this.assertLocalPath(base,local.work.data.id,local.work.data.locale,true);
   if(!base||base.pending)return true;
-  return this.localChanges(base,local)!==false;
+  return this.localChanges(base,local)!==false||await this.hasPrivateAddition(local.work.data.id,local.work.data.locale);
  }
+
+ /** A private record waiting for this work is a change of its own: it is sent with a save even when the note text is unchanged. */
+ async hasPrivateAddition(id,locale){return parsePrivateAddition(await this.vault.read(privateAdditionPath(id,locale)))!==null;}
 
  /** Derive original media hashes from the authenticated Center response, not
   * from a local file that may already have been modified. */
@@ -358,7 +361,7 @@ export class SyncEngine{
   const structured=base?.readOnly===true&&isStructuredKind(work.kind);
   if((base?.readOnly&&!structured)||(!base?.readOnly&&work.kind!=='news'))throw Error('Structured records cannot be edited in Obsidian with a changed or unsupported kind');
   const changed=this.localChanges(base,local);
-  if(base&&changed===false){
+  if(base&&changed===false&&!await this.hasPrivateAddition(work.data.id,work.data.locale)){
    const repaired=await this.repairMetadata(workspaceId,work.data.id,work.data.locale,{infer:true});
    return repaired.metadataUpdated?{state:'unchanged'}:{state:'unchanged',...repaired};
   }
