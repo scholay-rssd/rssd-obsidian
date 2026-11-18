@@ -22,7 +22,7 @@ import {wechatHtml,wechatSource,copyRich} from './wechat.mjs';
 import {wechatTemplate,wechatSite,cardTemplate} from './wechat-template.mjs';
 import {decorateWechat,ARTICLE_THEMES,defaultArticleTheme} from './wechat-designs.mjs';
 import {buildCards,packageCardPages} from './cards.mjs';
-import {clampCardIndex,stepCardZoom} from './card-view.mjs';
+import {CARD_WIDTH,CARD_HEIGHT,PHONE_ZOOM,TILE_ZOOMS,clampCardIndex,fitCardWidth,stepCardZoom,stepTileZoom,zoomLabel} from './card-view.mjs';
 import {ReviewSidebar,REVIEW_VIEW} from './review-sidebar.mjs';
 import {CARD_STYLE_FOLDER,cardStylePath,checkCardStylesheet,cardStyleBrief} from './card-stylesheet.mjs';
 import {DETAIL_FIELDS,IDENTITY_FIELDS,fieldText,counters,cleanValue} from './details.mjs';
@@ -106,62 +106,51 @@ const TITLE_STYLE=`
 .rssd-preview-controls button.rssd-preview-icon.mod-cta{background:var(--interactive-accent);color:var(--text-on-accent)}
 .rssd-preview-controls button.rssd-preview-icon.mod-cta:hover{background:var(--interactive-accent-hover)}
 .rssd-preview-host{display:block}
-/* The Cards tab fills the pane and looks at the pictures one of three ways. */
+/* The Cards tab fills the pane and shows the pictures one at a time or all as tiles. */
 .view-content:has(> .rssd-preview.is-cards){overflow:hidden}
 .rssd-preview.is-cards{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden}
 .rssd-preview.is-cards .rssd-preview-stage{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
 .rssd-preview-stage.is-cards .rssd-preview-host{display:none}
-.rssd-card-view{display:none;flex:1 1 auto;flex-direction:column;min-height:0}
+.rssd-card-view{display:none;flex:1 1 auto;flex-direction:row;min-height:0}
 .rssd-preview-stage.is-cards .rssd-card-view{display:flex}
-.rssd-card-toolbar{flex:0 0 auto;display:flex;align-items:center;gap:2px;padding:4px 8px;border-bottom:1px solid var(--background-modifier-border);background:var(--background-primary)}
-.rssd-card-toolbar button:disabled{opacity:.35;cursor:default}
-.rssd-card-modes{display:flex;align-items:center;gap:2px;margin:0 4px;padding:0 6px;border-left:1px solid var(--background-modifier-border);border-right:1px solid var(--background-modifier-border)}
-.rssd-card-count,.rssd-card-zoom{min-width:3.4em;padding:0 4px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums;text-align:center}
-.rssd-card-zoom{cursor:pointer}
-.rssd-card-toolbar button.rssd-preview-icon.is-active{background:var(--background-modifier-active-hover);color:var(--interactive-accent)}
-.rssd-card-pages{flex:1 1 auto;min-height:0;overflow:auto;background:#e6e6e6}
-.rssd-card-pages img{display:block;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.18)}
-.rssd-card-pages.is-page{display:flex;align-items:flex-start;justify-content:center;padding:12px}
-.rssd-card-pages.is-page.is-fit{align-items:center}
-.rssd-card-pages.is-page.is-fit img{width:auto;max-width:100%;max-height:100%;object-fit:contain}
-.rssd-card-pages.is-scroll{padding:12px}
-.rssd-card-pages.is-scroll.is-fit img{width:100%;max-width:1080px;height:auto;margin:0 auto 12px}
-.rssd-card-pages.is-scroll img{margin:0 auto 12px}
-.rssd-card-pages.is-scroll img.is-current{outline:2px solid var(--interactive-accent);outline-offset:2px}
-.rssd-card-pages.is-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:10px;align-content:start;padding:12px}
-.rssd-card-pages.is-grid img{width:100%;height:auto;cursor:pointer}
-.rssd-card-pages.is-grid img.is-current{outline:2px solid var(--interactive-accent);outline-offset:2px}
-.rssd-card-toolbar{gap:10px;flex-wrap:wrap;padding:6px 10px}
+/* One row, three groups: where you are on the left, how you look in the middle, size and output on the right. */
+.rssd-reader-toolbar.is-in-pane{gap:6px 10px;padding:6px 10px;align-items:center;flex-shrink:0;flex-wrap:wrap}
+.rssd-reader-toolbar>.rssd-preview-icon{order:0}
+.rssd-card-toolbar{display:contents}
 .rssd-card-toolbar[hidden]{display:none}
-.rssd-card-nav,.rssd-card-modes{display:inline-flex;align-items:center;gap:2px}
-.rssd-card-modes{margin:0;padding:2px;border:0;border-radius:6px;background:var(--background-secondary)}
-.rssd-card-toolbar button,.rssd-card-toolbar select,.rssd-preview-controls.is-in-pane select{height:30px;font-size:var(--font-ui-small)}
-.rssd-card-toolbar button{min-width:30px;padding:0 8px;box-shadow:none;border:0;background:transparent}
-.rssd-card-modes button.is-active{background:var(--background-primary);color:var(--text-normal);box-shadow:var(--shadow-s)}
-.rssd-card-toolbar>select{margin-inline-start:auto}
-.rssd-preview-controls.is-in-pane button.rssd-preview-tab{height:30px;font-size:var(--font-ui-small)}
-.rssd-card-pages{background:var(--background-secondary)}
-.rssd-preview.is-dark .rssd-card-pages,.rssd-preview.is-dark .rssd-card-rail{background:#000}
-.rssd-preview-controls select.rssd-appearance{height:30px;max-width:7em;font-size:var(--font-ui-small)}
-.rssd-card-pages img{height:auto;flex:none}
-.rssd-card-pages.is-page{display:block}
-.rssd-card-pages.is-page img{margin:auto;max-width:none}
-.rssd-card-pages.is-page.is-fit{display:grid;place-items:center;grid-template: minmax(0,1fr) / minmax(0,1fr)}
-.rssd-card-pages.is-page.is-fit img{width:100%;height:100%;object-fit:contain;background:transparent;box-shadow:none}
-.rssd-card-pages.is-scroll:not(.is-fit) img{max-width:none}
-.rssd-reader-toolbar.is-in-pane{gap:8px;padding:6px 10px;align-items:center;flex-shrink:0}
-.rssd-reader-toolbar .rssd-preview-styles{flex:none}
-.rssd-reader-toolbar .rssd-card-toolbar{flex:1;gap:8px;padding:0;border:0;background:none}
-.rssd-reader-toolbar .rssd-preview-actions{margin-left:auto}
+.rssd-card-nav,.rssd-card-modes,.rssd-card-size{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto}
+.rssd-card-nav{order:1}
+.rssd-card-modes{order:2;margin-inline:auto;padding:2px;border-radius:var(--radius-m);background:var(--background-modifier-hover)}
+.rssd-card-size{order:3}
+.rssd-reader-toolbar .rssd-preview-styles{order:4;flex:none}
+.rssd-reader-toolbar .rssd-preview-actions{order:5;margin-left:0}
+.rssd-reader-toolbar button,.rssd-reader-toolbar select,.rssd-preview-controls.is-in-pane select{height:28px;font-size:var(--font-ui-small)}
 .rssd-reader-toolbar select{max-width:100%;cursor:pointer}
-.rssd-card-view{flex-direction:row}
-.rssd-card-rail{flex:0 0 clamp(86px,12%,148px);min-height:0;overflow:auto;padding:12px 8px;border-right:1px solid var(--background-modifier-border);background:var(--background-primary)}
+.rssd-preview-controls.is-in-pane button.rssd-preview-tab{height:28px;font-size:var(--font-ui-small)}
+.rssd-preview-controls select.rssd-appearance{height:28px;max-width:7em;font-size:var(--font-ui-small)}
+.rssd-reader-toolbar button.rssd-preview-icon{height:28px;min-width:28px;padding:0 6px}
+.rssd-reader-toolbar button:disabled{opacity:.35;cursor:default}
+.rssd-card-count{min-width:3.6em;padding:0 2px;color:var(--text-muted);font-size:var(--font-ui-small);font-variant-numeric:tabular-nums;text-align:center}
+.rssd-reader-toolbar .rssd-card-modes button.rssd-preview-icon{height:24px;min-width:30px;border-radius:var(--radius-s);color:var(--text-muted)}
+.rssd-reader-toolbar .rssd-card-modes button.rssd-preview-icon[aria-pressed="true"]{background:var(--background-primary);color:var(--text-normal);box-shadow:var(--shadow-s)}
+.rssd-reader-toolbar button.rssd-card-zoom{min-width:3.4em;padding:0 4px;border:0;border-radius:var(--radius-s);background:none;box-shadow:none;color:var(--text-muted);font-variant-numeric:tabular-nums;cursor:pointer}
+.rssd-reader-toolbar button.rssd-card-zoom:hover{background:var(--background-modifier-hover);color:var(--text-normal)}
+/* The stage is a quiet surface a shade away from the card, so the card's own edge shows without an outline. */
+.rssd-card-pages{flex:1 1 auto;min-width:0;min-height:0;overflow:auto;background:var(--background-secondary)}
+.rssd-preview.is-dark .rssd-card-pages{background:#1d1d1f}
+.rssd-card-pages img{display:block;flex:none;height:auto;max-width:none;border-radius:6px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.12),0 6px 20px rgba(0,0,0,.14)}
+.rssd-preview.is-dark .rssd-card-pages img{background:#000;box-shadow:0 0 0 1px rgba(255,255,255,.08),0 6px 20px rgba(0,0,0,.5)}
+.rssd-card-pages.is-page{display:flex;padding:16px}
+.rssd-card-pages.is-page img{margin:auto;cursor:zoom-in}
+.rssd-card-pages.is-all{display:grid;grid-template-columns:repeat(auto-fill,min(var(--rssd-card-tile,216px),100%));justify-content:center;align-content:start;gap:16px;padding:16px}
+.rssd-card-pages.is-all img{width:100%;cursor:pointer}
+.rssd-card-pages.is-all img.is-current{outline:2px solid var(--interactive-accent);outline-offset:3px}
+.rssd-card-rail{flex:0 0 clamp(86px,12%,132px);min-height:0;overflow:auto;padding:12px 8px;border-right:1px solid var(--background-modifier-border);background:var(--background-primary)}
 .rssd-card-rail[hidden]{display:none}
-.rssd-card-rail button{display:flex;flex-direction:column;align-items:center;gap:4px;width:100%;height:auto;padding:6px;margin-bottom:8px;border:0;box-shadow:none;background:transparent;color:var(--text-muted);font-size:12px}
-.rssd-card-rail button img{display:block;width:100%;height:auto;aspect-ratio:3/4}
+.rssd-card-rail button{display:flex;flex-direction:column;align-items:center;gap:4px;width:100%;height:auto;padding:6px;margin-bottom:6px;border:0;border-radius:var(--radius-m);box-shadow:none;background:transparent;color:var(--text-faint);font-size:11px;font-variant-numeric:tabular-nums;cursor:pointer}
+.rssd-card-rail button img{display:block;width:100%;height:auto;aspect-ratio:3/4;border-radius:3px;box-shadow:0 0 0 1px var(--background-modifier-border)}
 .rssd-card-rail button[aria-current]{background:var(--background-modifier-hover);color:var(--text-normal)}
-.rssd-card-rail button[aria-current] img{outline:2px solid var(--interactive-accent)}
-.rssd-card-view .rssd-card-pages{min-width:0}
+.rssd-card-rail button[aria-current] img{box-shadow:0 0 0 2px var(--interactive-accent)}
 .rssd-works{display:flex;flex-direction:column;padding:0!important}
 .rssd-works-top{position:sticky;top:0;z-index:2;padding:var(--size-4-2) var(--size-4-2) var(--size-4-1);background:var(--background-secondary);border-bottom:1px solid var(--background-modifier-border)}
 .rssd-works-bar{display:flex;align-items:center;gap:var(--size-2-2)}
@@ -1772,38 +1761,60 @@ class LayoutPreview extends ItemView{
  /** The way-of-looking row. It belongs to the Cards tab itself, above the pictures, so it is there before the first card is drawn. */
  ensureCardChrome(){
   if(this.cardBar)return;
-  this.cardLook={mode:'page',zoom:'fit',index:0};
+  // One card is fitted to the pane; all cards start as small tiles. Each way of looking keeps its own size.
+  this.cardLook={mode:'page',zoom:'fit',tile:TILE_ZOOMS[0],index:0};
   this.controls.addClass('rssd-reader-toolbar');
   this.cardBar=this.controls.createDiv({cls:'rssd-card-toolbar'});
-  this.controls.insertBefore(this.cardBar,this.controls.lastElementChild.previousElementSibling);
   this.thumbToggle=this.iconButton(this.controls,'panel-left','页缩略图');
   this.controls.prepend(this.thumbToggle);
-  this.thumbToggle.setAttribute('aria-expanded','true');
-  this.thumbToggle.addEventListener('click',()=>{
-   this.thumbOpen=!this.thumbOpen;this.thumbToggle.setAttribute('aria-expanded',String(this.thumbOpen));
-   if(this.thumbRail)this.thumbRail.hidden=!this.thumbOpen;
-  });
   this.thumbOpen=true;
+  this.thumbToggle.addEventListener('click',()=>{this.thumbOpen=!this.thumbOpen;this.markCardMode();});
   const nav=this.cardBar.createDiv({cls:'rssd-card-nav'});
   this.cardPrev=this.iconButton(nav,'chevron-left','上一页');
   this.cardPrev.addEventListener('click',()=>this.moveCard(-1));
-  this.cardCount=nav.createEl('select',{attr:{'aria-label':'跳至卡片页'}});
-  this.cardCount.addEventListener('change',()=>this.moveCard(Number(this.cardCount.value)-this.cardLook.index));
+  this.cardCount=nav.createSpan({cls:'rssd-card-count',attr:{'aria-live':'polite'}});
   this.cardNext=this.iconButton(nav,'chevron-right','下一页');
   this.cardNext.addEventListener('click',()=>this.moveCard(1));
-  this.cardModes=this.cardBar.createEl('select',{attr:{'aria-label':'阅读方式',title:'阅读方式'}});
-  for(const [value,text] of [['page','单页'],['scroll','连续'],['grid','总览']])this.cardModes.createEl('option',{value,text});
-  this.cardModes.addEventListener('change',()=>{this.cardLook.mode=this.cardModes.value;if(this.cardImages?.length)this.paintCards();});
-  this.cardZoomLabel=this.cardBar.createEl('select',{attr:{'aria-label':'卡片缩放'}});
-  for(const [value,text] of [['fit','适应窗口'],['0.5','50%'],['0.75','75%'],['1','100%'],['1.5','150%']])this.cardZoomLabel.createEl('option',{value,text});
-  this.cardZoomLabel.addEventListener('change',()=>{const value=this.cardZoomLabel.value;this.cardLook.zoom=value==='fit'?value:Number(value);this.paintCards();});
+  const modes=this.cardBar.createDiv({cls:'rssd-card-modes',attr:{role:'group','aria-label':'阅读方式'}});
+  this.cardModeButtons={page:this.iconButton(modes,'rectangle-vertical','单页'),all:this.iconButton(modes,'layout-grid','全部')};
+  for(const [mode,button] of Object.entries(this.cardModeButtons))button.addEventListener('click',()=>{
+   if(this.cardLook.mode===mode)return;
+   this.cardLook.mode=mode;if(this.cardImages?.length)this.paintCards();else this.markCardMode();
+  });
+  const size=this.cardBar.createDiv({cls:'rssd-card-size',attr:{role:'group','aria-label':'卡片大小'}});
+  this.cardZoomOut=this.iconButton(size,'minus','缩小');
+  this.cardZoomOut.addEventListener('click',()=>this.zoomCard(-1));
+  this.cardZoomLabel=size.createEl('button',{cls:'rssd-card-zoom',attr:{'aria-label':'恢复默认大小'}});
+  this.cardZoomLabel.addEventListener('click',()=>{
+   if(this.cardLook.mode==='page')this.cardLook.zoom='fit';else this.cardLook.tile=TILE_ZOOMS[0];
+   if(this.cardImages?.length)this.paintCards();else this.markCardMode();
+  });
+  this.cardZoomIn=this.iconButton(size,'plus','放大');
+  this.cardZoomIn.addEventListener('click',()=>this.zoomCard(1));
   this.markCardMode();
  }
- markCardMode(){this.cardModes.value=this.cardLook.mode;}
+ /** The size of a fitted card in this pane, as a fraction of its real width. */
+ cardFitScale(){
+  const pane=this.cardPages;
+  return fitCardWidth(pane?.clientWidth||0,pane?.clientHeight||0)/CARD_WIDTH;
+ }
+ /** Bring the toolbar in line with the way of looking: which mode is pressed, the size shown, what can still move. */
+ markCardMode(){
+  const {mode,zoom,tile}=this.cardLook,page=mode==='page';
+  for(const [name,button] of Object.entries(this.cardModeButtons))button.setAttribute('aria-pressed',String(name===mode));
+  // All cards as tiles already are the thumbnails, so the rail steps aside there.
+  this.thumbToggle.disabled=!page;this.thumbToggle.setAttribute('aria-expanded',String(page&&this.thumbOpen));
+  if(this.thumbRail)this.thumbRail.hidden=!page||!this.thumbOpen;
+  this.cardZoomLabel.setText(zoomLabel(page?zoom:tile));
+  const fit=this.cardFitScale();
+  this.cardZoomOut.disabled=page?stepCardZoom(zoom,-1,fit)===zoom:stepTileZoom(tile,-1)===tile;
+  this.cardZoomIn.disabled=page?stepCardZoom(zoom,1,fit)===zoom:stepTileZoom(tile,1)===tile;
+ }
  /**
-  * One finished set of cards, looked at in the way last chosen: one card fitted to the pane,
-  * every card in a scroll, or thumbnails. Arrow keys move between cards. Clicking the card
-  * toggles between fitting the pane and its real size; Ctrl-scroll changes the size.
+  * One finished set of cards, looked at in the way last chosen: one card fitted to the pane, or
+  * all cards as tiles. Arrow keys move between cards. Clicking the single card switches between
+  * fitting the pane and the size it has on a phone; clicking a tile opens that card. Ctrl-scroll
+  * changes the size.
   */
  showCardPages(pages){
   this.ensureCardChrome();
@@ -1813,29 +1824,24 @@ class LayoutPreview extends ItemView{
    this.thumbRail.hidden=!this.thumbOpen;
    this.thumbRail.addEventListener('click',event=>{
     const button=event.target.closest('button[data-page]');if(!button)return;
-    this.cardLook.index=Number(button.dataset.page);
-    if(this.cardLook.mode==='grid')this.cardLook.mode='page';
-    this.paintCards();
+    this.cardLook.index=Number(button.dataset.page);this.paintCards();
    });
    this.cardPages=this.cardViewEl.createDiv({cls:'rssd-card-pages'});
    this.cardPages.addEventListener('click',event=>{
     const img=event.target?.closest?.('img');if(!img||img.dataset.index==null)return;
-    const index=Number(img.dataset.index);
-    if(this.cardLook.mode==='grid'){this.cardLook.mode='page';this.cardLook.index=index;this.paintCards();return;}
-    if(this.cardLook.mode==='page'){this.cardLook.zoom=this.cardLook.zoom==='fit'?1:'fit';this.paintCards();}
+    if(this.cardLook.mode==='all'){this.cardLook.mode='page';this.cardLook.index=Number(img.dataset.index);this.paintCards();return;}
+    this.cardLook.zoom=this.cardLook.zoom==='fit'?PHONE_ZOOM:'fit';this.paintCards();
    });
-   this.cardPages.addEventListener('scroll',()=>{
-    if(this.cardLook.mode!=='scroll')return;
-    const top=this.cardPages.getBoundingClientRect().top+this.cardPages.clientHeight/2;
-    const imgs=this.cardPages.querySelectorAll('img');
-    for(const img of imgs){if(img.getBoundingClientRect().bottom>=top){
-     this.cardLook.index=Number(img.dataset.index);this.updateCardPosition();break;
-    }}
-   },{passive:true});
    this.cardPages.addEventListener('wheel',event=>{
-    if(this.cardLook.mode==='grid'||(!event.ctrlKey&&!event.metaKey))return;
+    if(!event.ctrlKey&&!event.metaKey)return;
     event.preventDefault();this.zoomCard(event.deltaY<0?1:-1);
    },{passive:false});
+   // A fitted card follows the pane as it is resized.
+   if(typeof ResizeObserver!=='undefined'){
+    this.cardResize=new ResizeObserver(()=>{if(this.cardImages?.length&&this.cardLook.mode==='page')this.sizeCard();});
+    this.cardResize.observe(this.cardPages);
+    this.register?.(()=>this.cardResize.disconnect());
+   }
   }
   this.cardImages=pages.map((page,index)=>{const url=URL.createObjectURL(page.blob);this.urls.push(url);return {url,index,alt:'Card '+(index+1)+' of '+pages.length};});
   this.thumbRail.empty();
@@ -1855,35 +1861,43 @@ class LayoutPreview extends ItemView{
   const next=clampCardIndex(this.cardLook.index+delta,count);if(next===this.cardLook.index)return;
   this.cardLook.index=next;this.paintCards();
  }
- zoomCard(direction){if(!this.cardImages?.length)return;this.cardLook.zoom=stepCardZoom(this.cardLook.zoom,direction);this.paintCards();}
+ zoomCard(direction){
+  if(!this.cardImages?.length)return;
+  if(this.cardLook.mode==='page')this.cardLook.zoom=stepCardZoom(this.cardLook.zoom,direction,this.cardFitScale());
+  else this.cardLook.tile=stepTileZoom(this.cardLook.tile,direction);
+  this.paintCards();
+ }
+ /** Give the single card its width: fitted to the pane, or the chosen fraction of its real size. */
+ sizeCard(){
+  const img=this.cardPages?.querySelector('img');if(!img)return;
+  const zoom=this.cardLook.zoom,fit=zoom==='fit';
+  img.style.width=(fit?fitCardWidth(this.cardPages.clientWidth,this.cardPages.clientHeight):Math.round(CARD_WIDTH*zoom))+'px';
+  img.style.cursor=fit?'zoom-in':'zoom-out';
+  this.markCardMode();
+ }
  paintCards(){
-  const mode=this.cardLook.mode,zoom=this.cardLook.zoom,images=this.cardImages||[];
+  const mode=this.cardLook.mode,images=this.cardImages||[];
   const index=this.cardLook.index=clampCardIndex(this.cardLook.index,images.length);
   const pages=this.cardPages;pages.empty();
-  pages.className='rssd-card-pages is-'+mode+(zoom==='fit'?' is-fit':'');
+  pages.className='rssd-card-pages is-'+mode;
+  if(mode==='all')pages.style.setProperty('--rssd-card-tile',Math.round(CARD_WIDTH*this.cardLook.tile)+'px');
   for(const image of (mode==='page'?images.filter(image=>image.index===index):images)){
-   const img=pages.createEl('img');img.width=1080;img.height=1440;img.src=image.url;img.alt=image.alt;img.dataset.index=String(image.index);
-   if(image.index===index)img.classList.add('is-current');
-   if(mode!=='grid'&&zoom!=='fit')img.style.width=Math.round(1080*zoom)+'px';
+   const img=pages.createEl('img');img.width=CARD_WIDTH;img.height=CARD_HEIGHT;img.src=image.url;img.alt=image.alt;img.dataset.index=String(image.index);
+   if(mode==='all'){img.loading='lazy';if(image.index===index)img.classList.add('is-current');}
   }
-  if(this.cardCount.options.length!==images.length){
-   this.cardCount.empty();
-   images.forEach((_,i)=>this.cardCount.createEl('option',{value:String(i),text:(i+1)+' / '+images.length}));
-  }
-  this.updateCardPosition();
-  this.cardZoomLabel.value=String(zoom);this.cardZoomLabel.disabled=mode==='grid';
   this.markCardMode();
-  if(mode==='scroll')pages.querySelector('img.is-current')?.scrollIntoView({block:'start'});
-  if(mode==='page')pages.scrollTo(0,0);
+  this.updateCardPosition();
+  if(mode==='page'){this.sizeCard();pages.scrollTo(0,0);}
+  else pages.querySelector('img.is-current')?.scrollIntoView({block:'nearest'});
  }
  updateCardPosition(){
   const index=this.cardLook.index,count=this.cardImages?.length||0;
   const old=this.thumbRail.querySelector('[aria-current]');
   const current=this.thumbRail.children[index];
   if(current&&old!==current){old?.removeAttribute('aria-current');current.setAttribute('aria-current','page');
-   if(this.thumbOpen)current.scrollIntoView({block:'nearest'});
+   if(this.thumbOpen&&!this.thumbRail.hidden)current.scrollIntoView({block:'nearest'});
   }
-  this.cardCount.value=String(index);this.cardPrev.disabled=index<=0;this.cardNext.disabled=index>=count-1;
+  this.cardCount.setText(count?(index+1)+' / '+count:'');this.cardPrev.disabled=index<=0;this.cardNext.disabled=index>=count-1;
  }
  async show(file,{force=false}={}){
   if(file&&file!==this.titleFile){this.titleFile=file;this.leaf.updateHeader?.();}
