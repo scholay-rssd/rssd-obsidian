@@ -32,6 +32,7 @@ const fullTextStyle=muted=>`
 .rssd-page .rssd-body .rssd-note{font-size:.69em;line-height:1.6;color:${muted}}
 .rssd-page .rssd-body .rssd-note .rssd-note{font-size:1em}
 .rssd-page .rssd-body p.rssd-note{margin-bottom:10px}
+.rssd-page .rssd-body img.rssd-cover-picture{max-height:400px;width:auto;margin:0 auto 20px}
 `;
 const CAPTION_NUMBERED=/^(?:图|表)\s*[0-9一二三四五六七八九十]+\s*[｜|：:．.]/u;
 const CAPTION_LABEL=/^(?:(?:图|表)\s*[0-9一二三四五六七八九十]*\s*[｜|：:．.]|(?:figure|fig\.?|table)\s*\d*\s*[:.|｜])/iu;
@@ -87,6 +88,25 @@ export function typesetCardBody(host,locale='zh-CN'){
    const mark=doc.createElement('sup');mark.className='rssd-cite';mark.textContent='\u2060'+part.text;return mark;
   }));
  }
+}
+/**
+ * Put a picture on the cover. The first card opens with the title, and a work's first picture usually
+ * lands on the second card because it does not fit under the opening paragraph. The work's first picture,
+ * with its caption, moves directly under the title, the same choice the cover rule in
+ * contracts/output-package.mjs makes. It is drawn lower than a body picture so the title, the picture and
+ * the start of the text share the card. Returns whether the work had a picture to use.
+ */
+export function coverPicture(host){
+ const picture=[...host.children].find(el=>{
+  const img=el.tagName==='IMG'?el:el.tagName==='P'&&!(el.textContent||'').trim()?el.querySelector('img'):null;
+  return !!img&&!/\brssd-math/.test(img.className||'');
+ });
+ if(!picture)return false;
+ const img=picture.tagName==='IMG'?picture:picture.querySelector('img'),caption=picture.nextElementSibling;
+ img.classList?.add('rssd-cover-picture');
+ const moved=caption?.classList?.contains('rssd-caption')?[picture,caption]:[picture];
+ if(host.children[0]!==picture)host.prepend(...moved);
+ return true;
 }
 const BREAK='<hr class="rssd-page-break">';
 const STRUCTURAL=/^\s*(参考文献|参考资料|延伸阅读|相关阅读|附录|致谢|注释|references?|further reading|notes?|appendix|acknowledge?ments?)\s*$/i;
@@ -166,7 +186,7 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
   }else if(!value)missing.push(src||'(image without an address)');
   if(value)images.set(src,value);else img.remove();
  }
- if(style==='site'&&cardTheme==='text')typesetCardBody(host,source.work.data.locale);
+ if(style==='site'&&cardTheme==='text'){typesetCardBody(host,source.work.data.locale);coverPicture(host);}
  arrangeForCards(host,cardTheme);
  const measure=frame();let result,blobs=[];
  try{
