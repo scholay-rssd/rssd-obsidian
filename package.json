@@ -1,12 +1,13 @@
 {
   "name": "rssd-obsidian",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "release": "node release.mjs publish"
   },
   "devDependencies": {
     "esbuild": "0.25.11",

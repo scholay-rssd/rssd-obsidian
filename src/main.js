@@ -1,6 +1,6 @@
 // RSSD for Obsidian, stage 1: open a space from the RSSD Center as a vault of drafts, see each work's sync
 // state, and save edits back as private drafts. Publishing is never done here.
-import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu,setIcon,getIcon} from 'obsidian';
+import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,apiVersion,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu,setIcon,getIcon} from 'obsidian';
 import {OUTPUT_ATTRIBUTE,inOutput,stripReadingMarks} from './reading-marks.mjs';
 import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
@@ -17,6 +17,7 @@ import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel,is
 import {internalNotes,hasOpenChecks,runHistory,rowNotes,anchorMatches} from './private-notes.mjs';
 import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER} from './works-filter.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
+import {updateFromCenter,rollback} from './self-update.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
 import {wechatHtml,wechatSource,copyRich} from './wechat.mjs';
 import {wechatTemplate,wechatSite,cardTemplate} from './wechat-template.mjs';
@@ -32,7 +33,9 @@ import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,notePath,noteToWork,workFingerpri
 const TOKEN_SECRET='rssd-center-device-token';
 // The Scholay Center. A build can point elsewhere with RSSD_DEFAULT_ORIGIN; the address stays editable until login.
 export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_ORIGIN:'https://post.linkc.cloud';
-const DEFAULTS={origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
+// Releases signed with this key are the only plugin updates a vault installs (release-key.pub, set at build).
+const RELEASE_KEY=typeof RSSD_RELEASE_KEY==='string'&&RSSD_RELEASE_KEY?RSSD_RELEASE_KEY:null;
+const DEFAULTS={pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
 // The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
 // between them.
@@ -363,6 +366,8 @@ export default class RssdPlugin extends Plugin{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.saveCards(file);return true;}});
   this.addCommand({id:'status',name:'Check sync state of all works',callback:()=>this.refreshStates()});
   this.addCommand({id:'spaces',name:'Show which spaces accept saves',callback:()=>this.showSpaces()});
+  this.addCommand({id:'check-plugin-update',name:'Check for an RSSD plugin update',callback:()=>this.checkPluginUpdate({manual:true})});
+  this.addCommand({id:'rollback-plugin',name:'Roll back the RSSD plugin to the previous version',callback:()=>this.rollbackPlugin()});
   // obsidian://rssd?vault=<vault>&do=login|pull|save|status|spaces[&path=Works/x.md] lets scripts and agents drive
   // the plugin. Any app or page can open such a link, so it only works when the vault opts in.
   this.registerObsidianProtocolHandler('rssd',params=>this.automate(params));
@@ -405,6 +410,49 @@ export default class RssdPlugin extends Plugin{
    // Fold journaled baselines into the settings file once saving has been quiet for half a minute.
    if(this.log().pending&&!this.operations.active&&Date.now()-this.log().lastRecord>30000)void this.saveSettings().catch(()=>{});
    if(this.autoSync.running||!this.autoSync.ready())return;const scan=Date.now()>=nextScan;if(scan){nextScan=Date.now()+300000;void this.queuePrivateAdditions();}void this.autoSync.tick({scan}).then(ok=>{if(scan&&ok)nextScan=Date.now()+3600000;});},10000));
+  // Signed plugin updates: a few minutes after start, so opening the vault stays fast, then every three hours.
+  this.app.workspace.onLayoutReady(()=>{this.updateTimer=window.setTimeout(()=>void this.checkPluginUpdate(),60000+Math.floor(Math.random()*120000));});
+  this.registerInterval(window.setInterval(()=>void this.checkPluginUpdate(),3*3600000));
+ }
+ pluginDir(){return this.manifest.dir||this.app.vault.configDir+'/plugins/'+this.manifest.id;}
+ /** Install a newer signed release from the Center, then reload into it once no sync is running. A manual check
+  * also installs a release the user rolled back from. */
+ async checkPluginUpdate({manual=false}={}){
+  if(this.updating||(!manual&&this.settings.pluginUpdates===false))return;
+  if(!RELEASE_KEY){if(manual)new Notice('This RSSD build cannot check signed updates. Install a released version first.',10000);return;}
+  this.updating=true;
+  try{
+   const result=await updateFromCenter({origin:this.settings.origin||DEFAULT_ORIGIN,http,adapter:this.app.vault.adapter,dir:this.pluginDir(),
+    current:this.manifest.version,appVersion:apiVersion,skipped:manual?null:this.settings.skippedPluginRelease,publicKey:RELEASE_KEY});
+   if(result.state==='installed'){
+    if(this.settings.skippedPluginRelease){this.settings.skippedPluginRelease=null;await this.saveSettings();}
+    new Notice('RSSD updated to '+result.version+'. It reloads once no sync is running.',10000);this.reloadWhenIdle();
+   }else if(manual)new Notice({none:'No RSSD release is published yet.',current:'RSSD '+this.manifest.version+' is the latest version.',
+    app_too_old:'RSSD '+result.version+' needs a newer Obsidian. Update Obsidian first.'}[result.state]||'RSSD '+this.manifest.version+' is up to date.',8000);
+  }catch(error){
+   console.error('RSSD plugin update',error?.code||'',error?.message||error);
+   // A refused release is worth knowing about even when nobody asked; an unreachable Center is not.
+   if(manual||['update_unsigned','update_mismatch','update_invalid'].includes(error?.code))new Notice('RSSD update failed: '+error.message,10000);
+  }finally{this.updating=false;}
+ }
+ reloadWhenIdle(tries=0){
+  if((this.operations.active||this.autoSync?.running)&&tries<40){this.updateTimer=window.setTimeout(()=>this.reloadWhenIdle(tries+1),15000);return;}
+  const plugins=this.app.plugins,id=this.manifest.id;
+  if(typeof plugins?.disablePlugin!=='function'||typeof plugins?.enablePlugin!=='function'){new Notice('Restart Obsidian to use the updated RSSD plugin.',0);return;}
+  // Disabling unloads this instance; enabling loads the new files from disk.
+  window.setTimeout(async()=>{
+   try{await plugins.loadManifests?.();await plugins.disablePlugin(id);await plugins.enablePlugin(id);}
+   catch(error){console.error('RSSD reload',error);new Notice('Restart Obsidian to use the updated RSSD plugin.',0);}
+  },0);
+ }
+ async rollbackPlugin(){
+  if(this.operations.active){new Notice('Wait for the current RSSD operation to finish, then roll back.');return;}
+  try{
+   const result=await rollback({adapter:this.app.vault.adapter,dir:this.pluginDir()});
+   // Not installed again automatically; a newer release, or a manual check, still is.
+   this.settings.skippedPluginRelease=this.manifest.version;await this.saveSettings();
+   new Notice('RSSD rolled back to '+result.version+'. '+this.manifest.version+' will not be installed again automatically.',10000);this.reloadWhenIdle();
+  }catch(error){new Notice('Rollback failed: '+error.message,10000);}
  }
  /** Queue every work whose private record is waiting in .rssd/private-additions, so it is saved even if its note is unchanged. */
  async queuePrivateAdditions(){
@@ -710,7 +758,7 @@ export default class RssdPlugin extends Plugin{
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
  }
- onunload(){document.body.removeClass('rssd-one-row');this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
+ onunload(){window.clearTimeout(this.updateTimer);document.body.removeClass('rssd-one-row');this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
  workLabel(file){return file instanceof TFile&&this.isWork(file)?workLabel(this.app.metadataCache.getFileCache(file)?.frontmatter):null;}
  /** Paint titles and dates over ID file names in the explorer, tabs and note headers. Never renames a file. */
  refreshTitles({restore=false}={}){
@@ -1188,6 +1236,9 @@ class RssdSettings extends PluginSettingTab{
   new Setting(containerEl).setName('Automatic sync').setDesc('Periodically update from the Center and save changed works as private drafts. Conflicts and read-only spaces need attention; this never publishes.').addToggle(t=>t.setValue(s.autoSync!==false).onChange(async v=>{s.autoSync=v;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Properties in the article').setDesc('Work details are edited in the Details tab next to the note, so the properties block at the top of each note is hidden. Show it again here.')
    .addButton(b=>b.setButtonText('Show in article').onClick(async()=>{await this.plugin.restoreProperties();new Notice('The properties block is shown in notes again.');}));
+  new Setting(containerEl).setName('Plugin updates').setDesc('Install new signed RSSD releases from the Center automatically. This vault runs RSSD '+this.plugin.manifest.version+'.')
+   .addToggle(t=>t.setValue(s.pluginUpdates!==false).onChange(async v=>{s.pluginUpdates=v;await this.plugin.saveSettings();}))
+   .addButton(b=>b.setButtonText('Check now').onClick(()=>this.plugin.checkPluginUpdate({manual:true})));
   new Setting(containerEl).setName('Update works').setDesc('Download new and changed works into '+WORKS_FOLDER+'/ (images go to '+MEDIA_FOLDER+'/). Notes with local changes are never overwritten.')
    .addButton(b=>b.setButtonText('Update').onClick(()=>this.plugin.pull()));
  }
