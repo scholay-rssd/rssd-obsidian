@@ -18,10 +18,12 @@ import {internalNotes,hasOpenChecks,runHistory,rowNotes,anchorMatches} from './p
 import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER} from './works-filter.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
-import {wechatHtml,copyRich} from './wechat.mjs';
+import {wechatHtml,wechatSource,copyRich} from './wechat.mjs';
 import {wechatTemplate,wechatSite,cardTemplate} from './wechat-template.mjs';
 import {decorateWechat,ARTICLE_THEMES,defaultArticleTheme} from './wechat-designs.mjs';
-import {buildCards,CARD_THEMES} from './cards.mjs';
+import {buildCards,packageCardPages} from './cards.mjs';
+import {clampCardIndex,stepCardZoom} from './card-view.mjs';
+import {ReviewSidebar,REVIEW_VIEW} from './review-sidebar.mjs';
 import {CARD_STYLE_FOLDER,cardStylePath,checkCardStylesheet,cardStyleBrief} from './card-stylesheet.mjs';
 import {DETAIL_FIELDS,IDENTITY_FIELDS,fieldText,counters,cleanValue} from './details.mjs';
 import {checkSource} from '../../contracts/output-package.mjs';
@@ -94,6 +96,9 @@ const TITLE_STYLE=`
 .rssd-preview-controls button.rssd-preview-tab.is-active{background:var(--rssd-accent);color:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2),0 2px 6px color-mix(in srgb,var(--rssd-accent) 35%,transparent);transform:translateY(-1px)}
 .rssd-preview-controls button.rssd-preview-tab:not(.is-number)+button.rssd-preview-tab.is-number{margin-left:var(--size-2-2)}
 .rssd-preview-styles{display:flex;align-items:center;gap:var(--size-2-1);flex:0 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
+/* Cards keep their controls in the tab, so a wide style name can wrap instead of squeezing the status bar. */
+.rssd-preview-controls.is-in-pane{flex-wrap:wrap;row-gap:4px}
+.rssd-preview-controls.is-in-pane .rssd-preview-styles{flex-wrap:wrap;overflow:visible}
 .rssd-preview-controls .rssd-preview-info{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-muted);font-size:var(--font-ui-smaller)}
 .rssd-preview-bar button.rssd-preview-icon,.rssd-preview-controls button.rssd-preview-icon{display:flex;align-items:center;justify-content:center;height:auto;padding:var(--size-2-3);border:0;border-radius:var(--radius-s);background:none;box-shadow:none;color:var(--icon-color);cursor:pointer}
 .rssd-preview-bar button.rssd-preview-icon:hover,.rssd-preview-controls button.rssd-preview-icon:hover{background:var(--background-modifier-hover);color:var(--icon-color-hover)}
@@ -101,6 +106,62 @@ const TITLE_STYLE=`
 .rssd-preview-controls button.rssd-preview-icon.mod-cta{background:var(--interactive-accent);color:var(--text-on-accent)}
 .rssd-preview-controls button.rssd-preview-icon.mod-cta:hover{background:var(--interactive-accent-hover)}
 .rssd-preview-host{display:block}
+/* The Cards tab fills the pane and looks at the pictures one of three ways. */
+.view-content:has(> .rssd-preview.is-cards){overflow:hidden}
+.rssd-preview.is-cards{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden}
+.rssd-preview.is-cards .rssd-preview-stage{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.rssd-preview-stage.is-cards .rssd-preview-host{display:none}
+.rssd-card-view{display:none;flex:1 1 auto;flex-direction:column;min-height:0}
+.rssd-preview-stage.is-cards .rssd-card-view{display:flex}
+.rssd-card-toolbar{flex:0 0 auto;display:flex;align-items:center;gap:2px;padding:4px 8px;border-bottom:1px solid var(--background-modifier-border);background:var(--background-primary)}
+.rssd-card-toolbar button:disabled{opacity:.35;cursor:default}
+.rssd-card-modes{display:flex;align-items:center;gap:2px;margin:0 4px;padding:0 6px;border-left:1px solid var(--background-modifier-border);border-right:1px solid var(--background-modifier-border)}
+.rssd-card-count,.rssd-card-zoom{min-width:3.4em;padding:0 4px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums;text-align:center}
+.rssd-card-zoom{cursor:pointer}
+.rssd-card-toolbar button.rssd-preview-icon.is-active{background:var(--background-modifier-active-hover);color:var(--interactive-accent)}
+.rssd-card-pages{flex:1 1 auto;min-height:0;overflow:auto;background:#e6e6e6}
+.rssd-card-pages img{display:block;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.18)}
+.rssd-card-pages.is-page{display:flex;align-items:flex-start;justify-content:center;padding:12px}
+.rssd-card-pages.is-page.is-fit{align-items:center}
+.rssd-card-pages.is-page.is-fit img{width:auto;max-width:100%;max-height:100%;object-fit:contain}
+.rssd-card-pages.is-scroll{padding:12px}
+.rssd-card-pages.is-scroll.is-fit img{width:100%;max-width:1080px;height:auto;margin:0 auto 12px}
+.rssd-card-pages.is-scroll img{margin:0 auto 12px}
+.rssd-card-pages.is-scroll img.is-current{outline:2px solid var(--interactive-accent);outline-offset:2px}
+.rssd-card-pages.is-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:10px;align-content:start;padding:12px}
+.rssd-card-pages.is-grid img{width:100%;height:auto;cursor:pointer}
+.rssd-card-pages.is-grid img.is-current{outline:2px solid var(--interactive-accent);outline-offset:2px}
+.rssd-card-toolbar{gap:10px;flex-wrap:wrap;padding:6px 10px}
+.rssd-card-toolbar[hidden]{display:none}
+.rssd-card-nav,.rssd-card-modes{display:inline-flex;align-items:center;gap:2px}
+.rssd-card-modes{margin:0;padding:2px;border:0;border-radius:6px;background:var(--background-secondary)}
+.rssd-card-toolbar button,.rssd-card-toolbar select,.rssd-preview-controls.is-in-pane select{height:30px;font-size:var(--font-ui-small)}
+.rssd-card-toolbar button{min-width:30px;padding:0 8px;box-shadow:none;border:0;background:transparent}
+.rssd-card-modes button.is-active{background:var(--background-primary);color:var(--text-normal);box-shadow:var(--shadow-s)}
+.rssd-card-toolbar>select{margin-inline-start:auto}
+.rssd-preview-controls.is-in-pane button.rssd-preview-tab{height:30px;font-size:var(--font-ui-small)}
+.rssd-card-pages{background:var(--background-secondary)}
+.rssd-preview.is-dark .rssd-card-pages,.rssd-preview.is-dark .rssd-card-rail{background:#000}
+.rssd-preview-controls select.rssd-appearance{height:30px;max-width:7em;font-size:var(--font-ui-small)}
+.rssd-card-pages img{height:auto;flex:none}
+.rssd-card-pages.is-page{display:block}
+.rssd-card-pages.is-page img{margin:auto;max-width:none}
+.rssd-card-pages.is-page.is-fit{display:grid;place-items:center;grid-template: minmax(0,1fr) / minmax(0,1fr)}
+.rssd-card-pages.is-page.is-fit img{width:100%;height:100%;object-fit:contain;background:transparent;box-shadow:none}
+.rssd-card-pages.is-scroll:not(.is-fit) img{max-width:none}
+.rssd-reader-toolbar.is-in-pane{gap:8px;padding:6px 10px;align-items:center;flex-shrink:0}
+.rssd-reader-toolbar .rssd-preview-styles{flex:none}
+.rssd-reader-toolbar .rssd-card-toolbar{flex:1;gap:8px;padding:0;border:0;background:none}
+.rssd-reader-toolbar .rssd-preview-actions{margin-left:auto}
+.rssd-reader-toolbar select{max-width:100%;cursor:pointer}
+.rssd-card-view{flex-direction:row}
+.rssd-card-rail{flex:0 0 clamp(86px,12%,148px);min-height:0;overflow:auto;padding:12px 8px;border-right:1px solid var(--background-modifier-border);background:var(--background-primary)}
+.rssd-card-rail[hidden]{display:none}
+.rssd-card-rail button{display:flex;flex-direction:column;align-items:center;gap:4px;width:100%;height:auto;padding:6px;margin-bottom:8px;border:0;box-shadow:none;background:transparent;color:var(--text-muted);font-size:12px}
+.rssd-card-rail button img{display:block;width:100%;height:auto;aspect-ratio:3/4}
+.rssd-card-rail button[aria-current]{background:var(--background-modifier-hover);color:var(--text-normal)}
+.rssd-card-rail button[aria-current] img{outline:2px solid var(--interactive-accent)}
+.rssd-card-view .rssd-card-pages{min-width:0}
 .rssd-works{display:flex;flex-direction:column;padding:0!important}
 .rssd-works-top{position:sticky;top:0;z-index:2;padding:var(--size-4-2) var(--size-4-2) var(--size-4-1);background:var(--background-secondary);border-bottom:1px solid var(--background-modifier-border)}
 .rssd-works-bar{display:flex;align-items:center;gap:var(--size-2-2)}
@@ -268,6 +329,17 @@ export default class RssdPlugin extends Plugin{
   this.settings.boundSpace??=Object.keys(this.settings.baselines).find(k=>Object.keys(this.settings.baselines[k]||{}).length)||'';
   await this.saveSettings();
   this.registerView('rssd-works',leaf=>new WorksView(leaf,this));
+  this.registerView(REVIEW_VIEW,leaf=>new ReviewSidebar(leaf,this));
+  this.registerObsidianProtocolHandler('rssd-review',async({path})=>{
+   if(path){
+    const file=this.app.vault.getAbstractFileByPath(path);
+    if(!(file instanceof TFile)||!this.isWork(file)){new Notice('找不到指定的 RSSD 文章');return;}
+    await this.openWorkFile(file);
+   }
+   await this.openReviewSidebar();
+  });
+  this.addCommand({id:'review-sidebar',name:'打开文章审阅栏',callback:()=>this.openReviewSidebar()});
+  this.addRibbonIcon('list-checks','文章审阅栏',()=>this.openReviewSidebar());
   // One place to switch the left sidebar: the ribbon has Files, Search and Works (the sidebar's own tab icons are
   // hidden on desktop), then the reader; the sidebar's top row keeps only Update and Save.
   this.addRibbonIcon('folder-closed','Files',()=>this.revealCore('file-explorer','file-explorer:open'));
@@ -316,6 +388,10 @@ export default class RssdPlugin extends Plugin{
   // First launch: one button logs in and opens the reader. Afterwards the reader opens from the ribbon.
   // Work details have a tab of their own; the properties block in the article is hidden once they are there.
   this.addCommand({id:'details',name:'Show work details',callback:()=>this.openDetails()});
+  this.addCommand({id:'outline',name:'Show the work outline',checkCallback:checking=>{
+   const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.openOutline();return true;}});
+  this.addCommand({id:'cards',name:'Preview this work as cards',checkCallback:checking=>{
+   const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.openView('rssd-cards');return true;}});
   // Reading mode of a work note: context line, captions, reference list and brand line (see the reading styles).
   this.registerMarkdownPostProcessor((el,ctx)=>this.decorateReading(el,ctx));
   // The work in front is the one RSSD tabs and the next card click follow.
@@ -803,6 +879,11 @@ export default class RssdPlugin extends Plugin{
  /** Puts the styled article on the clipboard only. Nothing is sent to the Center or to any platform. */
  /** Every view starts with the site's own style. */
  defaultStyle(){return 'site';}
+ /** Day, night, or follow Obsidian. Remembered on this device. */
+ previewAppearance(){const saved=this.app.loadLocalStorage?.('rssd-preview-appearance');return saved==='light'||saved==='dark'?saved:'system';}
+ setPreviewAppearance(value){this.app.saveLocalStorage?.('rssd-preview-appearance',value==='light'||value==='dark'?value:'system');}
+ /** Whether Article and Cards should be shown on black with white text. */
+ nightPreview(){const choice=this.previewAppearance();return choice==='dark'||choice!=='light'&&document.body.classList.contains('theme-dark');}
  /** The accent colour of a work's section, from its website template. */
  sectionAccent(file){return this.sectionAccentOf(file?this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']:'');}
  sectionAccentOf(section){
@@ -828,18 +909,40 @@ export default class RssdPlugin extends Plugin{
    return result;
   }catch(error){console.error('RSSD article copy',error);new Notice('Could not copy the article: '+error.message,10000);}
  }
+ // Optional local samples are paired to the source note by its vault-relative path.
+ sampleCard(file,style){
+  if(!file||!['ai-code','ai-image'].includes(style)||!file.path.startsWith(WORKS_FOLDER+'/'))return null;
+  const path='Card Samples/'+file.path.slice(WORKS_FOLDER.length+1,-3)+'/'+style+'.png';
+  const found=this.app.vault.getAbstractFileByPath(path);return found instanceof TFile?found:null;
+ }
  /** A work as picture cards (1080×1440 PNG). Reads the note and its images; changes nothing. */
- async cardsResult(file,content,{style,signal,onProgress}={}){
+ async cardsResult(file,content,{style,signal,onProgress,night}={}){
   style??=this.defaultStyle('cards',file);
+  night=night===undefined?this.nightPreview():night;
   const component=new Component();component.load();
   try{
    const adapter=this.app.vault.adapter;content??=await this.app.vault.read(file);
    const space=this.settings.workspaceId,site=wechatSite(space);
-   // The AI style is the site's own layout with the column's stylesheet on top.
-   const ai=style==='ai';
-   return await buildCards({doc:document,content,parseYaml,signal,onProgress,style,cardTheme:style==='site'||ai?'text':style,site,url:site?.origin||centerOrigin(this.settings.origin),
-    ...(ai?{cardCss:source=>this.cardStylesheet(source.sectionId)}:{}),
-    template:source=>cardTemplate(space,source.sectionId),engineVersion:this.manifest?.version||'0',...this.noteVersions(file),
+   if(style==='ai-code'||style==='ai-image'){
+    const sample=this.sampleCard(file,style);
+    if(!sample)throw Error('Local sample is missing.');
+    const info=JSON.parse(await adapter.read(sample.parent.path+'/source.json'));
+    const work=noteToWork(content,parseYaml);
+    if(info.sourceHash!==await workFingerprint(work.data,localMediaPaths(work.media)))throw Error('The article has changed since these samples were made.');
+    const count=info.pageCounts?.[style]??1;
+    if(!Number.isSafeInteger(count)||count<1||count>999)throw Error('Invalid local card page count.');
+    const blobs=[];
+    for(let index=1;index<=count;index++){
+     signal?.throwIfAborted();
+     const path=index===1?sample.path:sample.parent.path+'/'+style+'/'+String(index).padStart(2,'0')+'.png';
+     onProgress?.({stage:'read',count:index,total:count});
+     blobs.push(new Blob([await adapter.readBinary(path)],{type:'image/png'}));
+    }
+    return packageCardPages({source:wechatSource(content,parseYaml),site,style,blobs,engineVersion:this.manifest.version,...this.noteVersions(file)});
+   }
+   const dark=night;
+   return await buildCards({doc:document,content,parseYaml,signal,onProgress,style,cardTheme:'text',site,url:site?.origin||centerOrigin(this.settings.origin),
+    template:source=>{const look=cardTemplate(space,source.sectionId);return dark?{...(look||{}),paper:'#000000',ink:'#ffffff',muted:'#ffffff',accent:'#ffffff'}:look;},engineVersion:this.manifest?.version||'0',...this.noteVersions(file),
     render:(markdown,el)=>this.renderOutput(markdown,el,file,component),
     readMedia:async name=>{const path=MEDIA_FOLDER+'/'+name;return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;},
     // The page engine measures in a document of its own, kept off screen.
@@ -871,7 +974,8 @@ export default class RssdPlugin extends Plugin{
  /** Writes the cards as a package into the vault: the pictures, their caption and the manifest. Nothing is sent anywhere. */
  async saveCards(file,result){
   try{
-   result??=await this.cardsResult(file);
+   if(this.nightPreview()&&result?.manifest.style==='site')result=null;
+   result??=await this.cardsResult(file,undefined,{night:false});
    const adapter=this.app.vault.adapter,folder=normalizePath('Exports/cards/'+file.basename);
    for(const part of ['Exports','Exports/cards',folder])if(!await adapter.exists(part))await adapter.mkdir(part);
    // A shorter set must not leave pages of an earlier, longer one behind.
@@ -885,10 +989,9 @@ export default class RssdPlugin extends Plugin{
   }catch(error){console.error('RSSD cards save',error);new Notice('Could not save the cards: '+error.message,10000);}
  }
  /**
-  * Once per vault that edits works, arrange the layout: the Works list in the left sidebar, and the RSSD tabs
-  * (Article, Cards, Outline, Details) only as tabs next to the note. Tabs that earlier versions kept in the right
-  * sidebar, or in a pane of their own beside the note, are closed once; they open next to the note when asked
-  * for, and the right sidebar is left to Obsidian. On the first arrangement, now that the properties have a place
+  * Once per vault that edits works, arrange the layout: the Works list in the left sidebar, and Preview, Cards,
+  * Outline and Details as tabs in the center. Tabs that earlier versions kept in the right sidebar, or in a pane
+  * of their own beside the note, are closed once. On the first arrangement, now that the properties have a place
   * of their own, the properties block at the top of each note is hidden; the vault's earlier choice is kept so it
   * can be restored. Panels left by earlier versions are removed.
   */
@@ -899,7 +1002,7 @@ export default class RssdPlugin extends Plugin{
   for(const type of ['rssd-preview','rssd-wechat'])for(const leaf of workspace.getLeavesOfType(type))leaf.detach();
   for(const type of EDITOR_VIEWS)for(const leaf of workspace.getLeavesOfType(type)){
    const root=leaf.getRoot?.();
-   // A tab that already shares a tab bar with a note is in place.
+   // A tab that already shares a tab bar with a note is in place. The right sidebar is not where these four live.
    if(root===workspace.rightSplit||root===workspace.rootSplit&&leaf.parent&&!notes.some(note=>note.parent===leaf.parent))leaf.detach();
   }
   // The Works list sits in the left sidebar, in front of the file tree.
@@ -910,43 +1013,130 @@ export default class RssdPlugin extends Plugin{
   this.settings.layoutVersion=9;await this.saveSettings();
   return true;
  }
- /** Show one of the RSSD tabs where it is, or open it as a tab next to the note. */
+ /** Show one of the four center tabs where it is, or open it beside the others. */
  async openView(type){
-  const workspace=this.app.workspace;let leaf=workspace.getLeavesOfType(type)[0];
+  const workspace=this.app.workspace;let leaf=workspace.getLeavesOfType(type).find(item=>!workspace.rootSplit||item.getRoot?.()===workspace.rootSplit);
   if(!leaf){leaf=this.previewTab(type);if(!leaf)return;await leaf.setViewState({type,active:true});}
   workspace.revealLeaf(leaf);
+  const file=this.currentWork();if(file&&typeof leaf.view?.show==='function')void leaf.view.show(file);
  }
- /** A new RSSD tab in the note's own tab bar: next to another RSSD tab if one is open in the editor area, else
-  * next to the note. */
- previewTab(type){
+ /**
+  * The one tab bar in the editor. A leaf inserted into the root split is a new region, so this never
+  * returns the split itself. An empty editor still has a tab bar; the Works list, which has the focus
+  * after a click, does not.
+  */
+ editorTabGroup(){
+  const workspace=this.app.workspace,root=workspace.rootSplit;
+  const inEditor=leaf=>!root||leaf.getRoot?.()===root;
+  const groupOf=leaf=>leaf?.parent?.type==='tabs'&&inEditor(leaf)?leaf.parent:null;
+  const from=types=>types.flatMap(type=>workspace.getLeavesOfType?.(type)||[]).map(groupOf).find(Boolean);
+  const known=from(EDITOR_VIEWS)||from(['markdown']);
+  if(known)return known;
+  const recent=groupOf(workspace.getMostRecentLeaf?.(root));
+  if(recent)return recent;
+  const skip=new Set([workspace.leftSplit,workspace.rightSplit]);
+  const walk=node=>{
+   if(!node||skip.has(node))return null;
+   if(node.type==='tabs')return node;
+   for(const child of node.children||[]){const found=walk(child);if(found)return found;}
+   return null;
+  };
+  return walk(root);
+ }
+ /**
+  * Preview, Cards, Outline and Details are four tabs of one center section, not four sections. A copy that
+  * landed in another section is closed. The tab already in front stays in front.
+  */
+ async ensureCenterTabs(){
   const workspace=this.app.workspace;
-  const sibling=EDITOR_VIEWS.filter(t=>t!==type).flatMap(t=>workspace.getLeavesOfType(t)).find(leaf=>leaf.getRoot?.()===workspace.rootSplit);
-  const work=this.currentWork(),note=work&&workspace.getLeavesOfType('markdown').find(leaf=>leaf.view?.file===work);
-  const beside=sibling||note;if(beside)workspace.setActiveLeaf(beside,{focus:false});
+  const inEditor=leaf=>!workspace.rootSplit||leaf.getRoot?.()===workspace.rootSplit;
+  const frontType=workspace.getMostRecentLeaf?.()?.view?.getViewType?.();
+  let group=this.editorTabGroup();
+  // One new tab, and only when the editor has no tab bar yet. Never a child of the root split:
+  // that child is a region, and the next three would be three more regions.
+  let slot=null;
+  if(!group){
+   const anchor=workspace.getMostRecentLeaf?.(workspace.rootSplit);
+   if(anchor&&inEditor(anchor))workspace.setActiveLeaf?.(anchor,{focus:false});
+   slot=workspace.getLeaf?.('tab')||null;
+   if(slot?.parent?.type==='tabs'&&inEditor(slot))group=slot.parent;
+  }
+  for(const type of EDITOR_VIEWS){
+   let keep=workspace.getLeavesOfType(type).find(leaf=>group?leaf.parent===group:inEditor(leaf));
+   if(!keep){
+    let leaf=slot;slot=null;
+    if(!leaf&&group?.type==='tabs'&&typeof workspace.createLeafInParent==='function')leaf=workspace.createLeafInParent(group,group.children?.length||0);
+    if(!leaf)return;
+    await leaf.setViewState({type,active:false});
+    if(!group&&leaf.parent?.type==='tabs'&&inEditor(leaf))group=leaf.parent;
+    keep=leaf;
+   }
+   for(const leaf of workspace.getLeavesOfType(type))if(leaf!==keep)leaf.detach();
+  }
+  const prefer=EDITOR_VIEWS.includes(frontType)?frontType:'rssd-article';
+  const shown=workspace.getLeavesOfType(prefer).find(leaf=>!group||leaf.parent===group);
+  if(shown)workspace.revealLeaf(shown);
+ }
+ /** A new tab in the same section as the open work, never a new section. */
+ previewTab(){
+  const workspace=this.app.workspace,group=this.editorTabGroup();
+  if(group?.type==='tabs'&&typeof workspace.createLeafInParent==='function')return workspace.createLeafInParent(group,group.children?.length||0);
+  const anchor=workspace.getMostRecentLeaf?.(workspace.rootSplit);
+  if(anchor&&(!workspace.rootSplit||anchor.getRoot?.()===workspace.rootSplit))workspace.setActiveLeaf?.(anchor,{focus:false});
   return workspace.getLeaf('tab');
  }
  openDetails(){return this.openView('rssd-details');}
+ async openReviewSidebar(){
+  const ws=this.app.workspace;
+  let leaf=ws.getLeavesOfType(REVIEW_VIEW)[0];
+  if(!leaf){
+   leaf=ws.getRightLeaf(false);
+   if(!leaf)return;
+   await leaf.setViewState({type:REVIEW_VIEW,active:true});
+  }
+  await ws.revealLeaf(leaf);
+ }
  openOutline(){return this.openView('rssd-outline');}
  /** The work open in the editor, even while a sidebar tab has the focus. */
  /**
-  * Open a work from the Works list. A click replaces: the work goes into the note tab the plug-in used last, and
-  * every RSSD tab switches to it, while whichever tab was in front (the note, Article, Cards…) stays in front.
-  * ⌘/Ctrl-click opens it in a new note tab and leaves the other note tabs alone.
+  * The editable note, in the same tab bar as the four views. A work note already there is reused, and so is
+  * the empty editor tab; another note in that bar is left alone.
   */
- async openWorkFile(file,{newTab=false}={}){
-  const workspace=this.app.workspace,previous=this.shownWork;this.shownWork=file;
-  if(newTab){const leaf=workspace.getLeaf('tab');await leaf.openFile(file);return leaf;}
-  const notes=workspace.getLeavesOfType('markdown').filter(leaf=>{const held=this.leafFile(leaf);return leaf.getRoot?.()===workspace.rootSplit&&held&&this.isWork(held);});
-  const leaf=notes.find(leaf=>this.leafFile(leaf)===previous)||notes.sort((a,b)=>(b.activeTime||0)-(a.activeTime||0))[0];
-  if(!leaf){const fresh=workspace.getLeaf(false);await fresh.openFile(file);return fresh;}
-  const front=workspace.getMostRecentLeaf?.(),keepFront=!!front&&front!==leaf&&EDITOR_VIEWS.includes(front.view?.getViewType?.());
-  await leaf.openFile(file,{active:!keepFront});
-  this.followWork(file);
+ async openWorkNote(file){
+  const workspace=this.app.workspace,group=this.editorTabGroup();
+  const inEditor=leaf=>!workspace.rootSplit||leaf.getRoot?.()===workspace.rootSplit;
+  const inGroup=leaf=>group?leaf.parent===group:inEditor(leaf);
+  const works=workspace.getLeavesOfType('markdown').filter(leaf=>{const held=this.leafFile(leaf);return inGroup(leaf)&&held&&this.isWork(held);});
+  let leaf=works.find(item=>this.leafFile(item)===file)||works.sort((a,b)=>(b.activeTime||0)-(a.activeTime||0))[0]||workspace.getLeavesOfType('empty').find(inGroup);
+  if(!leaf){
+   if(group?.type==='tabs'&&typeof workspace.createLeafInParent==='function')leaf=workspace.createLeafInParent(group,0);
+   else leaf=this.previewTab();
+  }
+  if(!leaf)return null;
+  if(typeof leaf.openFile==='function')await leaf.openFile(file,{active:false});
+  else await leaf.setViewState?.({type:'markdown',state:{file:file.path},active:false});
   return leaf;
+ }
+ /**
+  * Open a work from the Works list. The note and the four views share one tab bar, and a later choice
+  * replaces the work inside them. The note comes forward until one of the four views is already in front.
+  */
+ async openWorkFile(file){
+  const workspace=this.app.workspace,front=workspace.getMostRecentLeaf?.();
+  const keepFront=EDITOR_VIEWS.includes(front?.view?.getViewType?.());
+  const group=this.editorTabGroup();
+  const hadNote=workspace.getLeavesOfType('markdown').some(leaf=>{const held=this.leafFile(leaf);return held&&this.isWork(held)&&(!group||leaf.parent===group);});
+  this.shownWork=file;
+  const note=await this.openWorkNote(file);
+  await this.ensureCenterTabs();
+  this.followWork(file);
+  if(keepFront&&hadNote&&front)workspace.revealLeaf(front);
+  else if(note)workspace.revealLeaf(note);
  }
  /** Point every open RSSD tab at a work; ones not loaded yet take it when shown. */
  followWork(file){
   this.shownWork=file;
+  for(const leaf of this.app.workspace.getLeavesOfType(REVIEW_VIEW))leaf.view?.schedule?.();
   for(const type of EDITOR_VIEWS)for(const leaf of this.app.workspace.getLeavesOfType(type))if(typeof leaf.view?.show==='function')void leaf.view.show(file);
   this.refreshTitles?.();
  }
@@ -1289,21 +1479,16 @@ class WorksView extends ItemView{
    // The machine that saved the first version, by its device name.
    if(writer?.machine){const machine=line.createSpan({cls:'rssd-works-machine'});setIcon(machine.createSpan({cls:'rssd-works-fact-icon'}),'laptop');machine.createSpan({text:writer.machine});machine.setAttribute('aria-label','First written on '+writer.machine);}
   }
-  card.addEventListener('click',event=>void this.openWork(work.file,{newTab:event.metaKey||event.ctrlKey}));
+  card.addEventListener('click',()=>void this.openWork(work.file));
   return card;
  }
- /** Actions for the open work's card. Save appears only when there is something to save. */
+ /** Save on the open work's card, only when that work has something to save. Preview, Cards, Outline and Details stay out of this list. */
  actions(card,work){
-  const bar=card.createDiv({cls:'rssd-works-actions'}),state=this.states.get(work.file.path)?.state;
-  // Each button carries the icon of the tab it opens.
-  const add=(icon,text,label,run)=>{const button=bar.createEl('button',{cls:'rssd-works-action'});setIcon(button.createSpan({cls:'rssd-works-action-icon'}),icon);button.createSpan({text});
-   button.setAttribute('aria-label',label);button.addEventListener('click',event=>{event.stopPropagation();void run();});return button;};
-  if(state==='edited'&&!Platform.isMobile)add('upload','Save','Save this work to the Center as a private draft. Nothing is published.',async()=>{await this.plugin.save(work.file);this.states.delete(work.file.path);this.render();}).addClass('mod-cta');
-  const icon=id=>PREVIEW_TARGETS.find(target=>target.id===id).icon;
-  add(icon('article'),'Preview','Preview the article layout',()=>this.plugin.openPreview());
-  add(icon('cards'),'Cards','Preview the work as cards',()=>this.plugin.openView('rssd-cards'));
-  add(icon('outline'),'Outline','The work\'s headings',()=>this.plugin.openOutline());
-  add(icon('details'),'Details','Edit the title, summary, author and category',()=>this.plugin.openDetails());
+  if(this.states.get(work.file.path)?.state!=='edited'||Platform.isMobile)return;
+  const bar=card.createDiv({cls:'rssd-works-actions'});
+  const button=bar.createEl('button',{cls:'rssd-works-action mod-cta'});setIcon(button.createSpan({cls:'rssd-works-action-icon'}),'upload');button.createSpan({text:'Save'});
+  button.setAttribute('aria-label','Save this work to the Center as a private draft. Nothing is published.');
+  button.addEventListener('click',async event=>{event.stopPropagation();await this.plugin.save(work.file);this.states.delete(work.file.path);this.render();});
  }
  row(group,work){
   const row=group.createDiv({cls:'rssd-works-row'});row.dataset.path=work.file.path;
@@ -1314,11 +1499,11 @@ class WorksView extends ItemView{
   if(sectionName){const tag=row.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);}
   row.createSpan({cls:'rssd-works-title',text:work.title});
   row.setAttribute('aria-label',[work.title,work.date,WORK_STATES[state]].filter(Boolean).join(' · '));
-  row.addEventListener('click',event=>void this.openWork(work.file,{newTab:event.metaKey||event.ctrlKey}));
+  row.addEventListener('click',()=>void this.openWork(work.file));
   return row;
  }
  // Not named open(): that is Obsidian's own method for starting a view, and replacing it stops the view from ever opening.
- async openWork(file,options){await this.plugin.openWorkFile(file,options);this.mark();}
+ async openWork(file){await this.plugin.openWorkFile(file);this.mark();}
  /** Highlight the work open in the editor. */
  mark(){
   const current=this.plugin.currentWork()?.path;
@@ -1424,9 +1609,8 @@ const PREVIEW_TARGETS=[
   styles:[{id:'site',site:true},...Object.entries(ARTICLE_THEMES).map(([id,theme],index)=>({id,label:String(index+1),name:theme.label}))],
   build:(plugin,file,content,style)=>plugin.wechatResult(file,content,{style}),copy:(plugin,file,style)=>plugin.copyForWechat(file,{style})},
  {id:'cards',label:'Cards',name:'Card view',icon:'gallery-vertical-end',copyLabel:'Save cards',actionIcon:'download',
-  styles:[{id:'site',site:true},...Object.entries(CARD_THEMES).filter(([id])=>id!=='text').map(([id,theme],index)=>({id,label:String(index+1),name:theme.label})),
-   // Shown only for a column that has an AI stylesheet in card-styles/.
-   {id:'ai',label:'AI',name:'AI style written for this column (card-styles/)',when:(plugin,file)=>!!plugin.cardStyleFile(file)}],
+  styles:[{id:'site',label:'算法排版'},
+   ...[['ai-code','智能排版'],['ai-image','模型生图']].map(([id,label])=>({id,label,when:(plugin,file)=>!!plugin.sampleCard(file,id)}))],
   build:(plugin,file,content,style,options)=>plugin.cardsResult(file,content,{style,...options}),copy:(plugin,file,style,result)=>plugin.saveCards(file,result)},
  // Outline and details are not outputs: they show how the work is built and what it is, beside the outputs.
  {id:'outline',label:'Outline',name:'Outline',icon:'list',styles:[],panel:'outline'},
@@ -1437,7 +1621,7 @@ const PREVIEW_TARGETS=[
 // The article is shown at a phone's width, as a 公众号 reader sees it: a 375px column (the usual phone design
 // width) with WeChat's 16px side margins, centred on white so the column has no visible edge. Wider tables and
 // code scroll inside it rather than overflow.
-const PREVIEW_FRAME=':host{display:block;color-scheme:light;background:#fff}.page{box-sizing:border-box;max-width:375px;margin:0 auto;background:#fff;color:#222;padding:20px 16px 32px;overflow-wrap:anywhere;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.title{margin:0 0 18px;font-size:22px;line-height:1.4;font-weight:700}.body img{max-width:100%}.body table,.body pre{display:block;max-width:100%;overflow-x:auto}.cards{padding:12px;background:#e6e6e6}.cards img{display:block;width:100%;max-width:1080px;height:auto;margin:0 auto 12px;box-shadow:0 1px 6px rgba(0,0,0,.18)}.cards img:last-child{margin-bottom:0}.message{padding:24px 16px;color:#888;font-size:13px}';
+const PREVIEW_FRAME=':host{display:block;color-scheme:light;background:transparent}.page{box-sizing:border-box;max-width:375px;margin:0 auto;background:#fff;color:#222;padding:20px 16px 32px;overflow-wrap:anywhere;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}:host(.is-dark){background:#000;color-scheme:dark}:host(.is-dark) .page{background:#000;color:#fff}:host(.is-dark) .page *:not(img):not(video){color:#fff !important;background-color:transparent !important;background-image:none !important;border-color:rgba(255,255,255,.45) !important}.title{margin:0 0 18px;font-size:22px;line-height:1.4;font-weight:700}.body img{max-width:100%}.body table,.body pre{display:block;max-width:100%;overflow-x:auto}.message{padding:24px 16px;color:#888;font-size:13px}';
 class LayoutPreview extends ItemView{
  constructor(leaf,plugin,type='rssd-article',targetId='article'){super(leaf);this.plugin=plugin;this.type=type;this.target=PREVIEW_TARGETS.find(t=>t.id===targetId);this.style=this.target.styles[0]?.id||'';this.file=null;this.content=null;this.result=null;this.urls=[];this.seq=0;}
  /** An icon button; its label is read out and shown as a tooltip. */
@@ -1447,14 +1631,27 @@ class LayoutPreview extends ItemView{
   this.styleTabs.empty();
   const styles=this.target.styles.filter(style=>!style.when||style.when(this.plugin,file));
   if(!styles.some(style=>style.id===this.style))this.style=styles[0]?.id||'';
-  for(const style of styles){
-   const label=style.site?'Default':style.label,name=style.site?'Default: '+this.plugin.siteName()+'\'s own style for this section':style.name;
-   const active=style.id===this.style,tab=this.styleTabs.createEl('button',{text:label,cls:'rssd-preview-tab'+(style.site?'':' is-number')+(active?' is-active':'')});tab.setAttribute('aria-pressed',String(active));
-   tab.setAttribute('aria-label',name);
+  const cards=this.target.id==='cards';
+  if(cards){
+   const label=this.styleTabs.createEl('label',{text:'生成方式 '});
+   const select=label.createEl('select',{attr:{'aria-label':'生成方式'}});
+   for(const style of this.target.styles){
+    const available=styles.includes(style);
+    select.createEl('option',{value:style.id,text:style.label+(available?'':' · 暂无成品')}).disabled=!available;
+   }
+   select.value=this.style;
+   select.addEventListener('change',()=>{this.style=select.value;void this.show(file,{force:true});});
+  }else for(const style of styles){
+   const label=style.site?'Default':style.label;
+   const tab=this.styleTabs.createEl('button',{text:label,cls:'rssd-preview-tab'+(style.site?'':' is-number')+(style.id===this.style?' is-active':'')});
+   tab.setAttribute('aria-pressed',String(style.id===this.style));tab.setAttribute('aria-label',style.name||label);
    tab.addEventListener('click',()=>{if(style.id===this.style)return;this.style=style.id;this.drawTabs();void this.show(this.file,{force:true});});
   }
   // Outline and details have no styles, status or action; the controls row belongs to the outputs.
-  const output=!this.target.panel;this.controls.toggle(output&&(!this.plugin.previewSlot||this.docked));
+  // Cards keep this row in the tab. A wide style name needs the room the status bar does not have.
+  const inPane=this.target.id==='cards',output=!this.target.panel;
+  this.controls.toggleClass('is-in-pane',inPane);
+  this.controls.toggle(output&&(inPane||!this.plugin.previewSlot||this.docked));
   if(output){setIcon(this.actionButton,this.target.actionIcon);this.actionButton.setAttribute('aria-label',this.target.copyLabel);}
  }
  getViewType(){return this.type;}
@@ -1462,7 +1659,7 @@ class LayoutPreview extends ItemView{
  getDisplayText(){return tabTitle(this.target.label,this.titleFile&&this.plugin.workLabel(this.titleFile))||this.target.name;}
  getIcon(){return this.target.icon;}
  async onOpen(){
-  const el=this.contentEl;el.empty();el.style.padding='0';
+  const el=this.contentEl;el.empty();el.style.padding='0';el.addClass('rssd-preview');
   this.controls=el.createDiv({cls:'rssd-preview-controls'});
   if(this.plugin.previewSlot){this.registerEvent(this.app.workspace.on('active-leaf-change',()=>this.dock()));this.app.workspace.onLayoutReady(()=>this.dock());}
   this.styleTabs=this.controls.createDiv({cls:'rssd-preview-styles'});
@@ -1471,7 +1668,17 @@ class LayoutPreview extends ItemView{
   // Outline and details have no action; their controls row stays hidden, but the button still needs an icon.
   this.actionButton=this.iconButton(actions,this.target.actionIcon||'copy',this.target.copyLabel||'','mod-cta');
   this.actionButton.addEventListener('click',()=>{if(this.file)void this.target.copy(this.plugin,this.file,this.style,this.result);});
+  if(this.target.id==='article'||this.target.id==='cards'){
+   this.appearanceSelect=actions.createEl('select',{cls:'rssd-appearance',attr:{'aria-label':'日间或夜间',title:'日间或夜间'}});
+   for(const [value,text] of [['system','跟随'],['light','日间'],['dark','夜间']])this.appearanceSelect.createEl('option',{value,text});
+   this.appearanceSelect.value=this.plugin.previewAppearance();
+   this.appearanceSelect.addEventListener('change',()=>{
+    this.plugin.setPreviewAppearance(this.appearanceSelect.value);
+    for(const type of ['rssd-article','rssd-cards'])for(const leaf of this.app.workspace.getLeavesOfType(type))leaf.view?.syncNight?.();
+   });
+  }
   this.drawTabs();
+  if(this.target.id==='cards')this.ensureCardChrome();
   this.stage=el.createDiv({cls:'rssd-preview-stage'});
   this.root=this.stage.createDiv({cls:'rssd-preview-host'}).attachShadow({mode:'open'});
   const overlay=this.stage.createDiv({cls:'rssd-preview-loading'}),box=overlay.createDiv({cls:'rssd-preview-loading-box'});
@@ -1484,11 +1691,20 @@ class LayoutPreview extends ItemView{
   // Cards are redrawn page by page, so they wait longer for typing to pause.
   this.registerEvent(this.app.vault.on('modify',file=>{if(file===this.file){window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.show(this.file),this.target.id==='cards'?2500:800);}}));
   // A column stylesheet added, changed or removed: the AI tab comes or goes, and AI cards are drawn again.
-  if(this.target.id==='cards')for(const event of ['create','modify','delete','rename'])this.registerEvent(this.app.vault.on(event,(file,oldPath)=>{
-   const inFolder=path=>typeof path==='string'&&path.startsWith(CARD_STYLE_FOLDER+'/');if(!inFolder(file?.path)&&!inFolder(oldPath))return;
-   const before=this.style;this.drawTabs();
-   if(this.file&&(before==='ai'||this.style!==before)){window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.show(this.file,{force:true}),1200);}
-  }));
+  if(this.target.id==='cards'){
+   this.registerDomEvent(document,'keydown',event=>{
+    if(this.app.workspace.activeLeaf!==this.leaf||!this.contentEl.hasClass('is-cards'))return;
+    if(event.target?.closest?.('input,textarea,select,[contenteditable="true"]'))return;
+    if(event.key!=='ArrowLeft'&&event.key!=='ArrowRight')return;
+    event.preventDefault();this.moveCard(event.key==='ArrowLeft'?-1:1);
+   });
+   for(const event of ['create','modify','delete','rename'])this.registerEvent(this.app.vault.on(event,(file,oldPath)=>{
+    const inFolder=path=>typeof path==='string'&&(path.startsWith(CARD_STYLE_FOLDER+'/')||path.startsWith('Card Samples/'));
+    if(!inFolder(file?.path)&&!inFolder(oldPath))return;
+    const before=this.style,sample=String(file?.path||oldPath||'').startsWith('Card Samples/');this.drawTabs();
+    if(this.file&&(before==='ai'||this.style!==before||sample&&['ai-code','ai-image'].includes(this.style))){window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.show(this.file,{force:true}),1200);}
+   }));
+  }
   this.registerEvent(this.app.workspace.on('active-leaf-change',leaf=>{if(leaf===this.leaf){this.catchUp();return;}const file=leaf?.view?.file;if(file&&this.plugin.isWork(file)&&file!==this.file)void this.show(file);}));
   // Details redraw after the note changes, but never under a field that is being edited.
   this.registerEvent(this.app.metadataCache.on('changed',file=>{if(file!==this.file)return;if(this.target.panel==='details'&&!this.detailsEl.contains(document.activeElement))void this.details.show(file);if(this.target.panel==='outline')this.outline.show(file);}));
@@ -1496,15 +1712,23 @@ class LayoutPreview extends ItemView{
   // nothing is the dependable sign that it is on screen.
   const watch=new ResizeObserver(()=>this.catchUp());watch.observe(this.contentEl);this.register(()=>watch.disconnect());
   this.registerEvent(this.app.workspace.on('layout-change',()=>this.catchUp()));
+  this.registerEvent(this.app.workspace.on('css-change',()=>this.syncNight()));
   this.app.workspace.onLayoutReady(()=>void this.show(this.plugin.currentWork()));
  }
  /** A tab that was hidden while its work changed catches up when it is shown. */
  onResize(){this.catchUp();}
  /** Draw what a hidden tab put off, once the tab is on screen. */
- catchUp(){if(this.waiting&&this.containerEl.isShown?.()!==false){const file=this.pendingFile;this.waiting=false;this.pendingFile=null;void this.show(file,{force:true});}}
+ catchUp(){if(this.waiting&&this.containerEl.isShown?.()!==false){const file=this.pendingFile,force=this.pendingForce;this.waiting=false;this.pendingFile=null;this.pendingForce=false;void this.show(file,{force});}}
  /** Put this tab's controls in the status bar while it is the tab in front, and take them back when it is not. */
  dock(){
   const slot=this.plugin.previewSlot;if(!slot||!this.controls||this.target.panel)return;
+  // The card viewer has its own row of ways to look, so its style controls stay in the tab.
+  if(this.target.id==='cards'){
+   if(this.docked&&slot.contains(this.controls))this.contentEl.prepend(this.controls);
+   this.docked=false;this.controls.addClass('is-in-pane');this.controls.show();
+   slot.toggle(slot.childElementCount>0);return;
+  }
+  this.controls.removeClass('is-in-pane');
   const front=this.app.workspace.getMostRecentLeaf?.()===this.leaf;
   if(front&&!this.docked){slot.empty();slot.append(this.controls);this.docked=true;this.controls.show();}
   else if(!front&&this.docked){if(slot.contains(this.controls))this.controls.remove();this.docked=false;}
@@ -1523,25 +1747,158 @@ class LayoutPreview extends ItemView{
   window.clearTimeout(this.loadingTimer);this.loadingTimer=null;this.stage.removeClass('is-loading');
  }
  release(){for(const url of this.urls)URL.revokeObjectURL(url);this.urls=[];}
+ /** Black page, white text. Follows Obsidian unless this device picked day or night. */
+ syncNight(){
+  const night=this.plugin.nightPreview();
+  this.contentEl.classList.toggle('is-dark',night);
+  this.root?.host?.classList.toggle('is-dark',night);
+  if(this.appearanceSelect)this.appearanceSelect.value=this.plugin.previewAppearance();
+  if(this.target.id==='cards'&&this.file&&this.cardNight!==undefined&&this.cardNight!==night){
+   if(this.style==='ai-code'||this.style==='ai-image')this.cardNight=night;
+   else void this.show(this.file,{force:true});
+  }
+ }
  message(text){
-  this.loading(false);this.release();
+  this.loading(false);this.release();this.clearCardFrame();
   const style=document.createElement('style'),note=document.createElement('div');style.textContent=PREVIEW_FRAME;note.className='message';note.textContent=text;
   this.root.replaceChildren(style,note);
+ }
+ /** Leave the card viewer and show the shadow host again. */
+ clearCardFrame(){
+  this.contentEl.removeClass('is-cards');this.stage?.removeClass('is-cards');
+  if(this.cardBar)this.cardBar.hidden=true;
+  if(this.cardViewEl)this.cardViewEl.style.display='none';
+ }
+ /** The way-of-looking row. It belongs to the Cards tab itself, above the pictures, so it is there before the first card is drawn. */
+ ensureCardChrome(){
+  if(this.cardBar)return;
+  this.cardLook={mode:'page',zoom:'fit',index:0};
+  this.controls.addClass('rssd-reader-toolbar');
+  this.cardBar=this.controls.createDiv({cls:'rssd-card-toolbar'});
+  this.controls.insertBefore(this.cardBar,this.controls.lastElementChild.previousElementSibling);
+  this.thumbToggle=this.iconButton(this.controls,'panel-left','页缩略图');
+  this.controls.prepend(this.thumbToggle);
+  this.thumbToggle.setAttribute('aria-expanded','true');
+  this.thumbToggle.addEventListener('click',()=>{
+   this.thumbOpen=!this.thumbOpen;this.thumbToggle.setAttribute('aria-expanded',String(this.thumbOpen));
+   if(this.thumbRail)this.thumbRail.hidden=!this.thumbOpen;
+  });
+  this.thumbOpen=true;
+  const nav=this.cardBar.createDiv({cls:'rssd-card-nav'});
+  this.cardPrev=this.iconButton(nav,'chevron-left','上一页');
+  this.cardPrev.addEventListener('click',()=>this.moveCard(-1));
+  this.cardCount=nav.createEl('select',{attr:{'aria-label':'跳至卡片页'}});
+  this.cardCount.addEventListener('change',()=>this.moveCard(Number(this.cardCount.value)-this.cardLook.index));
+  this.cardNext=this.iconButton(nav,'chevron-right','下一页');
+  this.cardNext.addEventListener('click',()=>this.moveCard(1));
+  this.cardModes=this.cardBar.createEl('select',{attr:{'aria-label':'阅读方式',title:'阅读方式'}});
+  for(const [value,text] of [['page','单页'],['scroll','连续'],['grid','总览']])this.cardModes.createEl('option',{value,text});
+  this.cardModes.addEventListener('change',()=>{this.cardLook.mode=this.cardModes.value;if(this.cardImages?.length)this.paintCards();});
+  this.cardZoomLabel=this.cardBar.createEl('select',{attr:{'aria-label':'卡片缩放'}});
+  for(const [value,text] of [['fit','适应窗口'],['0.5','50%'],['0.75','75%'],['1','100%'],['1.5','150%']])this.cardZoomLabel.createEl('option',{value,text});
+  this.cardZoomLabel.addEventListener('change',()=>{const value=this.cardZoomLabel.value;this.cardLook.zoom=value==='fit'?value:Number(value);this.paintCards();});
+  this.markCardMode();
+ }
+ markCardMode(){this.cardModes.value=this.cardLook.mode;}
+ /**
+  * One finished set of cards, looked at in the way last chosen: one card fitted to the pane,
+  * every card in a scroll, or thumbnails. Arrow keys move between cards. Clicking the card
+  * toggles between fitting the pane and its real size; Ctrl-scroll changes the size.
+  */
+ showCardPages(pages){
+  this.ensureCardChrome();
+  if(!this.cardViewEl){
+   this.cardViewEl=this.stage.createDiv({cls:'rssd-card-view'});
+   this.thumbRail=this.cardViewEl.createEl('nav',{cls:'rssd-card-rail',attr:{'aria-label':'页缩略图'}});
+   this.thumbRail.hidden=!this.thumbOpen;
+   this.thumbRail.addEventListener('click',event=>{
+    const button=event.target.closest('button[data-page]');if(!button)return;
+    this.cardLook.index=Number(button.dataset.page);
+    if(this.cardLook.mode==='grid')this.cardLook.mode='page';
+    this.paintCards();
+   });
+   this.cardPages=this.cardViewEl.createDiv({cls:'rssd-card-pages'});
+   this.cardPages.addEventListener('click',event=>{
+    const img=event.target?.closest?.('img');if(!img||img.dataset.index==null)return;
+    const index=Number(img.dataset.index);
+    if(this.cardLook.mode==='grid'){this.cardLook.mode='page';this.cardLook.index=index;this.paintCards();return;}
+    if(this.cardLook.mode==='page'){this.cardLook.zoom=this.cardLook.zoom==='fit'?1:'fit';this.paintCards();}
+   });
+   this.cardPages.addEventListener('scroll',()=>{
+    if(this.cardLook.mode!=='scroll')return;
+    const top=this.cardPages.getBoundingClientRect().top+this.cardPages.clientHeight/2;
+    const imgs=this.cardPages.querySelectorAll('img');
+    for(const img of imgs){if(img.getBoundingClientRect().bottom>=top){
+     this.cardLook.index=Number(img.dataset.index);this.updateCardPosition();break;
+    }}
+   },{passive:true});
+   this.cardPages.addEventListener('wheel',event=>{
+    if(this.cardLook.mode==='grid'||(!event.ctrlKey&&!event.metaKey))return;
+    event.preventDefault();this.zoomCard(event.deltaY<0?1:-1);
+   },{passive:false});
+  }
+  this.cardImages=pages.map((page,index)=>{const url=URL.createObjectURL(page.blob);this.urls.push(url);return {url,index,alt:'Card '+(index+1)+' of '+pages.length};});
+  this.thumbRail.empty();
+  for(const image of this.cardImages){
+   const button=this.thumbRail.createEl('button',{attr:{'aria-label':'第 '+(image.index+1)+' 页'}});
+   button.dataset.page=String(image.index);
+   button.createEl('img',{attr:{src:image.url,alt:'',loading:'lazy',width:108,height:144}});
+   button.createSpan({text:String(image.index+1)});
+  }
+  this.cardLook.index=clampCardIndex(this.cardLook.index,pages.length);
+  this.contentEl.addClass('rssd-preview');this.contentEl.addClass('is-cards');this.stage.addClass('is-cards');
+  this.cardBar.hidden=false;this.cardViewEl.style.display='flex';
+  this.paintCards();
+ }
+ moveCard(delta){
+  const count=this.cardImages?.length||0;if(!count)return;
+  const next=clampCardIndex(this.cardLook.index+delta,count);if(next===this.cardLook.index)return;
+  this.cardLook.index=next;this.paintCards();
+ }
+ zoomCard(direction){if(!this.cardImages?.length)return;this.cardLook.zoom=stepCardZoom(this.cardLook.zoom,direction);this.paintCards();}
+ paintCards(){
+  const mode=this.cardLook.mode,zoom=this.cardLook.zoom,images=this.cardImages||[];
+  const index=this.cardLook.index=clampCardIndex(this.cardLook.index,images.length);
+  const pages=this.cardPages;pages.empty();
+  pages.className='rssd-card-pages is-'+mode+(zoom==='fit'?' is-fit':'');
+  for(const image of (mode==='page'?images.filter(image=>image.index===index):images)){
+   const img=pages.createEl('img');img.width=1080;img.height=1440;img.src=image.url;img.alt=image.alt;img.dataset.index=String(image.index);
+   if(image.index===index)img.classList.add('is-current');
+   if(mode!=='grid'&&zoom!=='fit')img.style.width=Math.round(1080*zoom)+'px';
+  }
+  if(this.cardCount.options.length!==images.length){
+   this.cardCount.empty();
+   images.forEach((_,i)=>this.cardCount.createEl('option',{value:String(i),text:(i+1)+' / '+images.length}));
+  }
+  this.updateCardPosition();
+  this.cardZoomLabel.value=String(zoom);this.cardZoomLabel.disabled=mode==='grid';
+  this.markCardMode();
+  if(mode==='scroll')pages.querySelector('img.is-current')?.scrollIntoView({block:'start'});
+  if(mode==='page')pages.scrollTo(0,0);
+ }
+ updateCardPosition(){
+  const index=this.cardLook.index,count=this.cardImages?.length||0;
+  const old=this.thumbRail.querySelector('[aria-current]');
+  const current=this.thumbRail.children[index];
+  if(current&&old!==current){old?.removeAttribute('aria-current');current.setAttribute('aria-current','page');
+   if(this.thumbOpen)current.scrollIntoView({block:'nearest'});
+  }
+  this.cardCount.value=String(index);this.cardPrev.disabled=index<=0;this.cardNext.disabled=index>=count-1;
  }
  async show(file,{force=false}={}){
   if(file&&file!==this.titleFile){this.titleFile=file;this.leaf.updateHeader?.();}
   // An output tab behind another is not built until it is shown; cards in particular take a while. Outline
   // and details are cheap and always drawn.
-  if(!this.target.panel&&this.containerEl.isShown&&!this.containerEl.isShown()){this.waiting=true;this.pendingFile=file||null;return;}
+  if(!this.target.panel&&this.containerEl.isShown&&!this.containerEl.isShown()){this.waiting=true;this.pendingFile=file||null;this.pendingForce=!!this.pendingForce||force;return;}
   this.waiting=false;this.pendingFile=null;
   // A newly opened work starts with its section's usual theme; a choice holds while the same work stays open.
-  if(!this.target.panel&&file&&file!==this.file){this.defaultStyle=this.plugin.defaultStyle(this.target.id,file);this.style=this.defaultStyle;this.drawTabs(file);
+  if(!this.target.panel&&file&&file!==this.file){if(this.cardLook)this.cardLook.index=0;this.file=file;this.content=null;this.result=null;this.defaultStyle=this.plugin.defaultStyle(this.target.id,file);this.style=this.defaultStyle;this.drawTabs(file);
    // The theme tabs take the colour of the work's section.
    const accent=this.plugin.sectionAccent(file);if(accent)this.controls.style.setProperty('--rssd-accent',accent);else this.controls.style.removeProperty('--rssd-accent');}
   const seq=++this.seq,panel=this.target.panel;
   this.stage.toggle(!panel);this.detailsEl.toggle(panel==='details');this.outlineEl.toggle(panel==='outline');
   if(panel){
-   this.abort?.abort();this.loading(false);this.file=file;this.content=null;this.result=null;this.release();this.root.replaceChildren();
+   this.abort?.abort();this.loading(false);this.clearCardFrame();this.file=file;this.content=null;this.result=null;this.release();this.root.replaceChildren();
    try{if(panel==='details')await this.details.show(file);else this.outline.show(file);}
    catch(error){console.error('RSSD '+panel,error);const box=panel==='details'?this.detailsEl:this.outlineEl;box.empty();box.createDiv({cls:'rssd-details-empty',text:'Could not show this: '+(error?.message||error)});}
    return;
@@ -1549,21 +1906,24 @@ class LayoutPreview extends ItemView{
   if(!file){this.abort?.abort();this.file=null;this.content=null;this.result=null;this.message('Open a work to preview it.');return;}
   try{
    const content=await this.app.vault.read(file);
-   if(seq!==this.seq||(!force&&file===this.file&&content===this.content))return;
+   if(seq!==this.seq)return;
+   if(!force&&file===this.file&&content===this.content&&this.result&&this.renderedStyle===this.style&&!this.stage.hasClass('is-loading')&&!this.loadingTimer)return;
    // A newer request replaces one still being laid out.
    this.abort?.abort();const abort=this.abort=new AbortController();
-   this.loading(true,this.target.id==='cards'?'Preparing cards…':'Preparing the article…');
+   this.loading(true,this.target.id==='cards'?(this.style==='site'?'正在排版全文…':'读取本地卡片…'):'Preparing the article…');
+   if(this.target.id==='cards')this.cardNight=this.plugin.nightPreview();
    const result=await this.target.build(this.plugin,file,content,this.style,{signal:abort.signal,
-    onProgress:step=>{if(seq===this.seq)this.loading(true,step.stage==='layout'?'Laying out card '+step.count+'…':'Drawing card '+step.count+' of '+step.total+'…');}});
+    onProgress:step=>{if(seq===this.seq)this.loading(true,step.stage==='read'?'读取本地卡片 '+step.count+' / '+step.total:step.stage==='layout'?'Laying out card '+step.count+'…':'Drawing card '+step.count+' of '+step.total+'…');}});
    if(seq!==this.seq)return;
-   this.file=file;this.content=content;this.result=result;this.loading(false);
+   this.file=file;this.content=content;this.result=result;this.renderedStyle=this.style;this.loading(false);
+   if(this.target.id==='cards')for(const leaf of this.app.workspace.getLeavesOfType(REVIEW_VIEW))leaf.view?.schedule?.();
    const scroll=this.contentEl.scrollTop,style=document.createElement('style');style.textContent=PREVIEW_FRAME;this.release();
+   this.syncNight();
    if(result.pages){
-    // Each card is shown as the picture that will be saved.
-    const list=document.createElement('div');list.className='cards';
-    result.pages.forEach((page,index)=>{const url=URL.createObjectURL(page.blob),img=document.createElement('img');this.urls.push(url);img.src=url;img.alt='Card '+(index+1)+' of '+result.pages.length;list.append(img);});
-    this.root.replaceChildren(style,list);
+    if(!result.pages.length){this.message('This work produced no cards.');return;}
+    this.root.replaceChildren();this.showCardPages(result.pages);
    }else{
+    this.clearCardFrame();
     const page=document.createElement('div'),body=document.createElement('div');page.className='page';body.className='body';
     // The engine has already removed scripts and every attribute except its own styles, links and image sources.
     body.innerHTML=result.html;
@@ -1571,7 +1931,7 @@ class LayoutPreview extends ItemView{
     page.append(title,body);this.root.replaceChildren(style,page);
    }
    this.contentEl.scrollTop=scroll;
-  }catch(error){if(seq===this.seq&&error?.name!=='AbortError'){this.file=file;this.content=null;this.result=null;this.message('Could not preview: '+error.message);}}
+  }catch(error){if(seq===this.seq&&error?.name!=='AbortError'){this.file=file;this.content=null;this.result=null;this.message(error.code==='no_pictures'?'这篇稿件没有可用的正文配图。':'Could not preview: '+error.message);this.actionButton.disabled=true;}}
  }
 }
 

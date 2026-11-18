@@ -82,6 +82,7 @@ export function createCenterClient({http,origin,token}){
   return value;
  };
  return {origin,
+  edition:(workId,locale,revision)=>request('/works/'+encodeURIComponent(workId)+'/editions/'+encodeURIComponent(locale)+'/'+encodeURIComponent(revision)),
   identity:()=>request('/identity'),
   registry:()=>request('/registry'),
   demands:options=>request('/demands?'+query(options)),

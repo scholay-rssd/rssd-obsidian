@@ -18,6 +18,15 @@ export const CARD_SCALE=1.5,CARD_SIZE=Object.freeze({width:1080,height:1440});
 // Card themes. Text fills each card in reading order; key points give each chapter a card of its own, in larger
 // type; pictures give each picture a card with its description underneath.
 export const CARD_THEMES=Object.freeze({text:{label:'Text'},points:{label:'Key points',template:{fontSize:30,lineHeight:1.6}},pictures:{label:'Pictures'}});
+// Sizes are measured on the 720px layout canvas before the 1.5x PNG export.
+const FULL_TEXT_STYLE=`
+.rssd-page .rssd-article-heading h1{font-size:1.56em;line-height:1.23;letter-spacing:0;margin-bottom:.35em}
+.rssd-page .rssd-body h2{font-size:1.25em;line-height:1.38;font-weight:700;margin:1em 0 .42em}
+.rssd-page .rssd-body h3{font-size:1.09em;line-height:1.4}
+.rssd-page .rssd-body table{font-size:.83em;line-height:1.45;font-variant-numeric:tabular-nums}
+.rssd-page .rssd-body td,.rssd-page .rssd-body th{padding:8px 5px}
+.rssd-page .rssd-body figcaption,.rssd-page .rssd-body p.rssd-caption{font-size:.77em;line-height:1.55;margin:6px 0 17px}
+`;
 const BREAK='<hr class="rssd-page-break">';
 const STRUCTURAL=/^\s*(参考文献|参考资料|延伸阅读|相关阅读|附录|致谢|注释|references?|further reading|notes?|appendix|acknowledge?ments?)\s*$/i;
 /** Arrange a work's rendered body for a card theme. Throws when the theme has nothing to show. */
@@ -70,7 +79,9 @@ const dataUrl=(name,bytes)=>{const data=bytesToBase64(bytes);return 'data:'+medi
  */
 export async function buildCards({doc,content,parseYaml,render,readMedia,frame,template=null,site=null,url,style='text',engineVersion='0',version=null,publishedVersion=null,
  cardTheme='text',cardCss='',signal,onProgress=()=>{},now=()=>new Date(),clean=cleanRendered,engine={paginate,rasterPage},math={extractMath,formulaPictures}}){
- const source=wechatSource(content,parseYaml),host=doc.createElement('div'),missing=[],images=new Map();
+ const source=wechatSource(content,parseYaml);
+ if(cardTheme==='pictures'&&!source.media.length)throw Object.assign(Error('这篇稿件没有可用的正文配图。'),{code:'no_pictures'});
+ const host=doc.createElement('div'),missing=[],images=new Map();
  // `template` is the section's page template, or a function that picks one from the parsed work.
  const sectionLook=typeof template==='function'?template(source):template,themeLook=CARD_THEMES[cardTheme]?.template;
  // `cardCss`, like `template`, may be chosen from the parsed work (its column's stylesheet).
@@ -79,7 +90,7 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
  // Formulas are drawn as vector pictures at the card's text size (see math.mjs).
  const formulas=math.extractMath(source.markdown);
  await render(formulas.markdown,host);signal?.throwIfAborted();clean(host);
- const pictures=await math.formulaPictures(doc,formulas.formulas,{fontSize:Number(look?.fontSize)||DEFAULT_CARD_TEMPLATE.fontSize,color:look?.ink||DEFAULT_CARD_TEMPLATE.ink});
+ const pictures=cardTheme==='pictures'?[]:await math.formulaPictures(doc,formulas.formulas,{fontSize:Number(look?.fontSize)||DEFAULT_CARD_TEMPLATE.fontSize,color:look?.ink||DEFAULT_CARD_TEMPLATE.ink});
  for(const img of [...host.querySelectorAll('img')]){
   const src=img.getAttribute('src')||'',index=formulaIndex(src);
   if(index>=0){const picture=pictures[index];if(!picture){img.remove();continue;}images.set(src,picture.svg);img.setAttribute('alt',picture.tex);img.className=picture.display?'rssd-math-block':'rssd-math';continue;}
@@ -92,15 +103,23 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
   }else if(!value)missing.push(src||'(image without an address)');
   if(value)images.set(src,value);else img.remove();
  }
+ if(style==='site'&&cardTheme==='text'){
+  for(const p of host.querySelectorAll('p'))if(/^(?:图|表)\s*[0-9一二三四五六七八九十]+\s*[｜|：:．.]/u.test(p.textContent.trim()))p.classList.add('rssd-caption');
+ }
  arrangeForCards(host,cardTheme);
  const measure=frame();let result,blobs=[];
  try{
   const model=cardModel({source,site,url,template:look,html:host.innerHTML});
-  result=await engine.paginate(measure,model,{signal,pause,extraStyle:css,onProgress:count=>onProgress({stage:'layout',count}),
+  result=await engine.paginate(measure,model,{signal,pause,extraStyle:(style==='site'&&cardTheme==='text'?FULL_TEXT_STYLE:'')+css,onProgress:count=>onProgress({stage:'layout',count}),
    loadImage:async address=>{const value=images.get(address);if(!value)throw Object.assign(Error('A picture could not be read: '+address),{code:'image_unreadable'});return value;}});
   if(css){const problems=checkVisibleText(result.pages);if(problems.length)throw Object.assign(Error('The card style hides part of the work: '+problems.slice(0,3).join('; ')+(problems.length>3?' and '+(problems.length-3)+' more':'')),{code:'card_style_hides_text',problems});}
   for(let i=0;i<result.pages.length;i++){signal?.throwIfAborted();onProgress({stage:'draw',count:i+1,total:result.pages.length});blobs.push(await engine.rasterPage(result.pages[i],result.style,{scale:CARD_SCALE,signal}));}
  }finally{measure.remove?.();}
+ const warnings=[...(formulas.error?[{code:'formula_unreadable',message:'A formula delimiter is not closed, so formulas were left as text: '+formulas.error}]:[]),...missing.map(name=>({code:'image_missing',message:'Picture could not be read and was left out: '+name}))];
+ return packageCardPages({source,site,style,blobs,version,publishedVersion,engineVersion,now,missing,styled:!!sectionLook||!!css,extraWarnings:warnings});
+}
+
+export async function packageCardPages({source,site,style,blobs,version,publishedVersion,engineVersion,now=()=>new Date(),missing=[],styled=true,extraWarnings=[]}){
  const width=String(Math.max(2,String(blobs.length).length)),pages=blobs.map((blob,i)=>({name:String(i+1).padStart(Number(width),'0')+'.png',blob}));
  const {work}=source,record={...work.data,kind:work.kind,media:work.media,version,publishedVersion};
  const {fields,warnings}=outputFields('cards',record,{cover:pages[0]?.name||null}),caption=[fields.title,fields.caption].filter(Boolean).join('\n\n');
@@ -109,6 +128,6 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
  const captionBytes=new TextEncoder().encode(caption);files.push({path:'caption.txt',role:'text',type:'text/plain',bytes:captionBytes.length,sha256:await sha256(captionBytes)});
  const manifest=outputManifest({format:'cards',source:record,site:{id:site?.id||'unknown',name:site?.name||''},style,createdAt:now().toISOString(),engine:{name:'rssd-obsidian',version:engineVersion},
   sourceHash:await workFingerprint(work.data,localMediaPaths(work.media)),fields,files,
-  warnings:[...checkSource(record).warnings,...warnings,...(formulas.error?[{code:'formula_unreadable',message:'A formula delimiter is not closed, so formulas were left as text: '+formulas.error}]:[]),...missing.map(name=>({code:'image_missing',message:'Picture could not be read and was left out: '+name}))]});
- return {title:source.title,pages,caption,missing,manifest,sectionId:source.sectionId,styled:!!sectionLook||!!css,size:CARD_SIZE};
+  warnings:[...checkSource(record).warnings,...warnings,...extraWarnings]});
+ return {title:source.title,pages,caption,missing,manifest,sectionId:source.sectionId,styled,size:CARD_SIZE};
 }
