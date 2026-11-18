@@ -19,14 +19,43 @@ export const CARD_SCALE=1.5,CARD_SIZE=Object.freeze({width:1080,height:1440});
 // type; pictures give each picture a card with its description underneath.
 export const CARD_THEMES=Object.freeze({text:{label:'Text'},points:{label:'Key points',template:{fontSize:30,lineHeight:1.6}},pictures:{label:'Pictures'}});
 // Sizes are measured on the 720px layout canvas before the 1.5x PNG export.
-const FULL_TEXT_STYLE=`
+// A caption is a note on its picture, not body text: small, muted and centred under it.
+const fullTextStyle=muted=>`
 .rssd-page .rssd-article-heading h1{font-size:1.56em;line-height:1.23;letter-spacing:0;margin-bottom:.35em}
 .rssd-page .rssd-body h2{font-size:1.25em;line-height:1.38;font-weight:700;margin:1em 0 .42em}
 .rssd-page .rssd-body h3{font-size:1.09em;line-height:1.4}
 .rssd-page .rssd-body table{font-size:.83em;line-height:1.45;font-variant-numeric:tabular-nums}
 .rssd-page .rssd-body td,.rssd-page .rssd-body th{padding:8px 5px}
-.rssd-page .rssd-body figcaption,.rssd-page .rssd-body p.rssd-caption{font-size:.77em;line-height:1.55;margin:6px 0 17px}
+.rssd-page .rssd-body figcaption,.rssd-page .rssd-body p.rssd-caption{font-size:.69em;line-height:1.6;margin:-8px 0 20px;color:${muted};text-align:center;text-indent:0}
+.rssd-page .rssd-body .rssd-indent{display:inline-block;width:2em}
 `;
+const CAPTION_NUMBERED=/^(?:图|表)\s*[0-9一二三四五六七八九十]+\s*[｜|：:．.]/u;
+const CAPTION_LABEL=/^(?:(?:图|表)\s*[0-9一二三四五六七八九十]*\s*[｜|：:．.]|(?:figure|fig\.?|table)\s*\d*\s*[:.|｜])/iu;
+/**
+ * Whether a paragraph is the caption of a picture or table. A numbered label (图 1：) is one anywhere;
+ * an unnumbered one (图：, Figure:) only directly under the picture or table it describes.
+ */
+export function isCardCaption(text,afterPicture){
+ const value=String(text||'').trim();
+ return CAPTION_NUMBERED.test(value)||(!!afterPicture&&CAPTION_LABEL.test(value));
+}
+const pictureOnly=el=>!!el&&(el.tagName==='IMG'||el.tagName==='TABLE'||(el.tagName==='P'&&!(el.textContent||'').trim()&&!!el.querySelector('img')));
+/**
+ * Mark the captions, and in Chinese give body paragraphs a two-character first-line indent (not captions,
+ * lists, quotes, tables or the closing references). The indent is an empty leading box, not a paragraph
+ * style, so a paragraph continued on the next card does not start with a second indent.
+ */
+export function typesetCardBody(host,locale='zh-CN'){
+ const doc=host.ownerDocument,indent=/^zh/i.test(locale||'zh-CN');
+ let notes=false;
+ for(const el of [...host.children]){
+  if(/^H[1-6]$/.test(el.tagName)){if(el.tagName==='H2'||el.tagName==='H1')notes=STRUCTURAL.test(el.textContent||'');continue;}
+  if(el.tagName!=='P'||!(el.textContent||'').trim())continue;
+  if(isCardCaption(el.textContent,pictureOnly(el.previousElementSibling))){el.classList.add('rssd-caption');continue;}
+  if(!indent||notes)continue;
+  const box=doc.createElement('span');box.className='rssd-indent';el.prepend(box);
+ }
+}
 const BREAK='<hr class="rssd-page-break">';
 const STRUCTURAL=/^\s*(参考文献|参考资料|延伸阅读|相关阅读|附录|致谢|注释|references?|further reading|notes?|appendix|acknowledge?ments?)\s*$/i;
 /** Arrange a work's rendered body for a card theme. Throws when the theme has nothing to show. */
@@ -57,6 +86,8 @@ export function cleanRendered(root){
  return root;
 }
 
+// A template's colour goes into the cards' stylesheet, so only a plain hex colour is taken from it.
+const mutedInk=look=>/^#[0-9a-f]{3,8}$/i.test(look?.muted||'')?look.muted:DEFAULT_CARD_TEMPLATE.muted;
 /** What the page engine needs to know about a work. */
 export function cardModel({source,site,url,template,html}){
  const data=source.work.data;
@@ -103,14 +134,12 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
   }else if(!value)missing.push(src||'(image without an address)');
   if(value)images.set(src,value);else img.remove();
  }
- if(style==='site'&&cardTheme==='text'){
-  for(const p of host.querySelectorAll('p'))if(/^(?:图|表)\s*[0-9一二三四五六七八九十]+\s*[｜|：:．.]/u.test(p.textContent.trim()))p.classList.add('rssd-caption');
- }
+ if(style==='site'&&cardTheme==='text')typesetCardBody(host,source.work.data.locale);
  arrangeForCards(host,cardTheme);
  const measure=frame();let result,blobs=[];
  try{
   const model=cardModel({source,site,url,template:look,html:host.innerHTML});
-  result=await engine.paginate(measure,model,{signal,pause,extraStyle:(style==='site'&&cardTheme==='text'?FULL_TEXT_STYLE:'')+css,onProgress:count=>onProgress({stage:'layout',count}),
+  result=await engine.paginate(measure,model,{signal,pause,extraStyle:(style==='site'&&cardTheme==='text'?fullTextStyle(mutedInk(look)):'')+css,onProgress:count=>onProgress({stage:'layout',count}),
    loadImage:async address=>{const value=images.get(address);if(!value)throw Object.assign(Error('A picture could not be read: '+address),{code:'image_unreadable'});return value;}});
   if(css){const problems=checkVisibleText(result.pages);if(problems.length)throw Object.assign(Error('The card style hides part of the work: '+problems.slice(0,3).join('; ')+(problems.length>3?' and '+(problems.length-3)+' more':'')),{code:'card_style_hides_text',problems});}
   for(let i=0;i<result.pages.length;i++){signal?.throwIfAborted();onProgress({stage:'draw',count:i+1,total:result.pages.length});blobs.push(await engine.rasterPage(result.pages[i],result.style,{scale:CARD_SCALE,signal}));}
