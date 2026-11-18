@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {citationParts,isCardCaption,typesetCardBody} from '../src/cards.mjs';
+import {citationParts,coverPicture,isCardCaption,typesetCardBody} from '../src/cards.mjs';
 
 test('a numbered label is a caption anywhere; an unnumbered one only under its picture',()=>{
  assert.equal(isCardCaption('图 1：犬钩虫卵',false),true);
@@ -18,13 +18,15 @@ test('a numbered label is a caption anywhere; an unnumbered one only under its p
 // The smallest document the typesetter needs: block children in order, each with a tag, text and classes.
 function block(tagName,text='',{img=false}={}){
  const classes=new Set(),children=[];
+ const picture=img?{className:img===true?'':img,classList:{add:name=>classes.add(name)}}:null;
  return {tagName,get textContent(){return text;},classList:{add:name=>classes.add(name),contains:name=>classes.has(name)},classes,children,
-  querySelector:selector=>selector==='img'&&img?{}:null,prepend(node){children.unshift(node);},previousElementSibling:null};
+  querySelector:selector=>selector==='img'?picture:null,prepend(node){children.unshift(node);},previousElementSibling:null,nextElementSibling:null};
 }
 function body(blocks){
- blocks.forEach((item,index)=>{item.previousElementSibling=blocks[index-1]||null;});
+ const link=()=>blocks.forEach((item,index)=>{item.previousElementSibling=blocks[index-1]||null;item.nextElementSibling=blocks[index+1]||null;});
+ link();
  // Text nodes are walked in a real document; here there are none to visit.
- return {children:blocks,ownerDocument:{createElement:tag=>({tagName:tag.toUpperCase(),className:''}),createTreeWalker:()=>({nextNode:()=>null})}};
+ return {children:blocks,prepend(...moved){for(const item of moved)blocks.splice(blocks.indexOf(item),1);blocks.unshift(...moved);link();},ownerDocument:{createElement:tag=>({tagName:tag.toUpperCase(),className:''}),createTreeWalker:()=>({nextNode:()=>null})}};
 }
 const indented=item=>item.children[0]?.className==='rssd-indent';
 
@@ -64,4 +66,19 @@ test('the closing references are notes whether their heading is h2, h3 or a bold
  const entry=block('P','[1] 来源'),later=block('H2','后记'),after=block('P','后面的正文。');
  typesetCardBody(body([block('H2','参考文献'),entry,later,after]),'zh-CN');
  assert.equal(entry.classes.has('rssd-note'),true);assert.equal(after.classes.has('rssd-note'),false);assert.equal(indented(after),true);
+});
+
+test('the first picture and its caption move under the title for the cover',()=>{
+ const lead=block('P','带猫狗体检时，兽医常会要一份粪便样本。'),formula=block('P','',{img:'rssd-math-block'}),picture=block('P','',{img:true}),
+  caption=block('P','图：犬钩虫卵的显微镜照片。'),text=block('P','研究比较的三种检测是：'),second=block('P','',{img:true});
+ const host=body([lead,formula,picture,caption,text,second]);
+ typesetCardBody(host,'zh-CN');
+ assert.equal(coverPicture(host),true);
+ assert.deepEqual(host.children,[picture,caption,lead,formula,text,second]);
+ assert.equal(picture.classes.has('rssd-cover-picture'),true);assert.equal(second.classes.has('rssd-cover-picture'),false);
+ // A work that already opens with its picture is left in order, and one without pictures is left alone.
+ const opening=block('P','',{img:true}),after=block('P','正文。'),ordered=body([opening,after]);
+ assert.equal(coverPicture(ordered),true);assert.deepEqual(ordered.children,[opening,after]);
+ const plain=body([block('P','只有文字。'),block('P','',{img:'rssd-math'})]);
+ assert.equal(coverPicture(plain),false);
 });
