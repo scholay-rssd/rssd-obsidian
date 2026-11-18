@@ -23,6 +23,7 @@ Open one RSSD Center space as a vault of drafts, see each work's sync state, and
    npm run build
    node install.mjs /path/to/vault
    ```
+   After this first install, new versions arrive by themselves (see *Plugin updates*).
 3. In Obsidian enable the plugin, open Settings → RSSD, enter the Center address and run **Log in to the RSSD Center**. Approve the device and its spaces in your browser.
 4. Run **Update works from the Center**. Chinese works appear in `Works/<id>.md`, English works in `Works/en/<id>.md`, and images in `article-media/`.
 5. Automatic sync is on by default. While Obsidian and the vault are open, it checks for remote changes periodically and saves edits to linked works as private drafts after a short delay. It discovers offline edits after reopening. Use Settings → RSSD → **Automatic sync** to turn it off. The manual update and save commands remain available.
@@ -73,6 +74,20 @@ The **Cards** tab lays the same work out as picture cards: 3:4 PNG images of 108
 Formulas are written the way the website writes them: `$…$`, `$$…$$`, `\(…\)` or `\[…\]`. Obsidian's own editor only draws the dollar forms, but both views draw every form with the website's KaTeX version (bundled, with its fonts) and carry each formula as a picture: a sharp PNG in the copied article, a vector picture on a card. An inline formula sits on the text baseline; a display formula is centred on its own line. In the article's plain text a formula is its LaTeX source. A formula delimiter left unclosed leaves the formulas as text and is listed in the manifest.
 
 Every output also has a package manifest, defined in RSSD's `contracts/output-package.mjs`: the format, article, language, site, section and style, the source version and a hash of the source it was made from, and the fields the platform asks for besides the body (for WeChat: title, a digest of at most 120 characters, author and cover). The layout preview shows how many items the manifest flags, such as a missing author or cover or a shortened digest; hover the text to read them. The manifest is built in memory for now; nothing is written to the vault.
+
+## Plugin updates
+
+Once a vault has a released version, it keeps its RSSD plugin current by itself. A few minutes after Obsidian opens, and then every three hours, it asks the Center for the latest release (`/api/rssd/public/v1/obsidian-plugin/latest`). It installs a newer release only when it is signed with the RSSD release key and every file matches its signed hash. The public half of the key, `release-key.pub`, is compiled into every build. The files that ran before are kept in the plugin folder's `previous/`, and the plugin reloads once no sync is running. Settings → RSSD → **Plugin updates** turns this off for a vault or checks right away. *Roll back the RSSD plugin to the previous version* puts the previous files back, and that release is then skipped until a newer one appears.
+
+To release, merge to `main`. Then, in this folder inside an RSSD checkout, run `npm run release` (`node release.mjs publish`). It:
+
+- builds the merged commit;
+- numbers it with `manifest.json`'s major.minor and a patch one past the Center's latest;
+- signs it with the private key in `~/.rssd/obsidian-plugin-release.pem`;
+- uploads it to the Center over SSH (`--server`, default `scholay-postiz`);
+- checks what vaults will receive.
+
+`--dry-run --out <folder>` builds and signs without uploading. `node release.mjs key` created the key once. Keep the private key backed up: a new key means one more manual install in every vault.
 
 ## Not yet
 
