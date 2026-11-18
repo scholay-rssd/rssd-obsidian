@@ -19,14 +19,75 @@ export const CARD_SCALE=1.5,CARD_SIZE=Object.freeze({width:1080,height:1440});
 // type; pictures give each picture a card with its description underneath.
 export const CARD_THEMES=Object.freeze({text:{label:'Text'},points:{label:'Key points',template:{fontSize:30,lineHeight:1.6}},pictures:{label:'Pictures'}});
 // Sizes are measured on the 720px layout canvas before the 1.5x PNG export.
-const FULL_TEXT_STYLE=`
+// A caption is a note on its picture, not body text: small, muted and centred under it.
+const fullTextStyle=muted=>`
 .rssd-page .rssd-article-heading h1{font-size:1.56em;line-height:1.23;letter-spacing:0;margin-bottom:.35em}
 .rssd-page .rssd-body h2{font-size:1.25em;line-height:1.38;font-weight:700;margin:1em 0 .42em}
 .rssd-page .rssd-body h3{font-size:1.09em;line-height:1.4}
 .rssd-page .rssd-body table{font-size:.83em;line-height:1.45;font-variant-numeric:tabular-nums}
 .rssd-page .rssd-body td,.rssd-page .rssd-body th{padding:8px 5px}
-.rssd-page .rssd-body figcaption,.rssd-page .rssd-body p.rssd-caption{font-size:.77em;line-height:1.55;margin:6px 0 17px}
+.rssd-page .rssd-body figcaption,.rssd-page .rssd-body p.rssd-caption{font-size:.69em;line-height:1.6;margin:-8px 0 20px;color:${muted};text-align:center;text-indent:0}
+.rssd-page .rssd-body .rssd-indent{display:inline-block;width:2em}
+.rssd-page .rssd-body sup.rssd-cite{font-size:.58em;line-height:0;vertical-align:super;margin-left:.08em;color:${muted};font-variant-numeric:tabular-nums}
+.rssd-page .rssd-body .rssd-note{font-size:.69em;line-height:1.6;color:${muted}}
+.rssd-page .rssd-body .rssd-note .rssd-note{font-size:1em}
+.rssd-page .rssd-body p.rssd-note{margin-bottom:10px}
 `;
+const CAPTION_NUMBERED=/^(?:图|表)\s*[0-9一二三四五六七八九十]+\s*[｜|：:．.]/u;
+const CAPTION_LABEL=/^(?:(?:图|表)\s*[0-9一二三四五六七八九十]*\s*[｜|：:．.]|(?:figure|fig\.?|table)\s*\d*\s*[:.|｜])/iu;
+/**
+ * Whether a paragraph is the caption of a picture or table. A numbered label (图 1：) is one anywhere;
+ * an unnumbered one (图：, Figure:) only directly under the picture or table it describes.
+ */
+export function isCardCaption(text,afterPicture){
+ const value=String(text||'').trim();
+ return CAPTION_NUMBERED.test(value)||(!!afterPicture&&CAPTION_LABEL.test(value));
+}
+const CITATION=/\[\d+(?:\s*[,，、–-]\s*\d+)*\]/g;
+/** Running text cut into plain pieces and citation markers such as [1] or [2, 3], in order. */
+export function citationParts(text){
+ const value=String(text??''),parts=[];let last=0;
+ for(const match of value.matchAll(CITATION)){
+  if(match.index>last)parts.push({text:value.slice(last,match.index),cite:false});
+  parts.push({text:match[0],cite:true});last=match.index+match[0].length;
+ }
+ if(last<value.length)parts.push({text:value.slice(last),cite:false});
+ return parts;
+}
+const pictureOnly=el=>!!el&&(el.tagName==='IMG'||el.tagName==='TABLE'||(el.tagName==='P'&&!(el.textContent||'').trim()&&!!el.querySelector('img')));
+/**
+ * Mark the captions, and in Chinese give body paragraphs a two-character first-line indent (not captions,
+ * lists, quotes, tables or the closing references). The indent is an empty leading box, not a paragraph
+ * style, so a paragraph continued on the next card does not start with a second indent.
+ * Citation numbers in running text become shoulder marks, and everything under a closing heading such as
+ * 参考文献 is set as notes: smaller, with its own numbers left on the line.
+ */
+export function typesetCardBody(host,locale='zh-CN'){
+ const doc=host.ownerDocument,indent=/^zh/i.test(locale||'zh-CN');
+ let notes=false;
+ for(const el of [...host.children]){
+  // The closing heading is written at any level, or as a line of its own in bold.
+  if(/^H[1-6]$/.test(el.tagName)){notes=STRUCTURAL.test(el.textContent||'');continue;}
+  if(el.tagName==='P'&&STRUCTURAL.test(el.textContent||'')){notes=true;continue;}
+  // The engine rebuilds a list it splits across cards, so each item carries the mark as well.
+  if(notes){el.classList.add('rssd-note');for(const item of el.querySelectorAll?.('li')||[])item.classList.add('rssd-note');continue;}
+  if(el.tagName!=='P'||!(el.textContent||'').trim())continue;
+  if(isCardCaption(el.textContent,pictureOnly(el.previousElementSibling))){el.classList.add('rssd-caption');continue;}
+  if(!indent)continue;
+  const box=doc.createElement('span');box.className='rssd-indent';el.prepend(box);
+ }
+ // Citation markers in running text, never inside the notes, code or a link.
+ const walker=doc.createTreeWalker(host,4),texts=[];for(let node=walker.nextNode();node;node=walker.nextNode())texts.push(node);
+ for(const node of texts){
+  if(node.parentElement?.closest('.rssd-note,code,pre,a,sup'))continue;
+  const parts=citationParts(node.nodeValue);if(!parts.some(part=>part.cite))continue;
+  node.replaceWith(...parts.map(part=>{
+   if(!part.cite)return doc.createTextNode(part.text);
+   // A word joiner keeps the mark on the line of the text it belongs to.
+   const mark=doc.createElement('sup');mark.className='rssd-cite';mark.textContent='\u2060'+part.text;return mark;
+  }));
+ }
+}
 const BREAK='<hr class="rssd-page-break">';
 const STRUCTURAL=/^\s*(参考文献|参考资料|延伸阅读|相关阅读|附录|致谢|注释|references?|further reading|notes?|appendix|acknowledge?ments?)\s*$/i;
 /** Arrange a work's rendered body for a card theme. Throws when the theme has nothing to show. */
@@ -57,6 +118,8 @@ export function cleanRendered(root){
  return root;
 }
 
+// A template's colour goes into the cards' stylesheet, so only a plain hex colour is taken from it.
+const mutedInk=look=>/^#[0-9a-f]{3,8}$/i.test(look?.muted||'')?look.muted:DEFAULT_CARD_TEMPLATE.muted;
 /** What the page engine needs to know about a work. */
 export function cardModel({source,site,url,template,html}){
  const data=source.work.data;
@@ -103,14 +166,12 @@ export async function buildCards({doc,content,parseYaml,render,readMedia,frame,t
   }else if(!value)missing.push(src||'(image without an address)');
   if(value)images.set(src,value);else img.remove();
  }
- if(style==='site'&&cardTheme==='text'){
-  for(const p of host.querySelectorAll('p'))if(/^(?:图|表)\s*[0-9一二三四五六七八九十]+\s*[｜|：:．.]/u.test(p.textContent.trim()))p.classList.add('rssd-caption');
- }
+ if(style==='site'&&cardTheme==='text')typesetCardBody(host,source.work.data.locale);
  arrangeForCards(host,cardTheme);
  const measure=frame();let result,blobs=[];
  try{
   const model=cardModel({source,site,url,template:look,html:host.innerHTML});
-  result=await engine.paginate(measure,model,{signal,pause,extraStyle:(style==='site'&&cardTheme==='text'?FULL_TEXT_STYLE:'')+css,onProgress:count=>onProgress({stage:'layout',count}),
+  result=await engine.paginate(measure,model,{signal,pause,extraStyle:(style==='site'&&cardTheme==='text'?fullTextStyle(mutedInk(look)):'')+css,onProgress:count=>onProgress({stage:'layout',count}),
    loadImage:async address=>{const value=images.get(address);if(!value)throw Object.assign(Error('A picture could not be read: '+address),{code:'image_unreadable'});return value;}});
   if(css){const problems=checkVisibleText(result.pages);if(problems.length)throw Object.assign(Error('The card style hides part of the work: '+problems.slice(0,3).join('; ')+(problems.length>3?' and '+(problems.length-3)+' more':'')),{code:'card_style_hides_text',problems});}
   for(let i=0;i<result.pages.length;i++){signal?.throwIfAborted();onProgress({stage:'draw',count:i+1,total:result.pages.length});blobs.push(await engine.rasterPage(result.pages[i],result.style,{scale:CARD_SCALE,signal}));}
