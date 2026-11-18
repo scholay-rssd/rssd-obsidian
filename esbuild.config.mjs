@@ -9,7 +9,7 @@ await esbuild.build({
  entryPoints:['src/main.js'],bundle:true,format:'cjs',target:'es2020',platform:'browser',
  external:['obsidian','electron'],outfile:'dist/main.js',logLevel:'info',
  // RSSD_DEFAULT_ORIGIN=https://center.example.org npm run build pre-fills another Center.
- define:{RSSD_WECHAT_TEMPLATES:JSON.stringify(wechatTemplates()),RSSD_WECHAT_SITES:JSON.stringify(wechatSites()),RSSD_CARD_TEMPLATES:JSON.stringify(cardTemplates()),RSSD_KATEX:JSON.stringify(katexAssets()),RSSD_RELEASE_KEY:JSON.stringify(releaseKey),...(process.env.RSSD_DEFAULT_ORIGIN?{RSSD_DEFAULT_ORIGIN:JSON.stringify(process.env.RSSD_DEFAULT_ORIGIN)}:{})},
+ define:{RSSD_WECHAT_TEMPLATES:JSON.stringify(wechatTemplates()),RSSD_WECHAT_SITES:JSON.stringify(wechatSites()),RSSD_CARD_TEMPLATES:JSON.stringify(cardTemplates()),RSSD_KATEX:JSON.stringify(katexAssets()),RSSD_RELEASE_KEY:JSON.stringify(releaseKey),RSSD_BUILD_VERSION:JSON.stringify(process.env.RSSD_RELEASE_VERSION||''),...(process.env.RSSD_DEFAULT_ORIGIN?{RSSD_DEFAULT_ORIGIN:JSON.stringify(process.env.RSSD_DEFAULT_ORIGIN)}:{})},
 });
 // A release build carries the version the release command assigned; any other build keeps manifest.json's.
 if(process.env.RSSD_RELEASE_VERSION){

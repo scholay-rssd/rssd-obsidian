@@ -17,7 +17,7 @@ import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel,is
 import {internalNotes,hasOpenChecks,runHistory,rowNotes,anchorMatches} from './private-notes.mjs';
 import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER} from './works-filter.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
-import {updateFromCenter,rollback} from './self-update.mjs';
+import {updateFromCenter,rollback,diskVersion,newerVersion} from './self-update.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
 import {wechatHtml,wechatSource,copyRich} from './wechat.mjs';
 import {wechatTemplate,wechatSite,cardTemplate} from './wechat-template.mjs';
@@ -35,6 +35,8 @@ const TOKEN_SECRET='rssd-center-device-token';
 export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_ORIGIN:'https://post.linkc.cloud';
 // Releases signed with this key are the only plugin updates a vault installs (release-key.pub, set at build).
 const RELEASE_KEY=typeof RSSD_RELEASE_KEY==='string'&&RSSD_RELEASE_KEY?RSSD_RELEASE_KEY:null;
+// The version a release build was built as. A development build has none and updates only on a manual check.
+const BUILD_VERSION=typeof RSSD_BUILD_VERSION==='string'?RSSD_BUILD_VERSION:'';
 const DEFAULTS={pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
 // The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
@@ -411,47 +413,74 @@ export default class RssdPlugin extends Plugin{
    if(this.log().pending&&!this.operations.active&&Date.now()-this.log().lastRecord>30000)void this.saveSettings().catch(()=>{});
    if(this.autoSync.running||!this.autoSync.ready())return;const scan=Date.now()>=nextScan;if(scan){nextScan=Date.now()+300000;void this.queuePrivateAdditions();}void this.autoSync.tick({scan}).then(ok=>{if(scan&&ok)nextScan=Date.now()+3600000;});},10000));
   // Signed plugin updates: a few minutes after start, so opening the vault stays fast, then every three hours.
-  this.app.workspace.onLayoutReady(()=>{this.updateTimer=window.setTimeout(()=>void this.checkPluginUpdate(),60000+Math.floor(Math.random()*120000));});
+  this.app.workspace.onLayoutReady(()=>{this.updateCheckTimer=window.setTimeout(()=>void this.checkPluginUpdate(),60000+Math.floor(Math.random()*120000));});
   this.registerInterval(window.setInterval(()=>void this.checkPluginUpdate(),3*3600000));
  }
  pluginDir(){return this.manifest.dir||this.app.vault.configDir+'/plugins/'+this.manifest.id;}
- /** Install a newer signed release from the Center, then reload into it once no sync is running. A manual check
-  * also installs a release the user rolled back from. */
+ runningVersion(){return BUILD_VERSION||this.manifest.version;}
+ /** Install a newer signed release from the Center, then reload into it once nothing is running. Only release
+  * builds check by themselves; a manual check also installs a release the user rolled back from. */
  async checkPluginUpdate({manual=false}={}){
-  if(this.updating||(!manual&&this.settings.pluginUpdates===false))return;
+  if(this.unloaded||this.updating)return;
+  if(this.updatePending){if(manual)new Notice('RSSD '+this.updatePending+' is installed and starts when the plugin reloads (or restart Obsidian).',10000);return;}
+  if(!manual&&(this.settings.pluginUpdates===false||!BUILD_VERSION))return;
   if(!RELEASE_KEY){if(manual)new Notice('This RSSD build cannot check signed updates. Install a released version first.',10000);return;}
   this.updating=true;
   try{
    const result=await updateFromCenter({origin:this.settings.origin||DEFAULT_ORIGIN,http,adapter:this.app.vault.adapter,dir:this.pluginDir(),
-    current:this.manifest.version,appVersion:apiVersion,skipped:manual?null:this.settings.skippedPluginRelease,publicKey:RELEASE_KEY});
+    running:this.runningVersion(),appVersion:apiVersion,skipped:manual?null:this.settings.skippedPluginRelease,publicKey:RELEASE_KEY});
    if(result.state==='installed'){
-    if(this.settings.skippedPluginRelease){this.settings.skippedPluginRelease=null;await this.saveSettings();}
-    new Notice('RSSD updated to '+result.version+'. It reloads once no sync is running.',10000);this.reloadWhenIdle();
-   }else if(manual)new Notice({none:'No RSSD release is published yet.',current:'RSSD '+this.manifest.version+' is the latest version.',
-    app_too_old:'RSSD '+result.version+' needs a newer Obsidian. Update Obsidian first.'}[result.state]||'RSSD '+this.manifest.version+' is up to date.',8000);
+    this.updatePending=result.version;
+    if(this.settings.skippedPluginRelease&&manual){this.settings.skippedPluginRelease=null;await this.saveSettings();}
+    if(this.unloaded)return;
+    new Notice('RSSD '+result.version+' is installed. The plugin reloads into it once no sync is running.',10000);this.reloadWhenIdle();
+   }else if(manual)new Notice({none:'No RSSD release is published yet.',current:'RSSD '+this.runningVersion()+' is the latest version.',
+    app_too_old:'RSSD '+result.version+' needs a newer Obsidian. Update Obsidian first.'}[result.state]||'RSSD '+this.runningVersion()+' is up to date.',8000);
   }catch(error){
    console.error('RSSD plugin update',error?.code||'',error?.message||error);
-   // A refused release is worth knowing about even when nobody asked; an unreachable Center is not.
-   if(manual||['update_unsigned','update_mismatch','update_invalid'].includes(error?.code))new Notice('RSSD update failed: '+error.message,10000);
+   // A refused release is worth one notice per version even when nobody asked; an unreachable Center is not.
+   const refused=['update_unsigned','update_mismatch','update_invalid'].includes(error?.code);
+   if(manual||(refused&&this.refusedNotice!==error.message)){this.refusedNotice=error.message;new Notice('RSSD update failed: '+error.message,10000);}
   }finally{this.updating=false;}
  }
+ /** Reload into the installed files when no operation or sync is running; while one runs, wait, and after ten
+  * minutes ask for a restart instead of interrupting it. */
  reloadWhenIdle(tries=0){
-  if((this.operations.active||this.autoSync?.running)&&tries<40){this.updateTimer=window.setTimeout(()=>this.reloadWhenIdle(tries+1),15000);return;}
+  if(this.unloaded)return;
+  window.clearTimeout(this.reloadTimer);
+  if(this.operations.active||this.autoSync?.running){
+   if(tries<40)this.reloadTimer=window.setTimeout(()=>this.reloadWhenIdle(tries+1),15000);
+   else new Notice('Restart Obsidian to start the updated RSSD plugin.',0);
+   return;
+  }
   const plugins=this.app.plugins,id=this.manifest.id;
-  if(typeof plugins?.disablePlugin!=='function'||typeof plugins?.enablePlugin!=='function'){new Notice('Restart Obsidian to use the updated RSSD plugin.',0);return;}
-  // Disabling unloads this instance; enabling loads the new files from disk.
-  window.setTimeout(async()=>{
-   try{await plugins.loadManifests?.();await plugins.disablePlugin(id);await plugins.enablePlugin(id);}
-   catch(error){console.error('RSSD reload',error);new Notice('Restart Obsidian to use the updated RSSD plugin.',0);}
-  },0);
+  if(typeof plugins?.disablePlugin!=='function'||typeof plugins?.enablePlugin!=='function'){new Notice('Restart Obsidian to start the updated RSSD plugin.',0);return;}
+  void this.operations.run('plugin-reload',async()=>{
+   this.autoSync?.stop();
+   // Everything this instance journaled reaches the settings file before the next instance reads it.
+   await this.saveSettings();
+   const version=this.updatePending;
+   await plugins.loadManifests?.();await plugins.disablePlugin(id);await plugins.enablePlugin(id);
+   if(plugins.plugins?.[id])return;
+   // The new version did not start: put the previous one back, skip the failed release and start that.
+   console.error('RSSD did not start after updating to',version);
+   try{
+    const back=await rollback({adapter:this.app.vault.adapter,dir:this.pluginDir()});
+    this.settings.skippedPluginRelease=newerVersion(this.settings.skippedPluginRelease,back.replaced||version);await this.saveSettings();
+    await plugins.loadManifests?.();await plugins.enablePlugin(id);
+    new Notice('RSSD '+version+' did not start, so RSSD '+back.version+' was put back.',0);
+   }catch(error){console.error('RSSD rollback after a failed start',error);new Notice('RSSD '+version+' did not start. Reinstall the plugin.',0);}
+  }).catch(error=>{console.error('RSSD reload',error);new Notice('Restart Obsidian to start the updated RSSD plugin.',0);});
  }
  async rollbackPlugin(){
   if(this.operations.active){new Notice('Wait for the current RSSD operation to finish, then roll back.');return;}
   try{
    const result=await rollback({adapter:this.app.vault.adapter,dir:this.pluginDir()});
-   // Not installed again automatically; a newer release, or a manual check, still is.
-   this.settings.skippedPluginRelease=this.manifest.version;await this.saveSettings();
-   new Notice('RSSD rolled back to '+result.version+'. '+this.manifest.version+' will not be installed again automatically.',10000);this.reloadWhenIdle();
+   // Not installed again automatically: a newer release still is, and so is this one after a manual check.
+   const skipped=newerVersion(this.settings.skippedPluginRelease,newerVersion(result.replaced,this.runningVersion()));
+   this.settings.skippedPluginRelease=skipped;await this.saveSettings();
+   this.updatePending=result.version;
+   new Notice('RSSD rolled back to '+result.version+'. Releases up to '+skipped+' will not be installed again automatically.',10000);this.reloadWhenIdle();
   }catch(error){new Notice('Rollback failed: '+error.message,10000);}
  }
  /** Queue every work whose private record is waiting in .rssd/private-additions, so it is saved even if its note is unchanged. */
@@ -758,7 +787,7 @@ export default class RssdPlugin extends Plugin{
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
  }
- onunload(){window.clearTimeout(this.updateTimer);document.body.removeClass('rssd-one-row');this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
+ onunload(){this.unloaded=true;window.clearTimeout(this.updateCheckTimer);window.clearTimeout(this.reloadTimer);document.body.removeClass('rssd-one-row');this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
  workLabel(file){return file instanceof TFile&&this.isWork(file)?workLabel(this.app.metadataCache.getFileCache(file)?.frontmatter):null;}
  /** Paint titles and dates over ID file names in the explorer, tabs and note headers. Never renames a file. */
  refreshTitles({restore=false}={}){
@@ -1236,7 +1265,7 @@ class RssdSettings extends PluginSettingTab{
   new Setting(containerEl).setName('Automatic sync').setDesc('Periodically update from the Center and save changed works as private drafts. Conflicts and read-only spaces need attention; this never publishes.').addToggle(t=>t.setValue(s.autoSync!==false).onChange(async v=>{s.autoSync=v;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Properties in the article').setDesc('Work details are edited in the Details tab next to the note, so the properties block at the top of each note is hidden. Show it again here.')
    .addButton(b=>b.setButtonText('Show in article').onClick(async()=>{await this.plugin.restoreProperties();new Notice('The properties block is shown in notes again.');}));
-  new Setting(containerEl).setName('Plugin updates').setDesc('Install new signed RSSD releases from the Center automatically. This vault runs RSSD '+this.plugin.manifest.version+'.')
+  new Setting(containerEl).setName('Plugin updates').setDesc(BUILD_VERSION?'Install new signed RSSD releases from the Center automatically. This vault runs RSSD '+BUILD_VERSION+'.':'This is a development build ('+this.plugin.manifest.version+'). It installs a signed release only when you check.')
    .addToggle(t=>t.setValue(s.pluginUpdates!==false).onChange(async v=>{s.pluginUpdates=v;await this.plugin.saveSettings();}))
    .addButton(b=>b.setButtonText('Check now').onClick(()=>this.plugin.checkPluginUpdate({manual:true})));
   new Setting(containerEl).setName('Update works').setDesc('Download new and changed works into '+WORKS_FOLDER+'/ (images go to '+MEDIA_FOLDER+'/). Notes with local changes are never overwritten.')

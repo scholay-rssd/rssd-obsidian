@@ -79,15 +79,18 @@ Every output also has a package manifest, defined in RSSD's `contracts/output-pa
 
 Once a vault has a released version, it keeps its RSSD plugin current by itself. A few minutes after Obsidian opens, and then every three hours, it asks the Center for the latest release (`/api/rssd/public/v1/obsidian-plugin/latest`). It installs a newer release only when it is signed with the RSSD release key and every file matches its signed hash. The public half of the key, `release-key.pub`, is compiled into every build. The files that ran before are kept in the plugin folder's `previous/`, and the plugin reloads once no sync is running. Settings → RSSD → **Plugin updates** turns this off for a vault or checks right away. *Roll back the RSSD plugin to the previous version* puts the previous files back, and that release is then skipped until a newer one appears.
 
-To release, merge to `main`. Then, in this folder inside an RSSD checkout, run `npm run release` (`node release.mjs publish`). It:
+To release, merge to `main`, then run `npm run release` (`node release.mjs publish`) from any checkout of this repo on the Mac that holds the release key. It:
 
-- builds the merged commit;
-- numbers it with `manifest.json`'s major.minor and a patch one past the Center's latest;
+- clones rssd-obsidian `main`, and rssd `main` with the themes and sites it pins, fresh from GitHub;
+- installs dependencies from the lockfile and builds;
+- numbers the release with `manifest.json`'s major.minor and a patch one past both the Center's latest and the last release recorded in `~/.rssd/obsidian-plugin-releases.json`;
 - signs it with the private key in `~/.rssd/obsidian-plugin-release.pem`;
-- uploads it to the Center over SSH (`--server`, default `scholay-postiz`);
+- uploads it to the Center over SSH (`--server`, default `scholay-postiz`). The Center refuses a release that isn't signed with the key it pinned at the first publish, or that lowers or reuses a version;
 - checks what vaults will receive.
 
-`--dry-run --out <folder>` builds and signs without uploading. `node release.mjs key` created the key once. Keep the private key backed up: a new key means one more manual install in every vault.
+Nothing local or unmerged goes into a release. `--dry-run --out <folder>` builds and signs with a throwaway key that no vault trusts, and uploads nothing (`--plugin-ref <branch>` builds another branch for that). `node release.mjs key` created the key once. Keep the private key backed up: a new key (`key --rotate`) means one more manual install in every vault.
+
+Release builds carry their version and update themselves. A development build (`npm run build`) installs a signed release only when you check from Settings → RSSD or the command.
 
 ## Not yet
 
