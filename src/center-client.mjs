@@ -87,6 +87,10 @@ export function createCenterClient({http,origin,token}){
   registry:()=>request('/registry'),
   demands:options=>request('/demands?'+query(options)),
   createDemand:body=>request('/demands',{method:'POST',body}),
+  /** Edit a queued demand against the generation it was read at; replays by request ID. */
+  editDemand:(id,body)=>request('/demands/'+encodeURIComponent(id)+'/definition',{method:'PATCH',body}),
+  /** Release, cancel, block or resume a demand; a device may cancel a queued one nobody has claimed. */
+  changeDemand:(id,body)=>request('/demands/'+encodeURIComponent(id),{method:'PATCH',body}),
   /** One page of every work in the space (drafts included), newest Center snapshot. */
   catalog:(workspaceId,options)=>request(editorial(workspaceId,'catalog?'+query({scope:'all',...options}))),
   /** The current Center edition of one work, with its data and image bytes. */
