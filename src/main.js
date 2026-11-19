@@ -15,7 +15,8 @@ import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs
 import {workLabel,labelText,tabTitle} from './titles.mjs';
 import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel,isBrandLine} from './work-cards.mjs';
 import {internalNotes,hasOpenChecks,runHistory,rowNotes,anchorMatches} from './private-notes.mjs';
-import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER} from './works-filter.mjs';
+import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER,CARD_VARIANTS} from './works-filter.mjs';
+import {CARD_STYLE_ICONS,styleOptions,nextStyle} from './style-switch.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {updateFromCenter,rollback,diskVersion,newerVersion} from './self-update.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
@@ -101,6 +102,15 @@ const TITLE_STYLE=`
 .rssd-preview-controls button.rssd-preview-tab.is-active{background:var(--rssd-accent);color:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2),0 2px 6px color-mix(in srgb,var(--rssd-accent) 35%,transparent);transform:translateY(-1px)}
 .rssd-preview-controls button.rssd-preview-tab:not(.is-number)+button.rssd-preview-tab.is-number{margin-left:var(--size-2-2)}
 .rssd-preview-styles{display:flex;align-items:center;gap:var(--size-2-1);flex:0 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
+.rssd-style-switch{display:inline-flex;align-items:center;gap:2px;padding:2px;border-radius:7px;background:color-mix(in srgb,var(--rssd-accent) 9%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--rssd-accent) 20%,transparent)}
+.rssd-style-switch button.rssd-style-option{display:inline-flex;align-items:center;justify-content:center;flex:none;width:30px;height:24px;padding:0;margin:0;border:0;border-radius:5px;background:none;box-shadow:none;color:var(--text-muted);cursor:pointer}
+.rssd-style-switch button.rssd-style-option svg{width:16px;height:16px}
+.rssd-style-switch button.rssd-style-option:hover{background:color-mix(in srgb,var(--rssd-accent) 18%,transparent);color:var(--text-normal)}
+.rssd-style-switch button.rssd-style-option.is-active{background:var(--rssd-accent);color:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2),0 2px 6px color-mix(in srgb,var(--rssd-accent) 30%,transparent)}
+.rssd-style-switch button.rssd-style-option[aria-disabled="true"]{opacity:.35;background:none;cursor:not-allowed}
+.rssd-style-switch button.rssd-style-option:focus-visible{outline:2px solid var(--rssd-accent);outline-offset:1px}
+.rssd-preview-slot .rssd-style-switch button.rssd-style-option{width:22px;height:18px}
+.rssd-preview-slot .rssd-style-switch button.rssd-style-option svg{width:13px;height:13px}
 /* Cards keep their controls in the tab, so a wide style name can wrap instead of squeezing the status bar. */
 .rssd-preview-controls.is-in-pane{flex-wrap:wrap;row-gap:4px}
 .rssd-preview-controls.is-in-pane .rssd-preview-styles{flex-wrap:wrap;overflow:visible}
@@ -992,7 +1002,7 @@ export default class RssdPlugin extends Plugin{
  }
  // Optional local samples are paired to the source note by its vault-relative path.
  sampleCard(file,style){
-  if(!file||!['ai-code','ai-image'].includes(style)||!file.path.startsWith(WORKS_FOLDER+'/'))return null;
+  if(!file||!Object.hasOwn(CARD_VARIANTS,style)||!file.path.startsWith(WORKS_FOLDER+'/'))return null;
   const path='Card Samples/'+file.path.slice(WORKS_FOLDER.length+1,-3)+'/'+style+'.png';
   const found=this.app.vault.getAbstractFileByPath(path);return found instanceof TFile?found:null;
  }
@@ -1324,6 +1334,7 @@ class WorksFilterPanel{
   };
   segments(group('Show'),'status',[['all','All',c.status.all],['edited','Edited',c.status.edited],['check','To check',c.status.check]],f.status,id=>set({...view.filterState,status:id}));
   if(c.locale.en)segments(group('Language'),'locale',[['zh-CN','中文',c.locale['zh-CN']],['en','English',c.locale.en]],f.locale,id=>set({...view.filterState,locale:id}));
+  options(group('卡片版本'),'cardVariants',Object.entries(CARD_VARIANTS).map(([value,name])=>({value,name,count:c.cardVariants.get(value)||0})));
   // Sections in the site's order, then any the site does not name.
   const sectionIds=[...new Set([...names.keys(),...c.sections.keys(),...f.sections])];
   options(group('Section'),'sections',sectionIds.map(id=>({value:id,name:names.get(id)?.name||id||'No section',count:c.sections.get(id)||0})));
@@ -1408,6 +1419,7 @@ class WorksView extends ItemView{
    if(!this.plugin.isWork(file))continue;
    const p=this.app.metadataCache.getFileCache(file)?.frontmatter;if(!p?.['rssd-id'])continue;
    items.push({file,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
+    cardVariants:Object.keys(CARD_VARIANTS).filter(id=>this.plugin.sampleCard(file,id)),
     section:String(p['rssd-section']||''),author:String(p.author??''),category:String(p.category??''),
     version:p['rssd-version'],publishedVersion:p['rssd-published-version'],
     media:(this.app.metadataCache.getFileCache(file)?.embeds||[]).map(embed=>mediaName(embed.link)).filter(Boolean)});
@@ -1693,8 +1705,8 @@ const PREVIEW_TARGETS=[
   styles:[{id:'site',site:true},...Object.entries(ARTICLE_THEMES).map(([id,theme],index)=>({id,label:String(index+1),name:theme.label}))],
   build:(plugin,file,content,style)=>plugin.wechatResult(file,content,{style}),copy:(plugin,file,style)=>plugin.copyForWechat(file,{style})},
  {id:'cards',label:'Cards',name:'Card view',icon:'gallery-vertical-end',copyLabel:'Save cards',actionIcon:'download',
-  styles:[{id:'site',label:'算法排版'},
-   ...[['ai-code','智能排版'],['ai-image','模型生图']].map(([id,label])=>({id,label,when:(plugin,file)=>!!plugin.sampleCard(file,id)}))],
+  styles:[{id:'site',label:'算法排版',icon:CARD_STYLE_ICONS.site},
+   ...Object.entries(CARD_VARIANTS).map(([id,label])=>({id,label,icon:CARD_STYLE_ICONS[id],when:(plugin,file)=>!!plugin.sampleCard(file,id)}))],
   build:(plugin,file,content,style,options)=>plugin.cardsResult(file,content,{style,...options}),copy:(plugin,file,style,result)=>plugin.saveCards(file,result)},
  // Outline and details are not outputs: they show how the work is built and what it is, beside the outputs.
  {id:'outline',label:'Outline',name:'Outline',icon:'list',styles:[],panel:'outline'},
@@ -1717,14 +1729,22 @@ class LayoutPreview extends ItemView{
   if(!styles.some(style=>style.id===this.style))this.style=styles[0]?.id||'';
   const cards=this.target.id==='cards';
   if(cards){
-   const label=this.styleTabs.createEl('label',{text:'生成方式 '});
-   const select=label.createEl('select',{attr:{'aria-label':'生成方式'}});
-   for(const style of this.target.styles){
-    const available=styles.includes(style);
-    select.createEl('option',{value:style.id,text:style.label+(available?'':' · 暂无成品')}).disabled=!available;
+   // The ways of making cards as one group of icon toggles. A style with no finished set for this work keeps its
+   // place, greyed out; it stays hoverable (aria-disabled, not disabled) so its tooltip can say why.
+   const options=styleOptions(this.target.styles,styles.map(style=>style.id),this.style);
+   const choose=id=>{if(!id||id===this.style)return false;this.style=id;this.drawTabs(file);void this.show(file,{force:true});return true;};
+   const group=this.styleTabs.createDiv({cls:'rssd-style-switch',attr:{role:'radiogroup','aria-label':'生成方式'}});
+   for(const option of options){
+    const button=group.createEl('button',{cls:'rssd-style-option'+(option.active?' is-active':''),attr:{type:'button',role:'radio',
+     'aria-checked':String(option.active),'aria-label':option.name,'aria-disabled':String(!option.available),tabindex:option.active?'0':'-1','data-style':option.id}});
+    setIcon(button,option.icon);
+    button.addEventListener('click',()=>{if(option.available)choose(option.id);});
    }
-   select.value=this.style;
-   select.addEventListener('change',()=>{this.style=select.value;void this.show(file,{force:true});});
+   group.addEventListener('keydown',event=>{
+    const id=nextStyle(options,this.style,event.key);if(!id)return;
+    event.preventDefault();choose(id);
+    this.styleTabs.querySelector('.rssd-style-option.is-active')?.focus();
+   });
   }else for(const style of styles){
    const label=style.site?'Default':style.label;
    const tab=this.styleTabs.createEl('button',{text:label,cls:'rssd-preview-tab'+(style.site?'':' is-number')+(style.id===this.style?' is-active':'')});
