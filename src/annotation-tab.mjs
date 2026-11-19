@@ -12,7 +12,7 @@ export const annotationStyle=`
 .rssd-annotate-options{display:flex;flex-direction:column;gap:3px}
 .rssd-annotate-options label,.rssd-annotate-scale label{display:flex;gap:6px;align-items:baseline;cursor:pointer}
 .rssd-annotate-scale{display:flex;gap:10px;align-items:center}
-.rssd-annotate-anchors{display:flex;justify-content:space-between;color:var(--text-muted);font-size:var(--font-ui-smaller);margin-top:2px}
+.rssd-annotate-anchors{display:flex;flex-wrap:wrap;justify-content:space-between;gap:2px 12px;color:var(--text-muted);font-size:var(--font-ui-smaller);margin-top:2px}
 .rssd-annotate-actions{position:sticky;bottom:0;background:var(--background-secondary);padding:10px 0;border-top:1px solid var(--background-modifier-border);display:flex;gap:8px;align-items:center}
 `;
 
@@ -46,7 +46,9 @@ export function drawAnnotation(view,el){
  if(Number(front['rssd-version'])!==target.revision)view.hint('你打开的是稿件 v'+(front['rssd-version']||'—')+'，标注针对的是读者看到的已发布 v'+target.revision+'。');
  if(mine)view.hint('你在 '+String(mine.createdAt).slice(0,10)+' 标注过这个版本。修改后重新提交会新增一条记录，以最新的为准。');
  const remember=()=>{view.app.saveLocalStorage(state.storage,answers);};
- const set=(item,patch)=>{answers[item.id]={...(answers[item.id]||{}),...patch};remember();};
+ // After a submit that found gaps, the count of what is left follows every answer.
+ let recount=()=>{};
+ const set=(item,patch)=>{answers[item.id]={...(answers[item.id]||{}),...patch};remember();recount();};
  const rows=new Map();
  for(const section of sections){
   el.createEl('h4',{text:section.title});
@@ -78,7 +80,11 @@ export function drawAnnotation(view,el){
  button.onclick=async()=>{
   const missing=missingAnswers(sections,answers);
   for(const row of rows.values())row.removeAttribute('data-missing');
-  if(missing.length){for(const item of missing)rows.get(item.id)?.setAttribute('data-missing','true');rows.get(missing[0].id)?.scrollIntoView({block:'center'});status.setText('还有 '+missing.length+' 题没有回答');return;}
+  if(missing.length){
+   for(const item of missing)rows.get(item.id)?.setAttribute('data-missing','true');rows.get(missing[0].id)?.scrollIntoView({block:'center'});
+   recount=()=>{const left=missingAnswers(sections,answers).length;status.setText(left?'还有 '+left+' 题没有回答':'都答完了，可以提交');};recount();return;
+  }
+  recount=()=>{};
   button.disabled=true;status.setText('正在提交…');
   try{
    const saved=await view.plugin.client().submitAnnotation({workspaceId:state.workspaceId,articleId:state.articleId,locale:state.locale,revision:target.revision,editionHash:target.editionHash,formVersion,answers:answerSheet(sections,answers)});
