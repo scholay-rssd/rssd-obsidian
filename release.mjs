@@ -61,7 +61,7 @@ async function publish(){
   const coreCommit=git(core,'rev-parse','HEAD'),commit=git(plugin,'rev-parse','HEAD');
   // Sign and check with the released code's own functions, so the signed text is exactly what its vaults verify.
   const {signedText,verifyRelease,releasePath,compareVersions,newerVersion}=await import(pathToFileURL(join(plugin,'src','self-update.mjs')).href);
-  const origin=option('origin',process.env.RSSD_DEFAULT_ORIGIN||/DEFAULT_ORIGIN=.*?'(https:\/\/[^']+)'/.exec(await readFile(join(plugin,'src','main.js'),'utf8'))[1]);
+  const origin=option('origin',/DEFAULT_ORIGIN=.*?'(https:\/\/[^']+)'/.exec(await readFile(join(plugin,'src','main.js'),'utf8'))[1]);
   const latestResponse=await fetch(releasePath(origin)+'/latest');
   if(latestResponse.status!==404&&!latestResponse.ok)stop('The Center did not return its latest release (HTTP '+latestResponse.status+')');
   const latest=latestResponse.status===404?null:await latestResponse.json();
@@ -76,8 +76,11 @@ async function publish(){
   const [major,minor]=manifest.version.split('.').map(Number);let version=manifest.version;
   for(const v of [latest?.version,recorded?.version].filter(Boolean)){const [m,n,p]=v.split('.').map(Number);if(m===major&&n===minor)version=newerVersion(version,major+'.'+minor+'.'+(p+1));}
   if(last&&compareVersions(version,last.version)<=0)stop('manifest.json ('+manifest.version+') is behind the released '+last.version+'; raise its version');
-  run('npm',['ci','--no-audit','--no-fund','--loglevel=error'],{cwd:plugin});
-  run(process.execPath,['esbuild.config.mjs'],{cwd:plugin,env:{...process.env,RSSD_RELEASE_VERSION:version}});
+  // Only what a build needs from this shell: a stray RSSD_DEFAULT_ORIGIN or similar must not change a signed release.
+  // Dependencies install without their scripts, so nothing from the lockfile runs on the Mac that holds the key.
+  const env={PATH:process.env.PATH,HOME:process.env.HOME,...(process.env.TMPDIR?{TMPDIR:process.env.TMPDIR}:{})};
+  run('npm',['ci','--ignore-scripts','--no-audit','--no-fund','--loglevel=error'],{cwd:plugin,env});
+  run(process.execPath,['esbuild.config.mjs'],{cwd:plugin,env:{...env,RSSD_RELEASE_VERSION:version}});
   const trusted=(await readFile(join(plugin,'release-key.pub'),'utf8')).trim();
   if(!(await readFile(join(plugin,'dist','main.js'),'utf8')).includes(JSON.stringify(trusted)))stop('The build does not carry release-key.pub');
   let signer,signerKey;

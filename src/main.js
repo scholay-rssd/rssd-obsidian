@@ -428,11 +428,12 @@ export default class RssdPlugin extends Plugin{
   this.updating=true;
   try{
    const result=await updateFromCenter({origin:this.settings.origin||DEFAULT_ORIGIN,http,adapter:this.app.vault.adapter,dir:this.pluginDir(),
-    running:this.runningVersion(),appVersion:apiVersion,skipped:manual?null:this.settings.skippedPluginRelease,publicKey:RELEASE_KEY});
+    running:this.runningVersion(),appVersion:apiVersion,skipped:manual?null:this.settings.skippedPluginRelease,publicKey:RELEASE_KEY,stillWanted:()=>!this.unloaded});
+   if(result.state==='cancelled')return;
    if(result.state==='installed'){
     this.updatePending=result.version;
-    if(this.settings.skippedPluginRelease&&manual){this.settings.skippedPluginRelease=null;await this.saveSettings();}
     if(this.unloaded)return;
+    if(this.settings.skippedPluginRelease&&manual){this.settings.skippedPluginRelease=null;await this.saveSettings();}
     new Notice('RSSD '+result.version+' is installed. The plugin reloads into it once no sync is running.',10000);this.reloadWhenIdle();
    }else if(manual)new Notice({none:'No RSSD release is published yet.',current:'RSSD '+this.runningVersion()+' is the latest version.',
     app_too_old:'RSSD '+result.version+' needs a newer Obsidian. Update Obsidian first.'}[result.state]||'RSSD '+this.runningVersion()+' is up to date.',8000);
@@ -456,16 +457,20 @@ export default class RssdPlugin extends Plugin{
   const plugins=this.app.plugins,id=this.manifest.id;
   if(typeof plugins?.disablePlugin!=='function'||typeof plugins?.enablePlugin!=='function'){new Notice('Restart Obsidian to start the updated RSSD plugin.',0);return;}
   void this.operations.run('plugin-reload',async()=>{
-   this.autoSync?.stop();
    // Everything this instance journaled reaches the settings file before the next instance reads it.
    await this.saveSettings();
-   const version=this.updatePending;
-   await plugins.loadManifests?.();await plugins.disablePlugin(id);await plugins.enablePlugin(id);
-   if(plugins.plugins?.[id])return;
-   // The new version did not start: put the previous one back, skip the failed release and start that.
+   const version=this.updatePending,running=this.runningVersion();
+   await plugins.loadManifests?.();
+   this.autoSync?.stop();
+   await plugins.disablePlugin(id);
+   // Obsidian registers a plugin before its onload runs and reports a failed start as false.
+   if(await plugins.enablePlugin(id)!==false&&plugins.plugins?.[id])return;
+   // The new version did not start: unload what is left of it, put the previous one back, skip the failed
+   // release and start the previous one.
    console.error('RSSD did not start after updating to',version);
    try{
-    const back=await rollback({adapter:this.app.vault.adapter,dir:this.pluginDir()});
+    await plugins.disablePlugin(id);
+    const back=await rollback({adapter:this.app.vault.adapter,dir:this.pluginDir(),running});
     this.settings.skippedPluginRelease=newerVersion(this.settings.skippedPluginRelease,back.replaced||version);await this.saveSettings();
     await plugins.loadManifests?.();await plugins.enablePlugin(id);
     new Notice('RSSD '+version+' did not start, so RSSD '+back.version+' was put back.',0);
@@ -473,9 +478,9 @@ export default class RssdPlugin extends Plugin{
   }).catch(error=>{console.error('RSSD reload',error);new Notice('Restart Obsidian to start the updated RSSD plugin.',0);});
  }
  async rollbackPlugin(){
-  if(this.operations.active){new Notice('Wait for the current RSSD operation to finish, then roll back.');return;}
+  if(this.operations.active||this.updating){new Notice('Wait for the current RSSD operation or update check to finish, then roll back.');return;}
   try{
-   const result=await rollback({adapter:this.app.vault.adapter,dir:this.pluginDir()});
+   const result=await rollback({adapter:this.app.vault.adapter,dir:this.pluginDir(),running:this.runningVersion()});
    // Not installed again automatically: a newer release still is, and so is this one after a manual check.
    const skipped=newerVersion(this.settings.skippedPluginRelease,newerVersion(result.replaced,this.runningVersion()));
    this.settings.skippedPluginRelease=skipped;await this.saveSettings();

@@ -61,11 +61,25 @@ export async function diskVersion(adapter,dir){
 async function replace(adapter,from,to){
  if(typeof adapter.fsPromises?.rename==='function'&&typeof adapter.getFullPath==='function'){await adapter.fsPromises.rename(adapter.getFullPath(from),adapter.getFullPath(to));return;}
  if(await adapter.exists(to))await adapter.remove(to);
- await adapter.rename(from,to);
+ // With the old file gone, never leave the target missing: write the staged bytes in place if the move fails.
+ try{await adapter.rename(from,to);}catch{await adapter.writeBinary(to,await adapter.readBinary(from));}
 }
 async function writeChecked(adapter,path,bytes,hash){
  await adapter.writeBinary(path,exact(bytes));
  if(await sha256Hex(await adapter.readBinary(path))!==hash)throw failure('Could not write '+path+' completely, so the update was not installed','update_write');
+}
+const fileHash=async(adapter,path)=>await adapter.exists(path)?sha256Hex(await adapter.readBinary(path)):null;
+// previous/files.json lists the kept files' hashes and is written last, so a copy cut short by a full disk or a
+// crash is never taken for a good one.
+async function keepPrevious(adapter,dir){
+ const previous=dir+'/previous',record=previous+'/files.json',hashes={};
+ if(!await adapter.exists(previous))await adapter.mkdir(previous);
+ if(await adapter.exists(record))await adapter.remove(record);
+ for(const name of RELEASE_FILES){
+  const bytes=new Uint8Array(await adapter.readBinary(dir+'/'+name));hashes[name]=await sha256Hex(bytes);
+  await writeChecked(adapter,previous+'/'+name,bytes,hashes[name]);
+ }
+ await adapter.writeBinary(record,exact(new TextEncoder().encode(JSON.stringify(hashes))));
 }
 
 /**
@@ -75,7 +89,7 @@ async function writeChecked(adapter,path,bytes,hash){
  * second install before a reload keeps the copy to roll back to); then each file is swapped in, manifest last.
  * Returns {state} — 'none', 'current', 'skipped', 'app_too_old' or 'installed' — and the release version.
  */
-export async function updateFromCenter({origin,http,adapter,dir,running,appVersion,skipped=null,publicKey}){
+export async function updateFromCenter({origin,http,adapter,dir,running,appVersion,skipped=null,publicKey,stillWanted=()=>true}){
  const base=releasePath(origin);
  const response=await http({url:base+'/latest',method:'GET',throw:false});
  if(response.status===404)return {state:'none'};
@@ -95,33 +109,34 @@ export async function updateFromCenter({origin,http,adapter,dir,running,appVersi
  }
  let manifest;try{manifest=JSON.parse(new TextDecoder().decode(files.get('manifest.json').bytes));}catch{}
  if(manifest?.id!=='rssd'||manifest.version!==release.version)throw failure('The release manifest does not name release '+release.version,'update_mismatch');
- const staging=dir+'/update',previous=dir+'/previous';
+ if(!stillWanted())return {state:'cancelled',version:release.version};
+ const staging=dir+'/update';
  if(!await adapter.exists(staging))await adapter.mkdir(staging);
  for(const name of RELEASE_FILES)await writeChecked(adapter,staging+'/'+name,files.get(name).bytes,files.get(name).hash);
- if(await diskVersion(adapter,dir)===running){
-  if(!await adapter.exists(previous))await adapter.mkdir(previous);
-  for(const name of RELEASE_FILES)if(await adapter.exists(dir+'/'+name)){
-   const bytes=new Uint8Array(await adapter.readBinary(dir+'/'+name));
-   await writeChecked(adapter,previous+'/'+name,bytes,await sha256Hex(bytes));
-  }
- }
+ // Keep what runs now, but only while the folder still holds it: not after an earlier install waiting for a
+ // reload, and not after a swap that stopped between main.js and manifest.json.
+ if(await diskVersion(adapter,dir)===running&&await fileHash(adapter,dir+'/main.js')!==files.get('main.js').hash&&await adapter.exists(dir+'/main.js'))await keepPrevious(adapter,dir);
+ if(!stillWanted())return {state:'cancelled',version:release.version};
  for(const name of RELEASE_FILES)await replace(adapter,staging+'/'+name,dir+'/'+name);
  return {state:'installed',version:release.version};
 }
 
 /**
- * Put back the version kept in `dir/previous/`. Refuses when that copy is not older than what the folder holds.
- * Returns the restored version and the one it replaced.
+ * Put back the version kept in `dir/previous/`, after checking its files against the hashes recorded with it.
+ * Refuses when that copy is not older than both the installed and the running version. Returns the restored
+ * version and the one it replaced.
  */
-export async function rollback({adapter,dir}){
- const previous=dir+'/previous',restored=await diskVersion(adapter,previous),replaced=await diskVersion(adapter,dir);
- if(!restored||!await adapter.exists(previous+'/main.js'))throw failure('There is no previous version to roll back to','no_previous');
+export async function rollback({adapter,dir,running=null}){
+ const previous=dir+'/previous',restored=await diskVersion(adapter,previous),replaced=newerVersion(await diskVersion(adapter,dir),running);
+ let hashes=null;try{hashes=JSON.parse(await adapter.read(previous+'/files.json'));}catch{}
+ if(!restored||!hashes)throw failure('There is no previous version to roll back to','no_previous');
  if(replaced&&compareVersions(restored,replaced)>=0)throw failure('The kept version ('+restored+') is not older than the installed one ('+replaced+')','no_previous');
  const staging=dir+'/update';
  if(!await adapter.exists(staging))await adapter.mkdir(staging);
  for(const name of RELEASE_FILES){
   const bytes=new Uint8Array(await adapter.readBinary(previous+'/'+name));
-  await writeChecked(adapter,staging+'/'+name,bytes,await sha256Hex(bytes));
+  if(await sha256Hex(bytes)!==hashes[name])throw failure('The kept copy of '+name+' is damaged, so nothing was rolled back','no_previous');
+  await writeChecked(adapter,staging+'/'+name,bytes,hashes[name]);
  }
  for(const name of RELEASE_FILES)await replace(adapter,staging+'/'+name,dir+'/'+name);
  return {version:restored,replaced};

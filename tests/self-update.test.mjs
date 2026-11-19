@@ -26,7 +26,7 @@ function center(published,{status=200}={}){
 }
 // An in-memory vault adapter. Like Obsidian's, rename refuses an existing target; `desktop` adds the file
 // system rename that replaces in one step. `failWrite` makes a write fail part-way, as a full disk does.
-function adapter(files={},{desktop=false,failWrite=null}={}){
+function adapter(files={},{desktop=false,failWrite=null,failRename=false}={}){
  const store=new Map(Object.entries(files).map(([k,v])=>[k,Buffer.from(v)])),renames=[];
  const value={store,renames,
   exists:async path=>store.has(path)||[...store.keys()].some(k=>k.startsWith(path+'/')),
@@ -35,7 +35,7 @@ function adapter(files={},{desktop=false,failWrite=null}={}){
   readBinary:async path=>{const b=store.get(path);return b.buffer.slice(b.byteOffset,b.byteOffset+b.length);},
   writeBinary:async(path,data)=>{const b=Buffer.from(new Uint8Array(data));if(failWrite?.(path)){store.set(path,b.subarray(0,3));throw Error('ENOSPC');}store.set(path,b);},
   remove:async path=>{store.delete(path);},
-  rename:async(from,to)=>{if(store.has(to))throw Error('Destination file already exists!');store.set(to,store.get(from));store.delete(from);renames.push('adapter');}};
+  rename:async(from,to)=>{if(failRename)throw Error('EPERM');if(store.has(to))throw Error('Destination file already exists!');store.set(to,store.get(from));store.delete(from);renames.push('adapter');}};
  if(desktop){value.getFullPath=p=>'/vault/'+p;value.fsPromises={rename:async(from,to)=>{const a=from.slice(7),b=to.slice(7);store.set(b,store.get(a));store.delete(a);renames.push('fs');}};}
  return value;
 }
@@ -110,4 +110,34 @@ test('rollback needs an older kept version',async()=>{
  await assert.rejects(rollback({adapter:installed(),dir:DIR}),e=>e.code==='no_previous');
  const same=adapter({[DIR+'/main.js']:'a',[DIR+'/manifest.json']:JSON.stringify({id:'rssd',version:'0.2.1'}),[DIR+'/previous/main.js']:'b',[DIR+'/previous/manifest.json']:JSON.stringify({id:'rssd',version:'0.2.1'})});
  await assert.rejects(rollback({adapter:same,dir:DIR}),e=>e.code==='no_previous');
+});
+test('a backup cut short is never rolled back to',async()=>{
+ const keys=keyPair(),vault=installed('0.2.0',{failWrite:path=>path.endsWith('/previous/main.js')});
+ await assert.rejects(run(keys,release(keys,{code:'new code'}),vault),/ENOSPC/);
+ assert.equal(text(vault,DIR+'/main.js'),'old code');
+ await assert.rejects(rollback({adapter:vault,dir:DIR,running:'0.2.0'}),e=>e.code==='no_previous');
+ // A kept file damaged later is refused too.
+ const good=installed();await run(keys,release(keys,{code:'new code'}),good);
+ good.store.set(DIR+'/previous/main.js',Buffer.from('cut'));
+ await assert.rejects(rollback({adapter:good,dir:DIR,running:'0.2.1'}),/damaged/);
+ assert.equal(text(good,DIR+'/main.js'),'new code');
+});
+test('a swap that stopped between the two files keeps the right backup',async()=>{
+ const keys=keyPair(),published=release(keys,{code:'new code'}),vault=installed();
+ await run(keys,published,vault);
+ // As if the manifest rename had failed: new main.js, old manifest.
+ vault.store.set(DIR+'/manifest.json',Buffer.from(JSON.stringify({id:'rssd',version:'0.2.0',minAppVersion:'1.11.4'})));
+ assert.equal((await run(keys,published,vault)).state,'installed');
+ assert.equal(text(vault,DIR+'/previous/main.js'),'old code');
+ assert.deepEqual(await rollback({adapter:vault,dir:DIR,running:'0.2.0'}),{version:'0.2.0',replaced:'0.2.1'});
+});
+test('on mobile a move that fails after the old file is removed still leaves the new file in place',async()=>{
+ const keys=keyPair(),vault=installed('0.2.0',{failRename:true});
+ assert.equal((await run(keys,release(keys,{code:'new code'}),vault)).state,'installed');
+ assert.equal(text(vault,DIR+'/main.js'),'new code');assert.equal(await diskVersion(vault,DIR),'0.2.1');
+});
+test('a check whose plugin was unloaded meanwhile writes nothing',async()=>{
+ const keys=keyPair(),vault=installed();
+ assert.equal((await run(keys,release(keys),vault,{stillWanted:()=>false})).state,'cancelled');
+ assert.equal([...vault.store.keys()].length,2);
 });

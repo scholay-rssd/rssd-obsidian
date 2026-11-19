@@ -88,7 +88,7 @@ To release, merge to `main`, then run `npm run release` (`node release.mjs publi
 - uploads it to the Center over SSH (`--server`, default `scholay-postiz`). The Center refuses a release that isn't signed with the key it pinned at the first publish, or that lowers or reuses a version;
 - checks what vaults will receive.
 
-Nothing local or unmerged goes into a release. `--dry-run --out <folder>` builds and signs with a throwaway key that no vault trusts, and uploads nothing (`--plugin-ref <branch>` builds another branch for that). `node release.mjs key` created the key once. Keep the private key backed up: a new key (`key --rotate`) means one more manual install in every vault.
+Nothing local or unmerged goes into a release. `--dry-run --out <folder>` builds and signs with a throwaway key that no vault trusts, and uploads nothing (`--plugin-ref <branch>` builds another branch for that). `node release.mjs key` created the key once. Keep the private key backed up. A new key (`key --rotate`) means one more manual install in every vault. The Center also has to forget the old key: remove `/opt/postiz/data/config/rssd-obsidian-plugin/release-key.pub` on the server before the next release pins the new one.
 
 Release builds carry their version and update themselves. A development build (`npm run build`) installs a signed release only when you check from Settings → RSSD or the command.
 
