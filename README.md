@@ -24,6 +24,8 @@ Open one RSSD Center space as a vault of drafts, see each work's sync state, and
    node install.mjs /path/to/vault
    ```
    After this first install, new versions arrive by themselves (see *Plugin updates*).
+
+   **For a new writer:** `npm run starter` (`node release.mjs starter [--out <folder>]`) packages the Center's current signed release as `rssd-starter-vault-<version>.zip`: an empty vault named `RSSD` with the plugin installed and enabled, and a note `开始使用.md` with the steps. It checks the release's signature and file hashes the way a vault does, needs no key, and holds no token or settings, so it can be sent to anyone. They unzip it, open the folder in Obsidian, trust the plugin and add their device token (below); the plugin updates itself from then on.
 3. In Obsidian enable the plugin, open Settings → RSSD, enter the Center address and run **Log in to the RSSD Center**. Approve the device and its spaces in your browser.
 
    **Without the browser:** someone with the Center's owner account creates a device connection under the Center's 设置 → 设备连接, choosing its spaces, and copies its credential. In Obsidian, add that credential under Settings → Keychain (any name), then choose it under Settings → RSSD → **Device token from the Keychain**. The plugin checks it with the Center and keeps only the secret's name; a vault with no space yet takes the token's only space. This suits a part-time writer who should see one or two spaces: give each person their own connection, and revoke it in the Center when they leave. A later browser login replaces the Keychain choice.

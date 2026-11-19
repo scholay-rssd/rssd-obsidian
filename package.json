@@ -7,7 +7,8 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "test": "node --test tests/*.test.mjs",
-    "release": "node release.mjs publish"
+    "release": "node release.mjs publish",
+    "starter": "node release.mjs starter"
   },
   "devDependencies": {
     "esbuild": "0.25.11",
