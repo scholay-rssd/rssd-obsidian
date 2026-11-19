@@ -317,3 +317,34 @@ test('the visible wording says Update for bringing works down, never Pull',async
   assert.deepEqual(shown,[],name+' still shows the old wording');
  }
 });
+
+// A device token created in the Center and added to Obsidian's Keychain logs the vault in without a browser.
+function keychainPlugin(secrets){
+ const p=plugin();p.app.secretStorage={getSecret:name=>secrets[name]??null,setSecret:(name,value)=>{secrets[name]=value;}};
+ p.setStatus=()=>{};p.idleStatus=()=>'';return p;
+}
+const identity=workspaceIds=>async req=>req.url.endsWith('/api/rssd/v1/identity')?{status:200,json:{protocolVersion:1,workspaceIds}}:{status:404,json:{}};
+test('a Keychain device token is checked with the Center, then used by name',async()=>{
+ const token='rssd_device_'+'b'.repeat(48),seen=[];
+ response=async req=>{seen.push(req);return identity(['metho','pets'])(req);};
+ const p=keychainPlugin({'rssd-pets':token});
+ const result=await p.useKeychainToken('rssd-pets');
+ assert.deepEqual(result,{loggedIn:true,spaces:['metho','pets']});
+ assert.equal(p.settings.tokenSecret,'rssd-pets');assert.deepEqual(p.settings.spaces,['metho','pets']);
+ assert.equal(p.token(),token);assert.equal(seen[0].headers.Authorization,'Bearer '+token);
+});
+test('a Keychain token for other spaces, an unknown name or a revoked token changes nothing',async()=>{
+ const token='rssd_device_'+'c'.repeat(48);
+ response=identity(['pets']);
+ let p=keychainPlugin({'other':token});
+ await assert.rejects(p.useKeychainToken('other'),/not approved for metho/);assert.equal(p.settings.tokenSecret,undefined);
+ await assert.rejects(p.useKeychainToken('missing'),/no secret named missing/);
+ response=async()=>({status:401,json:{code:'unauthorized',message:'Device credential revoked or unknown'}});
+ p=keychainPlugin({'old':token});await assert.rejects(p.useKeychainToken('old'),/revoked/);
+ assert.equal(p.settings.tokenSecret,undefined);assert.equal(p.operations.active,null);
+});
+test('a vault with no space takes the only space a Keychain token has',async()=>{
+ response=identity(['pets']);
+ const p=keychainPlugin({'pets-token':'rssd_device_'+'d'.repeat(48)});p.settings.workspaceId='';
+ await p.useKeychainToken('pets-token');assert.equal(p.settings.workspaceId,'pets');
+});
