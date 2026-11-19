@@ -15,7 +15,7 @@ import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs
 import {workLabel,labelText,tabTitle} from './titles.mjs';
 import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel,isBrandLine} from './work-cards.mjs';
 import {internalNotes,hasOpenChecks,runHistory,rowNotes,anchorMatches} from './private-notes.mjs';
-import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER} from './works-filter.mjs';
+import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER,CARD_VARIANTS} from './works-filter.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {updateFromCenter,rollback,diskVersion,newerVersion} from './self-update.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
@@ -992,7 +992,7 @@ export default class RssdPlugin extends Plugin{
  }
  // Optional local samples are paired to the source note by its vault-relative path.
  sampleCard(file,style){
-  if(!file||!['ai-code','ai-image'].includes(style)||!file.path.startsWith(WORKS_FOLDER+'/'))return null;
+  if(!file||!Object.hasOwn(CARD_VARIANTS,style)||!file.path.startsWith(WORKS_FOLDER+'/'))return null;
   const path='Card Samples/'+file.path.slice(WORKS_FOLDER.length+1,-3)+'/'+style+'.png';
   const found=this.app.vault.getAbstractFileByPath(path);return found instanceof TFile?found:null;
  }
@@ -1324,6 +1324,7 @@ class WorksFilterPanel{
   };
   segments(group('Show'),'status',[['all','All',c.status.all],['edited','Edited',c.status.edited],['check','To check',c.status.check]],f.status,id=>set({...view.filterState,status:id}));
   if(c.locale.en)segments(group('Language'),'locale',[['zh-CN','中文',c.locale['zh-CN']],['en','English',c.locale.en]],f.locale,id=>set({...view.filterState,locale:id}));
+  options(group('卡片版本'),'cardVariants',Object.entries(CARD_VARIANTS).map(([value,name])=>({value,name,count:c.cardVariants.get(value)||0})));
   // Sections in the site's order, then any the site does not name.
   const sectionIds=[...new Set([...names.keys(),...c.sections.keys(),...f.sections])];
   options(group('Section'),'sections',sectionIds.map(id=>({value:id,name:names.get(id)?.name||id||'No section',count:c.sections.get(id)||0})));
@@ -1408,6 +1409,7 @@ class WorksView extends ItemView{
    if(!this.plugin.isWork(file))continue;
    const p=this.app.metadataCache.getFileCache(file)?.frontmatter;if(!p?.['rssd-id'])continue;
    items.push({file,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
+    cardVariants:Object.keys(CARD_VARIANTS).filter(id=>this.plugin.sampleCard(file,id)),
     section:String(p['rssd-section']||''),author:String(p.author??''),category:String(p.category??''),
     version:p['rssd-version'],publishedVersion:p['rssd-published-version'],
     media:(this.app.metadataCache.getFileCache(file)?.embeds||[]).map(embed=>mediaName(embed.link)).filter(Boolean)});
@@ -1694,7 +1696,7 @@ const PREVIEW_TARGETS=[
   build:(plugin,file,content,style)=>plugin.wechatResult(file,content,{style}),copy:(plugin,file,style)=>plugin.copyForWechat(file,{style})},
  {id:'cards',label:'Cards',name:'Card view',icon:'gallery-vertical-end',copyLabel:'Save cards',actionIcon:'download',
   styles:[{id:'site',label:'算法排版'},
-   ...[['ai-code','智能排版'],['ai-image','模型生图']].map(([id,label])=>({id,label,when:(plugin,file)=>!!plugin.sampleCard(file,id)}))],
+   ...Object.entries(CARD_VARIANTS).map(([id,label])=>({id,label,when:(plugin,file)=>!!plugin.sampleCard(file,id)}))],
   build:(plugin,file,content,style,options)=>plugin.cardsResult(file,content,{style,...options}),copy:(plugin,file,style,result)=>plugin.saveCards(file,result)},
  // Outline and details are not outputs: they show how the work is built and what it is, beside the outputs.
  {id:'outline',label:'Outline',name:'Outline',icon:'list',styles:[],panel:'outline'},
