@@ -182,6 +182,8 @@ const TITLE_STYLE=`
 .rssd-works button.rssd-works-clear{height:auto;padding:0 6px;border:0;background:none;box-shadow:none;color:var(--text-faint);font-size:var(--font-ui-smaller);cursor:pointer}
 .rssd-works-section{display:inline-block;margin-right:5px;padding:0 5px;border-radius:3px;background:color-mix(in srgb,var(--rssd-section,var(--text-muted)) 14%,transparent);color:var(--rssd-section,var(--text-muted));font-size:var(--font-ui-smaller);font-weight:var(--font-normal);line-height:1.5;vertical-align:1px;white-space:nowrap}
 .rssd-works-row .rssd-works-section{flex:0 0 auto;margin-right:0}
+.rssd-works-type{display:inline-block;margin-right:5px;padding:0 4px;border:1px solid var(--background-modifier-border);border-radius:3px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-weight:var(--font-normal);line-height:1.4;vertical-align:1px;white-space:nowrap}
+.rssd-works-row .rssd-works-type{flex:0 0 auto;margin-right:0}
 /* The filter panel floats under the filter button. */
 .rssd-filter-panel{position:fixed;z-index:var(--layer-menu);width:300px;max-height:min(70vh,560px);overflow-y:auto;padding:0 var(--size-4-3);border:1px solid var(--background-modifier-border);border-radius:var(--radius-m);background:var(--background-primary);box-shadow:var(--shadow-l);font-size:var(--font-ui-small)}
 .rssd-filter-group{padding:var(--size-4-2) 0;border-bottom:1px solid var(--background-modifier-border)}
@@ -1471,7 +1473,7 @@ class WorksView extends ItemView{
    const p=this.app.metadataCache.getFileCache(file)?.frontmatter;if(!p?.['rssd-id'])continue;
    items.push({file,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
     cardVariants:Object.keys(CARD_VARIANTS).filter(id=>this.plugin.sampleCard(file,id)),
-    section:String(p['rssd-section']||''),author:String(p.author??''),category:String(p.category??''),
+    section:String(p['rssd-section']||''),type:this.plugin.workType(file),author:String(p.author??''),category:String(p.category??''),
     version:p['rssd-version'],publishedVersion:p['rssd-published-version'],
     media:(this.app.metadataCache.getFileCache(file)?.embeds||[]).map(embed=>mediaName(embed.link)).filter(Boolean)});
   }
@@ -1606,6 +1608,8 @@ class WorksView extends ItemView{
   // The section's label leads the title, in the section's colour.
   const title=body.createDiv({cls:'rssd-works-card-title'}),sectionName=this.sectionName(work.section);
   if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
+  // Long articles are the usual work; a note says so after its section.
+  if(work.type==='note')title.createSpan({cls:'rssd-works-type',text:'笔记',attr:{'aria-label':'Note'}});
   title.appendText(work.title);
   // Most works need nothing, so the chip row is only there when there is a chip.
   // What the work is made of. Length, references and the brand line arrive with the background pass.
@@ -1644,6 +1648,7 @@ class WorksView extends ItemView{
   row.createSpan({cls:'rssd-works-date',text:work.date.slice(5)});
   const sectionName=this.sectionName(work.section);
   if(sectionName){const tag=row.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);}
+  if(work.type==='note')row.createSpan({cls:'rssd-works-type',text:'笔记',attr:{'aria-label':'Note'}});
   row.createSpan({cls:'rssd-works-title',text:work.title});
   row.setAttribute('aria-label',[work.title,work.date,WORK_STATES[state]].filter(Boolean).join(' · '));
   row.addEventListener('click',()=>void this.openWork(work.file));
