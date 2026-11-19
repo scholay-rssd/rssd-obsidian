@@ -1,8 +1,9 @@
 ﻿import {ItemView,Notice} from 'obsidian';
 import {internalNotes,rowNotes,anchorMatches} from './private-notes.mjs';
+import {ANNOTATION_TAB,annotationStyle,drawAnnotation} from './annotation-tab.mjs';
 
 export const REVIEW_VIEW='rssd-review-sidebar';
-const tabs=['审阅','来源','写作记录'];
+const tabs=['审阅','来源','写作记录',ANNOTATION_TAB];
 const via={web:'网页',record:'资料记录',rss:'RSS'};
 function safeUrl(value){
  try{const u=new URL(value);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password?u.href:null;}catch{return null;}
@@ -71,7 +72,7 @@ export class ReviewSidebar extends ItemView{
  getDisplayText(){return '文章审阅栏';}
  getIcon(){return 'list-checks';}
  async onOpen(){
-  this.contentEl.addClass('rssd-review-pane');this.contentEl.createEl('style',{text:style});
+  this.contentEl.addClass('rssd-review-pane');this.contentEl.createEl('style',{text:style+annotationStyle});
   const bar=this.contentEl.createDiv({cls:'rssd-review-tabs'});
   this.buttons=tabs.map(name=>{const b=bar.createEl('button',{text:name});b.onclick=()=>{this.tab=name;this.draw();};return b;});
   this.body=this.contentEl.createDiv();
@@ -116,6 +117,8 @@ export class ReviewSidebar extends ItemView{
   el.createEl('h3',{text:front.title||this.file.basename});
   el.createDiv({cls:'rssd-review-meta',text:[front['rssd-locale']||'zh-CN','稿件 v'+(front['rssd-version']||'—'),front['rssd-published-version']?'已发布 v'+front['rssd-published-version']:'无发布版本记录'].join(' · ')});
   const record=!this.busy&&this.record;
+  // The annotation tab asks the Center itself and does not wait for the edition's private record.
+  if(this.tab===ANNOTATION_TAB){drawAnnotation(this,el);return;}
   if(this.tab==='审阅'){
    if(this.card)el.createDiv({cls:'rssd-review-meta',text:'当前卡片 · '+this.card.style+' · '+(this.card.source?.version?'来源 v'+this.card.source.version:'来源版本未记录')});
    if(this.storage)this.reviews(el);

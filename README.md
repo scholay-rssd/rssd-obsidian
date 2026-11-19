@@ -33,6 +33,12 @@ Commands: *Log in*, *Update works*, *Save this work*, *Check sync state of all w
 
 **Update** brings the Center's latest versions down into the vault, and **Save** sends edits up as private drafts. Internally an update is still a *pull*: the command id and the `pull` action for command links are unchanged, so existing hotkeys and links keep working.
 
+## Annotating a work
+
+The review sidebar has a fourth tab, **标注**. For the open work it asks the Center which questions apply to the published revision readers see, and shows them: 1 to 5 scales, single choices and yes or no. Answers are kept on this device until submitted, so switching works or tabs loses nothing. Submitting adds a record at the Center and never changes the work. Submitting again adds a newer record, and the newest counts.
+
+Only a published revision of an article or a note can be annotated. When the note in the vault is a newer draft than what is published, the tab says which revision the answers are about. This needs a Center with the annotation endpoints; an older Center is reported as not supporting annotation.
+
 ## Rules (from the RSSD business spec)
 
 - The Center is the source of truth. Do not run Obsidian Sync, iCloud or Git on this vault.
