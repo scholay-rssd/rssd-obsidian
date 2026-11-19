@@ -864,6 +864,20 @@ test('canonical pulls and receipt recovery never overwrite or misroute staged dr
  assert.equal(center.calls.filter(x=>x[0]==='draftReceipt').length,0);
 });
 
+test('a waiting private record is saved even when the note text is unchanged',async()=>{
+ const {engine,vault,center}=setup('a-one');
+ await engine.pull('metho');
+ const get=center.client.work;center.client.work=async(...args)=>({...await get(...args),acceptsPrivateAppendOnSave:true});
+ assert.equal(await engine.hasLocalChanges('metho','Works/a-one.md'),false);
+ const record={internalNotes:{images:'许可：CC BY-SA 3.0（https://creativecommons.org/licenses/by-sa/3.0/）'}};
+ await vault.write('.rssd/private-additions/a-one.zh-CN.json',JSON.stringify(record));
+ assert.equal(await engine.hasLocalChanges('metho','Works/a-one.md'),true);
+ assert.equal((await engine.save('metho','Works/a-one.md')).state,'saved');
+ assert.deepEqual(center.calls.find(c=>c[0]==='saveDraft')[1].data.privateAppend,record);
+ assert.equal(await vault.read('.rssd/private-additions/a-one.zh-CN.json'),null);
+ assert.equal(await engine.hasLocalChanges('metho','Works/a-one.md'),false);
+});
+
 test('a private picture record waiting for a work goes with its next save and is then cleared',async()=>{
  const {engine,vault,center}=setup('a-one');
  await engine.pull('metho');
