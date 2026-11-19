@@ -19,6 +19,7 @@ import {internalNotes,hasOpenChecks,runHistory,rowNotes,anchorMatches} from './p
 import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER,CARD_VARIANTS} from './works-filter.mjs';
 import {CARD_STYLE_ICONS,styleOptions,nextStyle} from './style-switch.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
+import {layoutMode,spaceFolderName,VaultLayout,prefixedVault,SPACES} from './vault-layout.mjs';
 import {updateFromCenter,rollback,diskVersion,newerVersion} from './self-update.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
 import {sectionWorkPolicy,MAX_WORK_TAGS} from '../../contracts/work-types.mjs';
@@ -40,7 +41,7 @@ export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_O
 const RELEASE_KEY=typeof RSSD_RELEASE_KEY==='string'&&RSSD_RELEASE_KEY?RSSD_RELEASE_KEY:null;
 // The version a release build was built as. A development build has none and updates only on a manual check.
 const BUILD_VERSION=typeof RSSD_BUILD_VERSION==='string'?RSSD_BUILD_VERSION:'';
-const DEFAULTS={...POOL_DEFAULTS,tokenSecret:'',pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
+const DEFAULTS={...POOL_DEFAULTS,tokenSecret:'',pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',layout:'',spaceFolders:{},syncSpaces:{},pathRecordsBySpace:{},baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
 // The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
 // between them.
@@ -340,6 +341,8 @@ export default class RssdPlugin extends Plugin{
   if(!this.settings.origin&&!this.token()&&!this.settings.boundSpace){this.settings.origin=DEFAULT_ORIGIN;this.settings.boundOrigin=DEFAULT_ORIGIN;}
   if(!this.settings.boundOrigin)this.settings.boundOrigin=this.settings.origin;
   this.settings.boundSpace??=Object.keys(this.settings.baselines).find(k=>Object.keys(this.settings.baselines[k]||{}).length)||'';
+  // Fixed once: a vault that already holds one space keeps it at its root; a new vault holds several spaces.
+  this.settings.layout=layoutMode(this.settings);
   await this.saveSettings();
   this.registerView('rssd-works',leaf=>new WorksView(leaf,this));
   this.registerView(REVIEW_VIEW,leaf=>new ReviewSidebar(leaf,this));
@@ -418,19 +421,19 @@ export default class RssdPlugin extends Plugin{
   this.app.workspace.onLayoutReady(()=>{void this.tidySidebar().catch(error=>console.error('RSSD sidebar',error));});
   this.app.workspace.onLayoutReady(()=>{if(!this.token())new WelcomeModal(this.app,this).open();});
   this.autoSync=new AutoSync({
-   ready:()=>this.settings.autoSync!==false&&!!this.settings.origin&&!!this.settings.workspaceId&&!!this.token()&&!this.operations.active,
+   ready:()=>this.settings.autoSync!==false&&!!this.settings.origin&&this.syncSpaces().length>0&&!!this.token()&&!this.operations.active,
    lease:run=>{let locks;try{locks=globalThis.navigator?.locks;}catch{}return syncLease(locks,this.settings.origin)(run);},
-   pull:()=>this.operations.run('automatic-pull',()=>this.pullAll(this.settings.workspaceId)),
-   save:path=>this.operations.run('automatic-save',async()=>{const engine=this.engine(),space=this.settings.workspaceId;if(!await engine.hasLocalChanges(space,path))return {state:'unchanged'};return this.saveWork(space,path,engine);}),
+   pull:()=>this.operations.run('automatic-pull',()=>this.multiSpace()?this.pullSpaces():this.pullAll(this.settings.workspaceId)),
+   save:path=>this.operations.run('automatic-save',async()=>{const at=this.locate(path);if(!at)return {state:'unchanged'};const engine=this.engine(at.space);if(!await engine.hasLocalChanges(at.space,at.rel))return {state:'unchanged'};return this.saveWork(at.space,path,engine);}),
    report:({path,error})=>{console.error('RSSD automatic sync',path||'',error?.code||'',error?.message||error);new Notice('RSSD automatic sync needs attention'+(path?' for '+path:'')+': '+saveFailureMessage(error),10000);}
   });
-  this.registerEvent(this.app.vault.on('modify',file=>{if(!(file instanceof TFile))return;if(this.isWork(file))this.autoSync.mark(file.path);else if(file.path.startsWith(MEDIA_FOLDER+'/'))void this.markMedia(file.path);}));
-  this.registerEvent(this.app.vault.on('create',file=>{if(file instanceof TFile&&this.isWork(file)){if(canonicalPathIdentity(file.path))this.autoSync.mark(file.path);else new Notice('RSSD: this new note is not linked to a Center work and has not been synced.',10000);}}));
+  this.registerEvent(this.app.vault.on('modify',file=>{if(!(file instanceof TFile))return;if(this.isWork(file))this.autoSync.mark(file.path);else if(this.locate(file.path)?.rel.startsWith(MEDIA_FOLDER+'/'))void this.markMedia(file.path);}));
+  this.registerEvent(this.app.vault.on('create',file=>{if(file instanceof TFile&&this.isWork(file)){if(canonicalPathIdentity(this.locate(file.path).rel))this.autoSync.mark(file.path);else new Notice('RSSD: this new note is not linked to a Center work and has not been synced.',10000);}}));
   this.registerEvent(this.app.vault.on('rename',(file,oldPath)=>{if(file instanceof TFile)void this.recordPathChange('rename',oldPath,file.path);}));
   this.registerEvent(this.app.vault.on('delete',file=>{if(file instanceof TFile)void this.recordPathChange('delete',file.path);}));
   // Stagger open vaults; each successful scan repeats hourly. The scan also
   // rediscovers changes made while Obsidian was closed.
-  let nextScan=Date.now()+startupDelay(this.settings.workspaceId,Object.keys(WECHAT_SITES));
+  let nextScan=Date.now()+startupDelay(this.multiSpace()?this.syncSpaces()[0]||'':this.settings.workspaceId,Object.keys(WECHAT_SITES));
   this.registerInterval(window.setInterval(()=>{
    // Fold journaled baselines into the settings file once saving has been quiet for half a minute.
    if(this.log().pending&&!this.operations.active&&Date.now()-this.log().lastRecord>30000)void this.saveSettings().catch(()=>{});
@@ -515,9 +518,12 @@ export default class RssdPlugin extends Plugin{
   * unchanged. This runs on every scan; a work whose save was refused stays blocked until its note is edited. */
  async queuePrivateAdditions(){
   try{
-   const dir='.rssd/private-additions',adapter=this.app.vault.adapter;if(!await adapter.exists(dir))return;
-   for(const file of (await adapter.list(dir)).files){
-    const match=/([^/]+)\.(zh-CN|en)\.json$/.exec(file);if(match)this.autoSync.queueWaiting(notePath(match[1],match[2]));
+   const adapter=this.app.vault.adapter;
+   for(const space of this.syncSpaces()){
+    const dir=this.spacePath(space,'.rssd/private-additions');if(!await adapter.exists(dir))continue;
+    for(const file of (await adapter.list(dir)).files){
+     const match=/([^/]+)\.(zh-CN|en)\.json$/.exec(file);if(match)this.autoSync.queueWaiting(this.spacePath(space,notePath(match[1],match[2])));
+    }
    }
   }catch(error){console.error('RSSD private additions',error);}
  }
@@ -527,29 +533,32 @@ export default class RssdPlugin extends Plugin{
  async automate(params){
   try {
    if(!this.settings.allowAutomation)throw Object.assign(Error('Command links are off for this vault'),{code:'automation_off'});
-   const request={...automationRequest(params),origin:centerOrigin(this.settings.origin),workspaceId:this.settings.workspaceId},directory=this.manifest.dir+'/runs';
+   const request={...automationRequest(params),origin:centerOrigin(this.settings.origin),workspaceId:this.multiSpace()?'':this.settings.workspaceId},directory=this.manifest.dir+'/runs';
    if(!await this.app.vault.adapter.exists(directory))await this.app.vault.adapter.mkdir(directory);
    const record=await this.operations.run(request.action,()=>recordedOperation({request,
     read:async id=>{const p=directory+'/'+id+'.json';return await this.app.vault.adapter.exists(p)?JSON.parse(await this.app.vault.adapter.read(p)):null;},
     write:async record=>{await this.app.vault.adapter.write(directory+'/'+record.id+'.json',JSON.stringify(record,null,2));await this.writeRun(record);},
     execute:async()=>{
-     const space=this.settings.workspaceId;
      if(request.action==='login')return this.performLogin({openBrowser:true});
-     if(request.action==='pull')return this.pullAll(space);
-     if(request.action==='status')return this.statesAll(space);
+     if(request.action==='pull')return this.multiSpace()?this.pullSpaces():this.pullAll(this.settings.workspaceId);
+     if(request.action==='status')return this.statesAll();
      if(request.action==='spaces')return (await this.client().registry()).workspaces?.map(w=>({id:w.id,writable:w.writable===true,migrationState:w.migrationState??null}));
-     return this.saveWork(space,request.path);
+     return this.saveWork(this.spaceOf(request.path),request.path);
     }}));
    new Notice('RSSD '+request.action+': '+(record.error||record.state));
   }catch(error){new Notice('RSSD: '+error.message);}
  }
- async assertWritable(){
+ async assertWritable(space=this.settings.workspaceId){
   if(Platform.isMobile)throw Error('RSSD is read-only on mobile');
-  const reason=readOnlyReason(spaceInfo(await this.client().registry(),this.settings.workspaceId),this.settings.workspaceId);
+  const reason=readOnlyReason(spaceInfo(await this.client().registry(),space),space);
   if(reason)throw Object.assign(Error(reason),{code:'migration_staged'});
  }
- async saveWork(space,path,engine=this.engine()){
+ /** Save the work note at vault path `path` of `space`. */
+ async saveWork(space,vaultPath,engine=this.engine(space)){
   if(Platform.isMobile)throw Error('RSSD is read-only on mobile');
+  if(!space)throw Error('This note is not in a space of this vault');
+  const path=this.multiSpace()?this.locate(vaultPath)?.rel:vaultPath;
+  if(!path)throw Error('This note is not in a space of this vault');
   const info=spaceInfo(await this.client().registry(),space);
   if(!info.found)throw Object.assign(Error(readOnlyReason(info,space)),{code:'forbidden'});
   if(info.writable){
@@ -562,7 +571,7 @@ export default class RssdPlugin extends Plugin{
  }
  assertBinding(){
   if(centerOrigin(this.settings.origin)!==centerOrigin(this.settings.boundOrigin||this.settings.origin))throw Error('This login belongs to a different Center. Use a separate vault.');
-  if(this.settings.boundSpace&&this.settings.workspaceId!==this.settings.boundSpace)throw Error('This vault is bound to '+this.settings.boundSpace+'. Open a separate vault for another space.');
+  if(!this.multiSpace()&&this.settings.boundSpace&&this.settings.workspaceId!==this.settings.boundSpace)throw Error('This vault is bound to '+this.settings.boundSpace+'. Open a separate vault for another space.');
  }
  async openReader(){
   if(!this.token()){new WelcomeModal(this.app,this).open();return;}
@@ -579,13 +588,13 @@ export default class RssdPlugin extends Plugin{
  /** A work's private Center record ({privateEditorial, firstMachine}), read once per version and kept for the
   * session. Null when the Center has none. Read only. */
  privateRecord(file){
-  const front=this.app.metadataCache.getFileCache(file)?.frontmatter||{},version=Number(front['rssd-version']);
-  const key=this.settings.workspaceId+':'+String(front['rssd-locale']||'zh-CN')+':'+String(front['rssd-id']||'')+':'+version;
+  const front=this.app.metadataCache.getFileCache(file)?.frontmatter||{},version=Number(front['rssd-version']),space=this.spaceOf(file);
+  const key=space+':'+String(front['rssd-locale']||'zh-CN')+':'+String(front['rssd-id']||'')+':'+version;
   this.privateRecords??=new Map();
   if(!this.privateRecords.has(key)){
    const read=(async()=>{
     if(!front['rssd-id']||!Number.isSafeInteger(version)||version<1)return null;
-    try{return await this.client().privateNotes(this.settings.workspaceId,String(front['rssd-id']),version);}
+    try{return await this.client().privateNotes(space,String(front['rssd-id']),version);}
     catch(error){if(error?.status===404)return null;this.privateRecords.delete(key);throw error;}
    })();
    read.then(value=>{read.value=value;},()=>{});
@@ -598,15 +607,15 @@ export default class RssdPlugin extends Plugin{
   if(inOutput(el))return;
   const file=ctx?.sourcePath?this.app.vault.getAbstractFileByPath(ctx.sourcePath):null;
   if(!(file instanceof TFile)||!this.isWork(file))return;
-  const front=this.app.metadataCache.getFileCache(file)?.frontmatter||{},origin=wechatSite(this.settings.workspaceId)?.origin||'';
+  const space=this.spaceOf(file),front=this.app.metadataCache.getFileCache(file)?.frontmatter||{},origin=wechatSite(space)?.origin||'';
   // Under the title: section, date and who wrote it, as on the work's card.
   const title=el.querySelector('h1');
   if(title&&!el.querySelector('.rssd-context')){
    const line=createDiv({cls:'rssd-context'}),sectionId=String(front['rssd-section']||'');
-   const site=wechatSite(this.settings.workspaceId),section=(SITE_SECTIONS[site?.id]||[]).find(item=>item.id===sectionId);
-   if(section){const tag=line.createSpan({cls:'rssd-context-section',text:section.name}),accent=this.sectionAccentOf(sectionId);if(accent)tag.style.setProperty('--rssd-section',accent);}
+   const site=wechatSite(space),section=(SITE_SECTIONS[site?.id]||[]).find(item=>item.id===sectionId);
+   if(section){const tag=line.createSpan({cls:'rssd-context-section',text:section.name}),accent=this.sectionAccentOf(sectionId,space);if(accent)tag.style.setProperty('--rssd-section',accent);}
    const date=fieldText(front.date);if(date)line.createSpan({text:date});
-   let writer=null;try{const kept=this.app.loadLocalStorage?.(WRITERS_KEY)||{};writer=kept[this.settings.workspaceId+':'+String(front['rssd-locale']||'zh-CN')+':'+String(front['rssd-id']||'')+':'+front['rssd-version']]||null;}catch{}
+   let writer=null;try{const kept=this.app.loadLocalStorage?.(WRITERS_KEY)||{};writer=kept[space+':'+String(front['rssd-locale']||'zh-CN')+':'+String(front['rssd-id']||'')+':'+front['rssd-version']]||null;}catch{}
    const label=writerLabel(writer);if(label)line.createSpan({text:label+(writer?.machine?' · '+writer.machine:'')});
    title.after(line);
   }
@@ -661,11 +670,41 @@ export default class RssdPlugin extends Plugin{
   if(!leaf){for(const old of workspace.getLeavesOfType('rssd-works'))old.detach();leaf=workspace.getLeftLeaf(false);if(!leaf)return;await leaf.setViewState({type:'rssd-works',active:true});}
   workspace.revealLeaf(leaf);
  }
- isWork(file){return file.extension==='md'&&file.path.startsWith(WORKS_FOLDER+'/');}
+ isWork(file){return file?.extension==='md'&&!!this.locate(file.path)?.rel.startsWith(WORKS_FOLDER+'/');}
+ /** Whether this vault holds several spaces, each in a folder of its own. */
+ multiSpace(){return this.settings.layout===SPACES;}
+ layout(){return new VaultLayout({mode:this.settings.layout,space:this.settings.workspaceId,folders:this.settings.spaceFolders});}
+ /** {space, rel} for a vault path: its space and the path inside that space's folder. */
+ locate(path){return this.layout().locate(path);}
+ /** The space of a work note (or any file in a space folder); '' when it belongs to none. */
+ spaceOf(file){return this.locate(typeof file==='string'?file:file?.path)?.space||'';}
+ /** The vault path of `rel` inside `space`. */
+ spacePath(space,rel){return this.layout().path(space,rel);}
+ /** The spaces this vault keeps in step with the Center. */
+ syncSpaces(){
+  if(isPoolVault(this.settings))return [];
+  if(!this.multiSpace())return this.settings.workspaceId?[this.settings.workspaceId]:[];
+  return (this.settings.spaces||[]).filter(space=>this.settings.syncSpaces?.[space]!==false&&this.settings.spaceFolders?.[space]);
+ }
+ /** Give each approved space a folder (named after its site) the first time it is seen. Folders never move. */
+ assignSpaceFolders(spaces=this.settings.spaces||[]){
+  if(!this.multiSpace())return false;
+  const folders=this.settings.spaceFolders??={};let changed=false;
+  for(const space of spaces)if(!folders[space]){folders[space]=spaceFolderName(space,{origin:wechatSite(space)?.origin,taken:Object.values(folders)});changed=true;}
+  return changed;
+ }
+ /** Path protection records of one space, with paths inside its folder. */
+ pathRecords(space){return this.multiSpace()?this.settings.pathRecordsBySpace?.[space]||{}:this.settings.pathRecords||{};}
+ setPathRecords(space,records){if(this.multiSpace())(this.settings.pathRecordsBySpace??={})[space]=records;else this.settings.pathRecords=records;}
  setStatus(text){this.status?.setText(text);}
- idleStatus(){return this.token()?'RSSD'+(isPoolVault(this.settings)?' · topic pool':this.settings.workspaceId?' · '+this.settings.workspaceId:''):'RSSD · log in';}
+ /** How the running update is going ({checked, space, index, count}), shown in the Works list; null when none runs. */
+ setPullProgress(progress){
+  this.pullProgress=progress;
+  for(const leaf of this.app.workspace?.getLeavesOfType?.('rssd-works')||[])if(leaf.view instanceof WorksView)leaf.view.renderFoot();
+ }
+ idleStatus(){const spaces=this.syncSpaces();return this.token()?'RSSD'+(isPoolVault(this.settings)?' · topic pool':this.multiSpace()?(spaces.length===1?' · '+spaces[0]:spaces.length?' · '+spaces.length+' spaces':''):this.settings.workspaceId?' · '+this.settings.workspaceId:''):'RSSD · log in';}
  statusMenu(){
-  const menu=new Menu(),loggedIn=!!this.token(),space=this.settings.workspaceId,active=this.app.workspace.getActiveFile();
+  const menu=new Menu(),loggedIn=!!this.token(),space=this.syncSpaces().length>0,active=this.app.workspace.getActiveFile();
   const login=()=>this.login({openBrowser:true,selectSyncSpace:false}).then(()=>this.setStatus(this.idleStatus())).catch(error=>{if(error?.code!=='cancelled')new Notice('Login failed: '+error.message,10000);});
   if(!loggedIn)menu.addItem(item=>item.setTitle('Log in to RSSD').setIcon('log-in').onClick(login));
   menu.addItem(item=>item.setTitle('Read site articles online').setIcon('book-open').onClick(()=>this.openReader()));
@@ -699,10 +738,10 @@ export default class RssdPlugin extends Plugin{
   const identity=await createCenterClient({http,origin,token}).identity();
   const spaces=Array.isArray(identity?.workspaceIds)?identity.workspaceIds:[];
   if(!spaces.length)throw Error('This token has no spaces at the Center');
-  if(space&&!spaces.includes(space))throw Error('This token is not approved for '+space);
+  if(!this.multiSpace()&&space&&!spaces.includes(space))throw Error('This token is not approved for '+space);
   if(centerOrigin(this.settings.origin)!==origin||this.settings.workspaceId!==space)throw Error('Connection changed while checking the token; try again');
-  this.settings.tokenSecret=name;this.settings.boundOrigin=origin;this.settings.spaces=spaces;
-  if(!space&&spaces.length===1&&!isPoolVault(this.settings))this.settings.workspaceId=spaces[0];
+  this.settings.tokenSecret=name;this.settings.boundOrigin=origin;this.settings.spaces=spaces;this.assignSpaceFolders(spaces);
+  if(!this.multiSpace()&&!space&&spaces.length===1&&!isPoolVault(this.settings))this.settings.workspaceId=spaces[0];
   await this.saveSettings();this.setStatus(this.idleStatus());
   new Notice('Logged in to the RSSD Center with the Keychain secret '+name+' ('+spaces.join(', ')+')',8000);
   return {loggedIn:true,spaces};
@@ -726,23 +765,26 @@ export default class RssdPlugin extends Plugin{
   return this.settingsLog;
  }
 
- engine(){
+ /** The sync engine of one space. It sees that space's folder as its whole vault, so its rules are the same
+  * in a single-space vault and in a vault of several spaces. */
+ engine(space=this.settings.workspaceId){
   this.assertBinding();
   const token=this.token();if(!token||!this.settings.origin)throw Error('Log in to the RSSD Center first');
-  if(!this.settings.workspaceId)throw Error('Choose a space in the RSSD settings');
+  if(!space)throw Error(this.multiSpace()?'No space to sync; check the spaces in the RSSD settings':'Choose a space in the RSSD settings');
+  if(this.multiSpace()&&!this.settings.spaceFolders?.[space])throw Error('Space '+space+' has no folder in this vault yet');
   const adapter=this.app.vault.adapter,vault=this.app.vault;
   return new SyncEngine({
    client:createCenterClient({http,origin:this.settings.origin,token}),
-   pathRecords:()=>this.settings.pathRecords||{},
-   sectionPolicy:sectionId=>this.sectionPolicy(sectionId),
+   pathRecords:()=>this.pathRecords(space),
+   sectionPolicy:sectionId=>this.sectionPolicy(sectionId,space),
    yaml:{parse:parseYaml,stringify:stringifyYaml},
-   vault:{
+   vault:prefixedVault({
     read:async path=>await adapter.exists(path)?adapter.read(path):null,
     readBinary:async path=>await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null,
     write:async(path,content,{expectedContent=null}={})=>{await this.ensureFolder(path);const file=vault.getAbstractFileByPath(path);if(file instanceof TFile)await vault.process(file,current=>{if(current!==expectedContent)throw Object.assign(Error('Local edits were kept'),{code:'local_edit_during_pull'});return content;});else{if(expectedContent!==null)throw Object.assign(Error('The local file was moved or removed'),{code:'local_edit_during_pull'});await vault.create(path,content);}},
     writeBinary:async(path,bytes)=>{await this.ensureFolder(path);if(!await adapter.exists(path))await vault.createBinary(path,bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength));},
     remove:async path=>{if(await adapter.exists(path))await adapter.remove(path);},
-   },
+   },this.layout().root(space)),
    store:{
     get:async(space,id,locale='zh-CN')=>baselineBucket(this.settings,space,locale)?.[id]??null,
     set:(space,id,value,locale='zh-CN')=>this.log().record({op:'set',space,id,locale,value}),
@@ -781,10 +823,35 @@ export default class RssdPlugin extends Plugin{
   // A pull that changed nothing is written too, so the Works list still knows when the space was last pulled.
   }finally{if(this.log().pending||finished)await this.saveSettings().catch(()=>{});}
  }
- async statesAll(space){
-  const states={},engine=this.engine();
-  for(const locale of LOCALES)for(const [id,state] of Object.entries(await engine.states(space,{locale})))states[notePath(id,locale)]=state;
+ /** Every work's sync state, by vault path, in every space this vault syncs. */
+ async statesAll(){
+  const states={};
+  for(const space of this.syncSpaces()){
+   const engine=this.engine(space);
+   for(const locale of LOCALES)for(const [id,state] of Object.entries(await engine.states(space,{locale})))states[this.spacePath(space,notePath(id,locale))]=state;
+  }
   return states;
+ }
+ /**
+  * Update every space this vault syncs, one after another. Works are reported by vault path. A space that fails
+  * is reported and the others still update. `onProgress` hears {space, index, count} as each space starts and
+  * each work's progress within it, so the Works list can show the notes written so far.
+  */
+ async pullSpaces({onProgress=()=>{}}={}){
+  const spaces=this.syncSpaces(),summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],metadataPending:[],unchanged:0,removedFromCenter:[],spaces:{}};
+  for(const [index,space] of spaces.entries()){
+   onProgress({space,index,count:spaces.length});
+   try{
+    const result=await this.pullAll(space,{onProgress:progress=>onProgress({...progress,space,index,count:spaces.length})});
+    const path=id=>this.spacePath(space,id.startsWith('en/')?'Works/en/'+id.slice(3)+'.md':'Works/'+id+'.md');
+    for(const key of ['downloaded','updated','skipped','conflicts','pending','metadataPending','removedFromCenter'])summary[key].push(...(result[key]||[]).map(path));
+    summary.failed.push(...(result.failed||[]).map(item=>({...item,space})));summary.unchanged+=result.unchanged||0;summary.spaces[space]='done';
+   }catch(error){
+    if(error?.code==='operation_busy')throw error;
+    summary.failed.push({space,code:error?.code||'',message:error?.message||String(error)});summary.spaces[space]='failed';
+   }
+  }
+  return summary;
  }
  async ensureFolder(path){
   const folder=path.split('/').slice(0,-1).join('/');
@@ -792,26 +859,33 @@ export default class RssdPlugin extends Plugin{
  }
  async recordPathChange(action,oldPath,newPath){
   try{
-   const records=this.settings.pathRecords||{},identity=canonicalPathIdentity(oldPath),space=this.settings.workspaceId;
+   // Path records are kept per space, with paths inside its folder. Moving a note out of its space folder is a
+   // removal for that space.
+   const from=this.locate(oldPath);if(!from)return;
+   const space=from.space,inside=this.locate(newPath||''),to=inside?.space===space?inside.rel:null;
+   if(action==='rename'&&to===null)action='delete';
+   oldPath=from.rel;newPath=to;
+   const records=this.pathRecords(space),identity=canonicalPathIdentity(oldPath);
    const tracked=Object.values(records).some(item=>item?.currentPath===oldPath);
    const bucket=identity&&(identity.locale==='zh-CN'?this.settings.baselines?.[space]:this.settings.baselinesByLocale?.[space]?.[identity.locale]);
    if(!tracked&&(!identity||!bucket?.[identity.articleId]))return;
    let next=action==='rename'?trackRename(records,oldPath,newPath):trackDelete(records,oldPath);
-   this.settings.pathRecords=next;await this.saveSettings();
+   this.setPathRecords(space,next);await this.saveSettings();
    if(action==='rename'){
-    const entry=Object.values(next).find(item=>item?.currentPath===newPath&&item?.state==='verify_return');
-    if(entry){const text=await this.app.vault.adapter.read(newPath),work=noteToWork(text,parseYaml);next=confirmReturn(next,{articleId:entry.articleId,locale:entry.locale,path:newPath,observedArticleId:work?.data.id,observedLocale:work?.data.locale});this.settings.pathRecords=next;await this.saveSettings();this.autoSync?.unblock(newPath);this.autoSync?.mark(newPath);return;}
+    const entry=Object.values(next).find(item=>item?.currentPath===newPath&&item?.state==='verify_return'),vaultPath=this.spacePath(space,newPath);
+    if(entry){const text=await this.app.vault.adapter.read(vaultPath),work=noteToWork(text,parseYaml);next=confirmReturn(next,{articleId:entry.articleId,locale:entry.locale,path:newPath,observedArticleId:work?.data.id,observedLocale:work?.data.locale});this.setPathRecords(space,next);await this.saveSettings();this.autoSync?.unblock(vaultPath);this.autoSync?.mark(vaultPath);return;}
    }
    new Notice('RSSD: a linked work was moved or removed locally. Its Center copy was not deleted; return it to its original path to resume sync.',10000);
   }catch(error){console.error('RSSD path protection',error);new Notice('RSSD could not verify a moved work; its local changes were kept.',10000);}
  }
- async markMedia(path){
-  const name=path.slice((MEDIA_FOLDER+'/').length);if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(name))return;
-  const space=this.settings.workspaceId,adapter=this.app.vault.adapter;
+ async markMedia(vaultPath){
+  const at=this.locate(vaultPath);if(!at?.rel.startsWith(MEDIA_FOLDER+'/'))return;
+  const name=at.rel.slice((MEDIA_FOLDER+'/').length);if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(name))return;
+  const space=at.space,adapter=this.app.vault.adapter;
   for(const locale of LOCALES){
    const bucket=locale==='zh-CN'?this.settings.baselines?.[space]:this.settings.baselinesByLocale?.[space]?.[locale];
    for(const base of Object.values(bucket||{})){
-    const workPath=notePath(base.articleId,locale);
+    const workPath=this.spacePath(space,notePath(base.articleId,locale));
     try{if(await adapter.exists(workPath)&&noteToWork(await adapter.read(workPath),parseYaml)?.media.includes(name))this.autoSync.mark(workPath);}catch(error){console.error('RSSD media scan failed',workPath,error);}
    }
   }
@@ -826,14 +900,15 @@ export default class RssdPlugin extends Plugin{
    const result=await deviceLogin({http,origin,name:this.settings.deviceName||('Obsidian on '+(Platform.isMobile?'mobile':'desktop')),signal:controller.signal,
     onCode:info=>{modal=new CodeModal(this.app,info);modal.onCancel=()=>controller.abort();modal.open();if(openBrowser)window.open(info.verificationUriComplete);}});
    const spaces=result.identity?.workspaceIds||[];
-   if(space&&!spaces.includes(space))throw Error('This device was not approved for '+space);
+   if(!this.multiSpace()&&space&&!spaces.includes(space))throw Error('This device was not approved for '+space);
    if(centerOrigin(this.settings.origin)!==origin||this.settings.workspaceId!==space)throw Error('Connection changed during login; start again');
    createCenterClient({http,origin,token:result.token});
    this.app.secretStorage.setSecret(TOKEN_SECRET,result.token);this.settings.tokenSecret='';
    this.settings.boundOrigin=origin;
    // Choosing a sync space starts downloading works into the vault; reader logins leave that to Settings.
-   if(selectSyncSpace&&!space&&spaces.length===1)this.settings.workspaceId=spaces[0];
-   this.settings.spaces=spaces;await this.saveSettings();
+   if(!this.multiSpace()&&selectSyncSpace&&!space&&spaces.length===1)this.settings.workspaceId=spaces[0];
+   // A login for reading only (the welcome window) gives no space a folder; Settings → RSSD ticks them later.
+   this.settings.spaces=spaces;if(selectSyncSpace)this.assignSpaceFolders(spaces);await this.saveSettings();
    new Notice('Logged in to the RSSD Center');this.setStatus(this.idleStatus());
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
@@ -845,7 +920,7 @@ export default class RssdPlugin extends Plugin{
   try{
    for(const leaf of this.app.workspace.getLeavesOfType('file-explorer')){
     for(const [path,item] of Object.entries(leaf.view?.fileItems||{})){
-     const el=item?.innerEl;if(!el||!path.startsWith(WORKS_FOLDER+'/'))continue;
+     const el=item?.innerEl;if(!el||!this.locate(path)?.rel.startsWith(WORKS_FOLDER+'/'))continue;
      const label=restore?null:this.workLabel(item.file),key=label?label.title+'\n'+label.date:'';
      if(label){
       if(el.dataset.rssdLabel===key&&el.querySelector('.rssd-title'))continue;
@@ -879,15 +954,21 @@ export default class RssdPlugin extends Plugin{
  async pull(){
   try{
    const summary=await this.operations.run('pull',async()=>{
-    let checked=0,lastProgress;const id=crypto.randomUUID(),workspaceId=this.settings.workspaceId;
-    this.setStatus('RSSD: updating…');
+    let checked=0,lastProgress;const id=crypto.randomUUID(),multi=this.multiSpace(),workspaceId=multi?'':this.settings.workspaceId;
+    this.setStatus('RSSD: updating…');this.setPullProgress({checked:0});
     await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked});
     try{
-     const result=await this.pullAll(workspaceId,{onProgress:async({articleId,summary,locale})=>{
-      this.setStatus('RSSD: updating… '+(++checked)+' works');
-      lastProgress={articleId,locale,partial:summary};
-      await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked,articleId,locale,partial:summary});
-     }});
+     // Progress is visible as it goes: the status bar and the Works list say which space and how many works,
+     // and the Works list shows each note as soon as it is written.
+     const progress=async({articleId,summary,locale,space,index,count})=>{
+      if(articleId!==undefined)checked++;
+      const where=multi&&space?space+(count>1?' ('+(index+1)+'/'+count+')':'')+' · ':'';
+      this.setStatus('RSSD: updating '+where+checked+' works');this.setPullProgress({checked,space,index,count});
+      if(articleId===undefined)return;
+      lastProgress={articleId,locale,space,partial:summary};
+      await this.writeRun({id,action:'pull',workspaceId,state:'running',ok:null,checked,articleId,locale,space,partial:summary});
+     };
+     const result=multi?await this.pullSpaces({onProgress:progress}):await this.pullAll(workspaceId,{onProgress:progress});
      const incomplete=['failed','conflicts','pending','metadataPending'].some(key=>result[key]?.length);
      await this.writeRun({id,action:'pull',workspaceId,state:incomplete?'partial':'completed',ok:!incomplete,checked,result});
      return result;
@@ -895,7 +976,7 @@ export default class RssdPlugin extends Plugin{
      await this.writeRun({id,action:'pull',workspaceId,state:'failed',ok:false,checked,...lastProgress,...(error.pullSummary?{partial:error.pullSummary}:{}),...diagnosticError(error)});
      throw error;
     }
-    finally{this.setStatus(this.idleStatus());}
+    finally{this.setStatus(this.idleStatus());this.setPullProgress(null);}
    });
    const parts=[summary.downloaded.length+' new',summary.updated.length+' updated',summary.unchanged+' unchanged'];
    if(summary.skipped.length)parts.push(summary.skipped.length+' kept (local changes)');
@@ -903,6 +984,8 @@ export default class RssdPlugin extends Plugin{
    if(summary.pending?.length)parts.push(summary.pending.length+' waiting for save recovery');
    if(summary.metadataPending?.length)parts.push(summary.metadataPending.length+' local version labels need refresh');
    if(summary.failed?.length)parts.push(summary.failed.length+' failed; update again to retry');
+   const failedSpaces=Object.entries(summary.spaces||{}).filter(([,state])=>state==='failed').map(([space])=>space);
+   if(failedSpaces.length)parts.push('spaces not updated: '+failedSpaces.join(', '));
    const incomplete=['failed','conflicts','pending','metadataPending'].some(key=>summary[key]?.length);
    new Notice((incomplete?'Update incomplete: ':'Update finished: ')+parts.join(', '));
    if(summary.conflicts.length)new Notice('Conflicts were not changed: '+summary.conflicts.join(', '),10000);
@@ -917,8 +1000,8 @@ export default class RssdPlugin extends Plugin{
   return createCenterClient({http,origin:this.settings.origin,token});
  }
  /** What a section of this space's site takes (sectionWorkPolicy over the bundled section catalog), or null when unknown. */
- sectionPolicy(sectionId){
-  const site=wechatSite(this.settings.workspaceId),section=(SITE_SECTIONS[site?.id]||[]).find(item=>item.id===sectionId);
+ sectionPolicy(sectionId,space=this.settings.workspaceId){
+  const site=wechatSite(space),section=(SITE_SECTIONS[site?.id]||[]).find(item=>item.id===sectionId);
   return section?sectionWorkPolicy(section):null;
  }
  /** A work's type: what its note states, else its section's default. `content` is the note text when at hand. */
@@ -927,13 +1010,13 @@ export default class RssdPlugin extends Plugin{
   if(content!=null){try{const work=noteToWork(content,parseYaml);if(work){stated=work.data.workType;front={'rssd-kind':work.kind,'rssd-section':work.data.sectionId};}}catch{}}
   else stated=typeof front[WORK_FIELDS.workType]==='string'&&front[WORK_FIELDS.workType].trim()?front[WORK_FIELDS.workType].trim():undefined;
   if(String(front['rssd-kind']||'news')!=='news')return 'article';
-  return stated||this.sectionPolicy(String(front['rssd-section']||''))?.defaultType||'article';
+  return stated||this.sectionPolicy(String(front['rssd-section']||''),this.spaceOf(file))?.defaultType||'article';
  }
  /** Whether this space's Center keeps work types, tags and note sources. Asked again after ten minutes or a failure. */
- async workTypesSupported(){
-  const key=this.settings.origin+' '+this.settings.workspaceId,cached=this.workTypesCache;
-  if(cached?.key===key&&Date.now()-cached.at<600000)return cached.value;
-  try{const value=await this.client().workTypes(this.settings.workspaceId);this.workTypesCache={key,at:Date.now(),value};return value;}
+ async workTypesSupported(space=this.settings.workspaceId){
+  const key=this.settings.origin+' '+space,cache=this.workTypesCache??=new Map(),cached=cache.get(key);
+  if(cached&&Date.now()-cached.at<600000)return cached.value;
+  try{const value=await this.client().workTypes(space);cache.set(key,{at:Date.now(),value});return value;}
   catch{return false;}
  }
  /** Rewrite the open long article as a note: a new private note draft, linked to the article, opened for writing. */
@@ -941,9 +1024,11 @@ export default class RssdPlugin extends Plugin{
   try{
    const result=await this.operations.run('rewrite-as-note',async()=>{
     if(Platform.isMobile)throw Error('RSSD is read-only on mobile');
-    const space=this.settings.workspaceId,info=spaceInfo(await this.client().registry(),space);
+    const at=this.locate(file.path);if(!at)throw Error('This note is not in a space of this vault');
+    const space=at.space,info=spaceInfo(await this.client().registry(),space);
     if(!info.writable)throw Object.assign(Error(info.migrationState==='staged'?'New works cannot be made while this space is migrating.':readOnlyReason(info,space)),{code:'migration_staged'});
-    return this.engine().rewriteAsNote(space,file.path);
+    const made=await this.engine(space).rewriteAsNote(space,at.rel);
+    return {...made,path:made.path&&this.spacePath(space,made.path)};
    });
    new Notice('Created the note draft '+result.articleId+' from this article. It is a private draft, not published; finish it and save as usual.',10000);
    const created=this.app.vault.getAbstractFileByPath(result.path);if(created instanceof TFile)await this.openWorkFile(created);
@@ -972,7 +1057,7 @@ export default class RssdPlugin extends Plugin{
  }
  async save(file){
   try{
-   const result=await this.operations.run('save',async()=>this.saveWork(this.settings.workspaceId,file.path));
+   const result=await this.operations.run('save',async()=>this.saveWork(this.spaceOf(file),file.path));
    this.autoSync?.unblock(file.path);
    new Notice(result.state==='unchanged'?'Nothing to save':result.stagedRevision?'Saved as a private migration draft (revision '+result.stagedRevision+'). It is not published.':'Saved as a private draft (revision '+result.revision+'). It is not published.');
    if(result.metadataWarning)new Notice('The draft was saved, but its local version label could not be refreshed: '+result.metadataWarning,10000);
@@ -987,23 +1072,27 @@ export default class RssdPlugin extends Plugin{
   const outcome={saved:[],unchanged:[],failed:[]};
   try{
    await this.operations.run('save',async()=>{
+    const stopped=new Set();
     for(const [index,file] of files.entries()){
      onProgress(index+1,files.length);
+     if(stopped.has(this.spaceOf(file)))continue;
      try{
-      const result=await this.saveWork(this.settings.workspaceId,file.path);this.autoSync?.unblock(file.path);
+      const result=await this.saveWork(this.spaceOf(file),file.path);this.autoSync?.unblock(file.path);
       (result?.state==='unchanged'?outcome.unchanged:outcome.saved).push(file);
      }catch(error){
       console.error('RSSD save failed',file.path,error?.status,error?.code,error?.message);outcome.failed.push({file,error});
       // Show it the way automatic sync does, so the list marks it as needing attention.
       if(error?.conflict||error?.status===409)this.autoSync?.blocked?.add(file.path);
-      if(['forbidden','migration_staged','network_error'].includes(error?.code))break;
+      // A lost connection stops the batch; a space that refuses saves stops only that space's works.
+      if(error?.code==='network_error')break;
+      if(['forbidden','migration_staged'].includes(error?.code))stopped.add(this.spaceOf(file));
      }
     }
    });
   }catch(error){new Notice(error?.code==='operation_busy'?error.message:saveFailureMessage(error),10000);return null;}
   new Notice(saveManySummary(outcome),outcome.failed.length?15000:6000);
   // A receipt beside the plugin, so a refused save can be diagnosed without the developer console.
-  await this.writeRun({action:'save',workspaceId:this.settings.workspaceId,state:outcome.failed.length?'partial':'completed',ok:!outcome.failed.length,
+  await this.writeRun({action:'save',workspaceId:this.multiSpace()?'':this.settings.workspaceId,state:outcome.failed.length?'partial':'completed',ok:!outcome.failed.length,
    saved:outcome.saved.length,unchanged:outcome.unchanged.length,failed:outcome.failed.map(({file,error})=>({path:file.path,...diagnosticError(error)}))});
   return outcome;
  }
@@ -1017,12 +1106,12 @@ export default class RssdPlugin extends Plugin{
    const adapter=this.app.vault.adapter;content??=await this.app.vault.read(file);
    // The site's own style is its section's theme signed with the site's name marks; a numbered general theme
    // carries no site marks, only the section's colours and fonts.
-   const space=this.settings.workspaceId,own=style==='site',theme=own?this.sectionTheme(file):Object.prototype.hasOwnProperty.call(ARTICLE_THEMES,style)?style:null,site=own?wechatSite(space):null;
+   const space=this.spaceOf(file),own=style==='site',theme=own?this.sectionTheme(file):Object.prototype.hasOwnProperty.call(ARTICLE_THEMES,style)?style:null,site=own?wechatSite(space):null;
    return await wechatHtml({doc:document,content,parseYaml,template:source=>wechatTemplate(space,source.sectionId),
     decorate:(html,{look,source})=>decorateWechat(document,html,{site,look,category:source.category,theme,locale:source.work.data.locale,section:source.sectionId,title:source.title,icons:name=>getIcon(name)?.outerHTML||null}),
     pack:{site:wechatSite(space)||{id:space||'unknown',name:''},style:own?'site:'+theme:style,engineVersion:this.manifest?.version||'0',...this.noteVersions(file)},
     render:(markdown,el)=>this.renderOutput(markdown,el,file,component),
-    readMedia:async name=>{const path=MEDIA_FOLDER+'/'+name;return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;}});
+    readMedia:async name=>{const path=this.spacePath(space,MEDIA_FOLDER+'/'+name);return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;}});
   }finally{component.unload();}
  }
  /**
@@ -1048,20 +1137,20 @@ export default class RssdPlugin extends Plugin{
  /** Whether Article and Cards should be shown on black with white text. */
  nightPreview(){const choice=this.previewAppearance();return choice==='dark'||choice!=='light'&&document.body.classList.contains('theme-dark');}
  /** The accent colour of a work's section, from its website template. */
- sectionAccent(file){return this.sectionAccentOf(file?this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']:'');}
- sectionAccentOf(section){
-  const accent=wechatTemplate(this.settings.workspaceId,String(section||''))?.accent;
+ sectionAccent(file){return this.sectionAccentOf(file?this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']:'',this.spaceOf(file));}
+ sectionAccentOf(section,space=this.settings.workspaceId){
+  const accent=wechatTemplate(space,String(section||''))?.accent;
   return /^#[0-9a-fA-F]{6}$/.test(accent||'')?accent:null;
  }
  /** The site's name for its own style tab. */
- siteName(){return wechatSite(this.settings.workspaceId)?.name||'Site';}
+ siteName(space=this.settings.workspaceId){return wechatSite(space)?.name||'Site';}
  /**
   * The structure the site's own article style uses for a work: the theme that matches the layout the website
   * gives the work's section.
   */
  sectionTheme(file){
   const section=file?this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']:'';
-  return defaultArticleTheme(cardTemplate(this.settings.workspaceId,String(section||''))?.layout);
+  return defaultArticleTheme(cardTemplate(this.spaceOf(file),String(section||''))?.layout);
  }
  async copyForWechat(file,options={}){
   try{
@@ -1074,8 +1163,9 @@ export default class RssdPlugin extends Plugin{
  }
  // Optional local samples are paired to the source note by its vault-relative path.
  sampleCard(file,style){
-  if(!file||!Object.hasOwn(CARD_VARIANTS,style)||!file.path.startsWith(WORKS_FOLDER+'/'))return null;
-  const path='Card Samples/'+file.path.slice(WORKS_FOLDER.length+1,-3)+'/'+style+'.png';
+  const at=file&&this.locate(file.path);
+  if(!at||!Object.hasOwn(CARD_VARIANTS,style)||!at.rel.startsWith(WORKS_FOLDER+'/'))return null;
+  const path=this.spacePath(at.space,'Card Samples/'+at.rel.slice(WORKS_FOLDER.length+1,-3)+'/'+style+'.png');
   const found=this.app.vault.getAbstractFileByPath(path);return found instanceof TFile?found:null;
  }
  /** A work as picture cards (1080×1440 PNG). Reads the note and its images; changes nothing. */
@@ -1086,7 +1176,7 @@ export default class RssdPlugin extends Plugin{
   try{
    const adapter=this.app.vault.adapter;content??=await this.app.vault.read(file);
    const refusal=cardSetRefusal(this.workType(file,content));if(refusal)throw refusal;
-   const space=this.settings.workspaceId,site=wechatSite(space);
+   const space=this.spaceOf(file),site=wechatSite(space);
    if(style==='ai-code'||style==='ai-image'){
     const sample=this.sampleCard(file,style);
     if(!sample)throw Error('Local sample is missing.');
@@ -1108,29 +1198,30 @@ export default class RssdPlugin extends Plugin{
    return await buildCards({doc:document,content,parseYaml,signal,onProgress,style,cardTheme:'text',site,url:site?.origin||centerOrigin(this.settings.origin),
     template:source=>{const look=cardTemplate(space,source.sectionId);return dark?{...(look||{}),paper:'#000000',ink:'#ffffff',muted:'#ffffff',accent:'#ffffff'}:look;},engineVersion:this.manifest?.version||'0',...this.noteVersions(file),
     render:(markdown,el)=>this.renderOutput(markdown,el,file,component),
-    readMedia:async name=>{const path=MEDIA_FOLDER+'/'+name;return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;},
+    readMedia:async name=>{const path=this.spacePath(space,MEDIA_FOLDER+'/'+name);return await adapter.exists(path)?new Uint8Array(await adapter.readBinary(path)):null;},
     // The page engine measures in a document of its own, kept off screen.
     frame:()=>{const frame=document.createElement('iframe');frame.setAttribute('aria-hidden','true');frame.tabIndex=-1;frame.style.cssText='position:fixed;left:-10000px;top:0;width:720px;height:960px;border:0;visibility:hidden';document.body.append(frame);return frame;}});
   }finally{component.unload();}
  }
  /** Copies, as plain text, what an agent needs to write this column's AI card stylesheet. */
  async copyCardStyleBrief(file){
-  const space=this.settings.workspaceId,site=wechatSite(space),sectionId=String(this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']||'');
+  const space=this.spaceOf(file),site=wechatSite(space),sectionId=String(this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']||'');
   if(!sectionId){new Notice('This work has no column (rssd-section), so it has no card style.');return;}
   const section=(SITE_SECTIONS[site?.id]||[]).find(item=>item.id===sectionId);
   const brief=cardStyleBrief({siteName:site?.name||'',sectionId,sectionName:section?.name||'',look:cardTemplate(space,sectionId)||{}});
-  try{await navigator.clipboard.writeText(brief);new Notice('Copied the AI card style brief for '+(section?.name||sectionId)+'. Give it to the agent; it writes '+cardStylePath(sectionId)+'.',8000);}
+  try{await navigator.clipboard.writeText(brief);new Notice('Copied the AI card style brief for '+(section?.name||sectionId)+'. Give it to the agent; it writes '+this.spacePath(space,cardStylePath(sectionId))+'.',8000);}
   catch(error){new Notice('Could not copy the brief: '+error.message,8000);}
  }
  /** The column's AI card stylesheet file (card-styles/<section>.css), or null when the column has none. */
  cardStyleFile(file){
   const section=file?String(this.app.metadataCache.getFileCache(file)?.frontmatter?.['rssd-section']||''):'';
   if(!/^[a-z0-9][a-z0-9-]{0,63}$/.test(section))return null;
-  const found=this.app.vault.getAbstractFileByPath(cardStylePath(section));return found instanceof TFile?found:null;
+  const space=this.spaceOf(file);if(!space)return null;
+  const found=this.app.vault.getAbstractFileByPath(this.spacePath(space,cardStylePath(section)));return found instanceof TFile?found:null;
  }
  /** Reads and checks a column's AI card stylesheet. Throws, naming the file, when it is missing or not allowed. */
- async cardStylesheet(sectionId){
-  const path=cardStylePath(sectionId),found=this.app.vault.getAbstractFileByPath(path);
+ async cardStylesheet(sectionId,space=this.settings.workspaceId){
+  const path=this.spacePath(space,cardStylePath(sectionId)),found=this.app.vault.getAbstractFileByPath(path);
   if(!(found instanceof TFile))throw Error('This column has no AI card style yet: add '+path);
   try{return checkCardStylesheet(await this.app.vault.read(found)).css;}
   catch(error){throw Error(path+' cannot be used: '+error.message);}
@@ -1142,8 +1233,10 @@ export default class RssdPlugin extends Plugin{
    if(this.nightPreview()&&result?.manifest.style==='site')result=null;
    result??=await this.cardsResult(file,undefined,{night:false});
    // Each language edition keeps its own set, made from its own revision: English cards never replace Chinese ones.
-   const locale=result.manifest.locale==='en'?'en':'zh-CN',folder=normalizePath(cardExportFolder(file.basename,locale));
-   for(const part of ['Exports','Exports/cards',...(locale==='en'?['Exports/cards/en']:[]),folder])if(!await adapter.exists(part))await adapter.mkdir(part);
+   // Each space keeps its exports in its own folder.
+   const space=this.spaceOf(file),inside=rel=>normalizePath(this.spacePath(space,rel));
+   const locale=result.manifest.locale==='en'?'en':'zh-CN',folder=inside(cardExportFolder(file.basename,locale));
+   for(const part of [...(this.multiSpace()?[this.layout().root(space)]:[]),inside('Exports'),inside('Exports/cards'),...(locale==='en'?[inside('Exports/cards/en')]:[]),folder])if(!await adapter.exists(part))await adapter.mkdir(part);
    // A shorter set must not leave pages of an earlier, longer one behind.
    const keep=new Set(result.pages.map(page=>page.name));
    for(const path of (await adapter.list(folder)).files){const name=path.split('/').at(-1);if(/^\d+\.png$/.test(name)&&!keep.has(name))await adapter.remove(path);}
@@ -1163,7 +1256,7 @@ export default class RssdPlugin extends Plugin{
   */
  async tidySidebar(){
   const version=this.settings.layoutVersion||0;
-  if(version>=9||!this.settings.workspaceId||Platform.isMobile)return false;
+  if(version>=9||!this.syncSpaces().length||Platform.isMobile)return false;
   const workspace=this.app.workspace,notes=workspace.getLeavesOfType('markdown');
   for(const type of ['rssd-preview','rssd-wechat'])for(const leaf of workspace.getLeavesOfType(type))leaf.detach();
   for(const type of EDITOR_VIEWS)for(const leaf of workspace.getLeavesOfType(type)){
@@ -1330,7 +1423,7 @@ export default class RssdPlugin extends Plugin{
 
  async refreshStates(){
   try{
-   const states=await this.operations.run('status',()=>this.statesAll(this.settings.workspaceId)),counts={};
+   const states=await this.operations.run('status',()=>this.statesAll()),counts={};
    for(const state of Object.values(states))counts[state]=(counts[state]||0)+1;
    new Notice(Object.entries(counts).map(([state,n])=>n+' '+(STATE_LABELS[state]||state)).join(' · ')||'No works');
   }catch(error){new Notice('Check failed: '+error.message);}
@@ -1339,6 +1432,20 @@ export default class RssdPlugin extends Plugin{
 
 class RssdSettings extends PluginSettingTab{
  constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
+ /** A vault of several spaces: every space this device is approved for, each with its folder and whether it syncs. */
+ spaceRows(containerEl){
+  const plugin=this.plugin,s=plugin.settings,spaces=s.spaces||[];
+  new Setting(containerEl).setName('Spaces').setHeading().setDesc(spaces.length?'This vault keeps each space in a folder of its own. Untick a space to stop updating and saving it; its folder stays. Which spaces are listed is decided by the Center: they are the ones this device or token is approved for.':'Log in to see the spaces this device is approved for.');
+  for(const space of spaces){
+   const folder=s.spaceFolders?.[space]||'',site=wechatSite(space);
+   new Setting(containerEl).setName((site?.name||space)+' · '+space).setDesc(folder?'Folder: '+folder+'/':'Not in this vault yet')
+    .addToggle(t=>t.setValue(!!folder&&s.syncSpaces?.[space]!==false).onChange(async on=>{
+     if(plugin.operations.active){t.setValue(!on);new Notice('RSSD is busy; try again when it finishes.');return;}
+     (s.syncSpaces??={})[space]=on;plugin.assignSpaceFolders([space]);await plugin.saveSettings();plugin.setStatus(plugin.idleStatus());
+     for(const leaf of plugin.app.workspace.getLeavesOfType('rssd-works'))leaf.view?.render?.();
+    }));
+  }
+ }
  display(){
   const {containerEl}=this,s=this.plugin.settings;containerEl.empty();
   new Setting(containerEl).setName('Center address').setDesc('The HTTPS address of your RSSD Center.')
@@ -1348,7 +1455,9 @@ class RssdSettings extends PluginSettingTab{
   new Setting(containerEl).setName('Device name').setDesc('Shown in the Center when you approve this device.')
    .addText(t=>t.setValue(s.deviceName).onChange(async v=>{s.deviceName=v.trim();await this.plugin.saveSettings();}));
   // A pool vault has no sync space: choosing one here would turn it into a works vault with topics in it.
-  if(!poolSettingRows(containerEl,this.plugin,Setting))new Setting(containerEl).setName('Sync space').setDesc(s.boundSpace?'This vault is bound to '+s.boundSpace+'. Use a separate vault for another space.':'Only for editing: choosing a space downloads its works into this vault and syncs edits as private drafts. Reading online needs no space here.')
+  if(poolSettingRows(containerEl,this.plugin,Setting)){/* a topic pool has no works */}
+  else if(this.plugin.multiSpace())this.spaceRows(containerEl);
+  else new Setting(containerEl).setName('Sync space').setDesc(s.boundSpace?'This vault is bound to '+s.boundSpace+'. Use a separate vault for another space.':'Only for editing: choosing a space downloads its works into this vault and syncs edits as private drafts. Reading online needs no space here.')
    .addDropdown(t=>{t.addOption('','Choose a space');for(const id of new Set([s.workspaceId,...(s.spaces||[])].filter(Boolean)))t.addOption(id,id);t.setValue(s.workspaceId).setDisabled(!!s.boundSpace).onChange(async v=>{if(this.plugin.operations.active||s.boundSpace)return;s.workspaceId=v;await this.plugin.saveSettings();});});
   new Setting(containerEl).setName('Log in').setDesc(this.plugin.token()?'This device is logged in'+(s.tokenSecret?' with the Keychain secret '+s.tokenSecret:'')+'.':'Approve this device in your browser.')
    .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
@@ -1367,7 +1476,7 @@ class RssdSettings extends PluginSettingTab{
   new Setting(containerEl).setName('Plugin updates').setDesc(BUILD_VERSION?'Install new signed RSSD releases from the Center automatically. This vault runs RSSD '+BUILD_VERSION+'.':'This is a development build ('+this.plugin.manifest.version+'). It installs a signed release only when you check.')
    .addToggle(t=>t.setValue(s.pluginUpdates!==false).onChange(async v=>{s.pluginUpdates=v;await this.plugin.saveSettings();}))
    .addButton(b=>b.setButtonText('Check now').onClick(()=>this.plugin.checkPluginUpdate({manual:true})));
-  new Setting(containerEl).setName('Update works').setDesc('Download new and changed works into '+WORKS_FOLDER+'/ (images go to '+MEDIA_FOLDER+'/). Notes with local changes are never overwritten.')
+  new Setting(containerEl).setName('Update works').setDesc(this.plugin.multiSpace()?'Download new and changed works of every space ticked above into its folder. Notes with local changes are never overwritten.':'Download new and changed works into '+WORKS_FOLDER+'/ (images go to '+MEDIA_FOLDER+'/). Notes with local changes are never overwritten.')
    .addButton(b=>b.setButtonText('Update').onClick(()=>this.plugin.pull()));
  }
 }
@@ -1420,7 +1529,10 @@ class WorksFilterPanel{
   if(c.locale.en)segments(group('Language'),'locale',[['zh-CN','中文',c.locale['zh-CN']],['en','English',c.locale.en]],f.locale,id=>set({...view.filterState,locale:id}));
   options(group('卡片版本'),'cardVariants',Object.entries(CARD_VARIANTS).map(([value,name])=>({value,name,count:c.cardVariants.get(value)||0})));
   // Sections in the site's order, then any the site does not name.
-  const sectionIds=[...new Set([...names.keys(),...c.sections.keys(),...f.sections])];
+  // A vault of several spaces can be narrowed to some of them; with one space there is nothing to choose.
+  const spaceIds=[...new Set([...c.spaces.keys(),...f.spaces])].filter(Boolean);
+  if(spaceIds.length>1||f.spaces.length)options(group('Space'),'spaces',spaceIds.map(id=>({value:id,name:view.spaceName(id),count:c.spaces.get(id)||0})));
+  const sectionIds=[...new Set([...names.keys(),...c.sections.keys(),...f.sections])].filter(id=>!f.spaces.length||!names.get(id)?.space||f.spaces.includes(names.get(id).space));
   options(group('Section'),'sections',sectionIds.map(id=>({value:id,name:names.get(id)?.name||id||'No section',count:c.sections.get(id)||0})));
   // Agents and models, most works first; works whose writer is not recorded last.
   for(const [facet,title] of [['agents','Agent'],['models','Model'],['machines','Machine']]){
@@ -1502,9 +1614,11 @@ class WorksView extends ItemView{
   for(const file of this.app.vault.getMarkdownFiles()){
    if(!this.plugin.isWork(file))continue;
    const p=this.app.metadataCache.getFileCache(file)?.frontmatter;if(!p?.['rssd-id'])continue;
-   items.push({file,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
+   // In a vault of several spaces a section is named with its space, since two sites can use the same section ID.
+   const space=this.plugin.spaceOf(file),sectionId=String(p['rssd-section']||'');
+   items.push({file,space,sectionId,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
     cardVariants:Object.keys(CARD_VARIANTS).filter(id=>this.plugin.sampleCard(file,id)),
-    section:String(p['rssd-section']||''),type:this.plugin.workType(file),author:String(p.author??''),category:String(p.category??''),
+    section:this.plugin.multiSpace()?space+'/'+sectionId:sectionId,type:this.plugin.workType(file),author:String(p.author??''),category:String(p.category??''),
     version:p['rssd-version'],publishedVersion:p['rssd-published-version'],
     media:(this.app.metadataCache.getFileCache(file)?.embeds||[]).map(embed=>mediaName(embed.link)).filter(Boolean)});
   }
@@ -1516,7 +1630,7 @@ class WorksView extends ItemView{
   if(cached?.key===key)return cached.state;
   let state='synced';
   try{
-   const base=baselineBucket(this.plugin.settings,this.plugin.settings.workspaceId,work.locale)?.[work.id];
+   const base=baselineBucket(this.plugin.settings,work.space,work.locale)?.[work.id];
    if(this.plugin.autoSync?.blocked?.has(file.path))state='conflict';
    else if(!base)state='unlinked';
    else if(base.pending)state='saving';
@@ -1532,22 +1646,23 @@ class WorksView extends ItemView{
  async measure(work){
   const file=work.file,key=file.path+':'+file.stat.mtime;
   if(this.facts.get(file.path)?.key===key)return false;
-  let facts=null;try{facts=noteFacts(await this.app.vault.cachedRead(file),{origin:wechatSite(this.plugin.settings.workspaceId)?.origin});}catch{}
+  let facts=null;try{facts=noteFacts(await this.app.vault.cachedRead(file),{origin:wechatSite(work.space)?.origin});}catch{}
   this.facts.set(file.path,{key,...facts});return true;
  }
  /** For each edition, whether the Center has the same work in the other language; known after an Update. */
  editionIndex(){
-  const documents=this.plugin.settings.documents?.[this.plugin.settings.workspaceId];if(!documents)return null;
-  const present=Object.fromEntries(Object.entries(documents).map(([locale,ids])=>[locale,new Set(Object.values(ids||{}))]));
-  return {document:work=>documents[work.locale]?.[work.id],has:(locale,document)=>!!document&&!!present[locale]?.has(document)};
+  const all=this.plugin.settings.documents||{},present=new Map();
+  if(!Object.keys(all).length)return null;
+  const of=space=>{if(!present.has(space)){const documents=all[space]||{};present.set(space,Object.fromEntries(Object.entries(documents).map(([locale,ids])=>[locale,new Set(Object.values(ids||{}))])));}return present.get(space);};
+  return {document:work=>all[work.space]?.[work.locale]?.[work.id],has:(locale,document,work)=>!!document&&!!of(work.space)[locale]?.has(document)};
  }
- writerKey(work){return this.plugin.settings.workspaceId+':'+work.locale+':'+work.id+':'+work.version;}
+ writerKey(work){return work.space+':'+work.locale+':'+work.id+':'+work.version;}
  /** The writer as {agent, model, machine}, null when the Center has no record, undefined while not yet read. */
  writerFor(work){const key=this.writerKey(work);return Object.hasOwn(this.writers,key)?this.writers[key]:undefined;}
  /** Read who wrote each work from the Center's private writing record, one work at a time, the ones on screen
   * first. Read only; a lost connection stops the pass and the next drawing resumes it. */
  async fillWriters(works){
-  if(this.fetchingWriters||this.layout!=='cards'||!this.plugin.settings.workspaceId)return;
+  if(this.fetchingWriters||this.layout!=='cards'||!this.plugin.syncSpaces().length)return;
   let client;try{client=this.plugin.client();}catch{return;}
   if(typeof client.privateNotes!=='function')return;
   this.fetchingWriters=true;let added=0,stopped=false;
@@ -1557,7 +1672,7 @@ class WorksView extends ItemView{
   const read=async work=>{
    let writer=null;
    this.machineAsked.add(this.writerKey(work));
-   try{const notes=await client.privateNotes(this.plugin.settings.workspaceId,work.id,Number(work.version)),found=writerOf(notes?.privateEditorial),machine=typeof notes?.firstMachine?.name==='string'?notes.firstMachine.name:'';
+   try{const notes=await client.privateNotes(work.space,work.id,Number(work.version)),found=writerOf(notes?.privateEditorial),machine=typeof notes?.firstMachine?.name==='string'?notes.firstMachine.name:'';
     // The open checks themselves, so the card can show them on hover.
     const checks=hasOpenChecks(notes?.privateEditorial)?String(notes.privateEditorial.internalNotes.verification).trim().slice(0,600):'';
     writer=found||machine||checks?{agent:found?.agent||'',model:found?.model||'',machine,checks}:null;}
@@ -1573,10 +1688,16 @@ class WorksView extends ItemView{
   if(added&&(this.filterState.agents.length||this.filterState.models.length||this.filterState.machines.length||this.panel))this.render();
  }
  saveWriters(){try{this.app.saveLocalStorage?.(WRITERS_KEY,this.writers);}catch{}}
+ /** Section names by the key works carry: the section ID, or space/section in a vault of several spaces. */
  sectionNames(){
-  const site=wechatSite(this.plugin.settings.workspaceId);
-  return new Map((SITE_SECTIONS[site?.id]||[]).map((section,index)=>[section.id,{name:section.name,order:index}]));
+  const plugin=this.plugin,multi=plugin.multiSpace(),names=new Map();
+  for(const space of multi?plugin.syncSpaces():[plugin.settings.workspaceId]){
+   const site=wechatSite(space);
+   for(const [index,section] of (SITE_SECTIONS[site?.id]||[]).entries())names.set(multi?space+'/'+section.id:section.id,{name:section.name,order:index,space,id:section.id});
+  }
+  return names;
  }
+ spaceName(space){return wechatSite(space)?.name||space||'';}
  render(){
   if(!this.list)return;
   try{this.draw();}catch(error){console.error('RSSD works',error);this.list.empty();this.list.createDiv({cls:'rssd-works-empty',text:'Could not list the works: '+(error?.message||error)});}
@@ -1592,7 +1713,8 @@ class WorksView extends ItemView{
   this.contentEl.toggleClass('is-english',f.locale==='en');this.pairs=this.editionIndex();
   this.markFilter();this.panel?.draw();
   this.list.empty();this.list.toggleClass('is-cards',this.layout==='cards');this.shown.clear();
-  if(!shown.length)this.list.createDiv({cls:'rssd-works-empty',text:inLanguage.length?'No works match.':'No works yet. Use Update to get them from the Center.'});
+  const none=this.plugin.multiSpace()&&!this.plugin.syncSpaces().length?'No spaces in this vault yet. Tick the spaces to keep under Settings → RSSD.':'No works yet. Use Update to get them from the Center.';
+  if(!shown.length)this.list.createDiv({cls:'rssd-works-empty',text:inLanguage.length?'No works match.':none});
   for(const work of shown.slice(0,this.limit))this.item(this.list,work);
   if(shown.length>this.limit){const rest=shown.length-this.limit,more=this.list.createDiv({cls:'rssd-works-more',text:'Show '+Math.min(WORKS_PAGE,rest)+' more of '+rest});more.addEventListener('click',()=>{this.limit+=WORKS_PAGE;this.render();});}
   // Save takes the edited works of the language on screen, whatever else is filtered.
@@ -1617,7 +1739,7 @@ class WorksView extends ItemView{
   this.filterButton.toggleClass('is-active',n>0);this.filterBadge.setText(n?String(n):'');this.filterBadge.toggle(n>0);
   this.filterButton.setAttribute('aria-label',n?'Filter: '+(this.counts?.dates??'')+' works listed':'Filter the works');
   this.active.empty();
-  const chips=activeChips(f,{sectionName:id=>this.sectionName(id)});
+  const chips=activeChips(f,{sectionName:id=>this.sectionName(id),spaceName:id=>this.spaceName(id)});
   for(const chip of chips){
    const tag=this.active.createEl('button',{cls:'rssd-works-tag'});tag.createSpan({text:chip.text});setIcon(tag.createSpan({cls:'rssd-works-tag-x'}),'x');
    tag.setAttribute('aria-label','Remove this filter');tag.addEventListener('click',()=>this.setFilter(withoutChip(this.filterState,chip)));
@@ -1638,7 +1760,7 @@ class WorksView extends ItemView{
   const body=card.createDiv({cls:'rssd-works-card-body'});
   // The section's label leads the title, in the section's colour.
   const title=body.createDiv({cls:'rssd-works-card-title'}),sectionName=this.sectionName(work.section);
-  if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
+  if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.sectionId,work.space);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
   // Long articles are the usual work; a note says so after its section.
   if(work.type==='note')title.createSpan({cls:'rssd-works-type',text:'笔记',attr:{'aria-label':'Note'}});
   title.appendText(work.title);
@@ -1654,7 +1776,7 @@ class WorksView extends ItemView{
   if(references!=null)fact('quote',String(references),references?references+(references===1?' reference':' references'):'No references',{missing:!references});
   if(facts?.brand!=null)fact(facts.brand?'badge-check':'badge','Brand',facts.brand?'The site\'s brand line is mounted':'No brand line',{absent:!facts.brand});
   const other=work.locale==='en'?'zh-CN':'en',doc=this.pairs?.document(work);
-  if(doc){const has=this.pairs.has(other,doc),name=other==='en'?'English':'Chinese';fact('languages',other==='en'?'EN':'中',(has?'Has a ':'No ')+name+' edition',{absent:!has});}
+  if(doc){const has=this.pairs.has(other,doc,work),name=other==='en'?'English':'Chinese';fact('languages',other==='en'?'EN':'中',(has?'Has a ':'No ')+name+' edition',{absent:!has});}
   const writer=this.writerFor(work),label=writerLabel(writer);
   if(writer!==undefined){
    const line=card.createDiv({cls:'rssd-works-writer'+(label?'':' is-missing')});setIcon(line.createSpan({cls:'rssd-works-fact-icon'}),'bot');line.createSpan({text:label||'Writer not recorded'});line.setAttribute('aria-label',label?'Written by '+label:'The Center has no record of the agent that wrote this');
@@ -1678,7 +1800,7 @@ class WorksView extends ItemView{
   const dot=row.createSpan({cls:'rssd-works-dot'+(state?' is-'+state:'')});if(state)dot.setAttribute('aria-label',WORK_STATES[state]);
   row.createSpan({cls:'rssd-works-date',text:work.date.slice(5)});
   const sectionName=this.sectionName(work.section);
-  if(sectionName){const tag=row.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);}
+  if(sectionName){const tag=row.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.sectionId,work.space);if(accent)tag.style.setProperty('--rssd-section',accent);}
   if(work.type==='note')row.createSpan({cls:'rssd-works-type',text:'笔记',attr:{'aria-label':'Note'}});
   row.createSpan({cls:'rssd-works-title',text:work.title});
   row.setAttribute('aria-label',[work.title,work.date,WORK_STATES[state]].filter(Boolean).join(' · '));
@@ -1743,8 +1865,10 @@ class WorksView extends ItemView{
   if(!compact)body.createSpan({cls:'rssd-works-pulled'+(fresh?' is-fresh':''),text:updated});
   // The bar slides while updating and fills while saving.
   const saving=this.saving,share=saving?.total?saving.done/saving.total:0;
-  bar.toggleClass('is-active',!!(this.updating||saving));bar.toggleClass('is-sliding',!!this.updating&&!saving);
-  bar.style.width=saving?Math.max(4,share*100)+'%':this.updating?'':'0';
+  // Across several spaces the bar fills by space; otherwise it slides.
+  const pulling=this.plugin.pullProgress,spaceShare=pulling?.count>1?(pulling.index+0.5)/pulling.count:0;
+  bar.toggleClass('is-active',!!(this.updating||pulling||saving));bar.toggleClass('is-sliding',!!(this.updating||pulling)&&!saving&&!spaceShare);
+  bar.style.width=saving?Math.max(4,share*100)+'%':spaceShare?Math.max(4,spaceShare*100)+'%':this.updating||pulling?'':'0';
   const button=(cls,icon,text,state,badge='')=>{
    if(compact){
     const b=body.createEl('button',{cls:'clickable-icon rssd-works-headbutton '+cls+(state?' is-'+state:'')});setIcon(b,icon);
@@ -1755,9 +1879,11 @@ class WorksView extends ItemView{
   const flash=target=>this.flash?.target===target?this.flash:null,mark=kind=>kind==='done'?'check':'x';
   // Two directions, always both shown: Update brings the Center's versions down, Save sends edits up as
   // private drafts. Save is greyed out while there is nothing to save, and on mobile, which is read-only.
-  const done=flash('update'),update=this.updating?button('','loader-2','Updating…','busy'):done?button('',mark(done.kind),done.text,done.kind):button('','refresh-cw','Update');
-  update.setAttribute('aria-label',compact?(this.updating?'Updating…':done?done.text:'Update: get the latest versions from the Center. '+updated):'Get the latest versions from the Center');
-  update.disabled=!!saving||!!this.updating;
+  // While updating, the button says which space and how many works so far; notes appear in the list as they arrive.
+  const p=this.plugin.pullProgress,going=p?(p.space&&p.count>1?this.spaceName(p.space)+' '+(p.index+1)+'/'+p.count+' · ':'')+(p.checked||0)+' works':'';
+  const done=flash('update'),update=this.updating||p?button('','loader-2',going?'Updating '+going:'Updating…','busy'):done?button('',mark(done.kind),done.text,done.kind):button('','refresh-cw','Update');
+  update.setAttribute('aria-label',compact?(this.updating||p?'Updating…'+(going?' '+going:''):done?done.text:'Update: get the latest versions from the Center. '+updated):'Get the latest versions from the Center');
+  update.disabled=!!saving||!!this.updating||!!this.plugin.pullProgress;
   update.addEventListener('click',async()=>{
    this.updating=true;this.renderFoot();let outcome='failed';
    try{outcome=await this.plugin.pull()||'done';}
@@ -2271,14 +2397,15 @@ class WorkDetails{
   };
   if(type==='note'&&work.data.adaptedFrom){
    const source=work.data.adaptedFrom,row=box.createDiv({cls:'rssd-details-row'});row.createSpan({cls:'rssd-details-key',text:'Rewritten from'});
-   let target=null;try{target=this.app.vault.getAbstractFileByPath(notePath(source.articleId,'zh-CN'));}catch{}
+   let target=null;try{target=this.app.vault.getAbstractFileByPath(this.plugin.spacePath(this.plugin.spaceOf(file),notePath(source.articleId,'zh-CN')));}catch{}
    const value=row.createSpan({cls:'rssd-details-value'});linkTo(value,target,target instanceof TFile?this.plugin.workLabel(target):source.articleId);value.appendText(' · revision '+source.revision);
    const now=target instanceof TFile?Number(this.app.metadataCache.getFileCache(target)?.frontmatter?.['rssd-version']):NaN;
    if(Number.isSafeInteger(now)&&now>source.revision)box.createDiv({cls:'rssd-details-note',text:'The article has a newer revision ('+now+') than the one this note was written from.'});
   }
   let rewrite=null;
   if(type==='article'&&work.data.locale==='zh-CN'){
-   const notes=this.app.vault.getMarkdownFiles().filter(other=>other.path.startsWith(WORKS_FOLDER+'/')&&!other.path.startsWith(WORKS_FOLDER+'/en/')&&other.path!==file.path).filter(other=>{
+   const space=this.plugin.spaceOf(file);
+   const notes=this.app.vault.getMarkdownFiles().filter(other=>{const at=this.plugin.locate(other.path);return at?.space===space&&at.rel.startsWith(WORKS_FOLDER+'/')&&!at.rel.startsWith(WORKS_FOLDER+'/en/')&&other.path!==file.path;}).filter(other=>{
     const front=this.app.metadataCache.getFileCache(other)?.frontmatter;return front?.[WORK_FIELDS.adaptedFrom]!=null&&sourceId(front[WORK_FIELDS.adaptedFrom])===work.data.id;});
    if(notes.length){const row=box.createDiv({cls:'rssd-details-row'});row.createSpan({cls:'rssd-details-key',text:'Notes from it'});const value=row.createSpan({cls:'rssd-details-value'});notes.forEach((note,index)=>{if(index)value.appendText(', ');linkTo(value,note,this.plugin.workLabel(note));});}
    if(policy?.workTypes.includes('note')){
@@ -2287,16 +2414,17 @@ class WorkDetails{
    }
   }
   draw(false,true);
-  this.plugin.workTypesSupported().then(capable=>{if(seq===this.seq)draw(capable);});
+  this.plugin.workTypesSupported(this.plugin.spaceOf(file)).then(capable=>{if(seq===this.seq)draw(capable);});
  }
  /** Whether the note matches its last sync. Read locally; nothing is sent to the Center. */
  async syncState(file,work){
   if(!work)return 'This note is not linked to a Center work.';
   try{
-   const engine=this.plugin.engine(),space=this.plugin.settings.workspaceId,base=await engine.store.get(space,work.data.id,work.data.locale);
+   const at=this.plugin.locate(file.path);if(!at)return 'This note is not in a space of this vault.';
+   const space=at.space,engine=this.plugin.engine(space),base=await engine.store.get(space,work.data.id,work.data.locale);
    if(!base)return 'Not updated from the Center yet.';
    if(base.pending)return 'Saving to the Center…';
-   return await engine.hasLocalChanges(space,file.path)?'Edited since the last sync; saved as a private draft automatically.':'Unchanged since the last sync.';
+   return await engine.hasLocalChanges(space,at.rel)?'Edited since the last sync; saved as a private draft automatically.':'Unchanged since the last sync.';
   }catch(error){return 'Sync state unavailable: '+error.message;}
  }
 }

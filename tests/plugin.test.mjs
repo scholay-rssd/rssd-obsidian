@@ -363,3 +363,56 @@ test('a vault with no space takes the only space a Keychain token has',async()=>
  const p=keychainPlugin({'pets-token':'rssd_device_'+'d'.repeat(48)});p.settings.workspaceId='';
  await p.useKeychainToken('pets-token');assert.equal(p.settings.workspaceId,'pets');
 });
+
+// A vault of several spaces: each space in its own folder, every space updated in turn.
+function spacesPlugin(){
+ const p=plugin();p.settings={...p.settings,workspaceId:'',layout:'spaces',spaces:['pets','legis','study'],spaceFolders:{pets:'pet.piggytuck.com',legis:'legis.wiki'},syncSpaces:{},pathRecordsBySpace:{}};
+ p.setStatus=()=>{};p.idleStatus=()=>'';return p;
+}
+test('a vault of several spaces syncs the ticked spaces that have a folder, and maps paths to them',()=>{
+ const p=spacesPlugin();
+ assert.deepEqual(p.syncSpaces(),['pets','legis'],'study has no folder yet');
+ p.settings.syncSpaces.legis=false;assert.deepEqual(p.syncSpaces(),['pets']);
+ assert.deepEqual(p.locate('legis.wiki/Works/en/a.md'),{space:'legis',rel:'Works/en/a.md'});
+ assert.equal(p.spaceOf('pet.piggytuck.com/Works/a.md'),'pets');assert.equal(p.spaceOf('Works/a.md'),'');
+ assert.equal(p.isWork({extension:'md',path:'pet.piggytuck.com/Works/a.md'}),true);
+ assert.equal(p.isWork({extension:'md',path:'pet.piggytuck.com/Notes/a.md'}),false);
+ assert.equal(p.isWork({extension:'md',path:'Works/a.md'}),false,'a root Works folder belongs to no space here');
+ assert.equal(p.spacePath('legis','article-media/x.png'),'legis.wiki/article-media/x.png');
+});
+test('a newly approved space gets a folder of its own, and folders never move',()=>{
+ const p=spacesPlugin();
+ assert.equal(p.assignSpaceFolders(['pets','study']),true);
+ assert.equal(p.settings.spaceFolders.pets,'pet.piggytuck.com');assert.ok(p.settings.spaceFolders.study);
+ assert.equal(p.assignSpaceFolders(['pets','study']),false);
+ const single=plugin();single.settings.layout='single';assert.equal(single.assignSpaceFolders(['pets']),false);
+});
+test('each space engine reads and writes inside its own folder',async()=>{
+ const p=spacesPlugin(),reads=[];
+ p.app.vault={adapter:{exists:async()=>true,read:async path=>{reads.push(path);return null;}}};
+ const engine=p.engine('legis');await engine.vault.read('Works/a.md');
+ assert.deepEqual(reads,['legis.wiki/Works/a.md']);
+ assert.throws(()=>p.engine('study'),/no folder/);
+ p.settings.pathRecordsBySpace.legis={x:{currentPath:'Works/x.md'}};assert.deepEqual(engine.pathRecords(),{x:{currentPath:'Works/x.md'}});
+});
+test('updating several spaces reports works by vault path, and a failing space does not stop the others',async()=>{
+ const p=spacesPlugin(),progress=[];
+ p.pullAll=async(space,{onProgress})=>{
+  if(space==='legis')throw Object.assign(Error('refused'),{code:'forbidden'});
+  onProgress({articleId:'a'});return {downloaded:['a','en/b'],updated:[],skipped:['c'],conflicts:[],pending:[],failed:[],metadataPending:[],unchanged:2,removedFromCenter:[]};
+ };
+ const summary=await p.pullSpaces({onProgress:value=>progress.push(value)});
+ assert.deepEqual(summary.downloaded,['pet.piggytuck.com/Works/a.md','pet.piggytuck.com/Works/en/b.md']);
+ assert.deepEqual(summary.skipped,['pet.piggytuck.com/Works/c.md']);
+ assert.deepEqual(summary.spaces,{pets:'done',legis:'failed'});
+ assert.equal(summary.failed[0].space,'legis');assert.equal(summary.unchanged,2);
+ assert.deepEqual(progress.filter(x=>x.articleId===undefined).map(x=>[x.space,x.index,x.count]),[['pets',0,2],['legis',1,2]]);
+});
+test('saving a note in a space folder hands its space engine the path inside the space',async()=>{
+ const p=spacesPlugin(),saved=[];
+ p.client=()=>({registry:async()=>({workspaces:[{id:'legis',writable:true,migrationState:'active'}]})});
+ const engine={noteFingerprint:async()=>null,save:async(space,path)=>{saved.push([space,path]);return {state:'saved',revision:2};}};
+ await p.saveWork('legis','legis.wiki/Works/a.md',engine);
+ assert.deepEqual(saved,[['legis','Works/a.md']]);
+ await assert.rejects(p.saveWork('','Works/a.md',engine),/not in a space/);
+});

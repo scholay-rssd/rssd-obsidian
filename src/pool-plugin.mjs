@@ -18,7 +18,7 @@ const REFUSALS={
 export const poolFailure=error=>(REFUSALS[error?.code]||'The topic pool could not do that')+': '+String(error?.message||error).slice(0,300);
 export const isPoolVault=settings=>settings?.mode==='pool';
 /** A works vault has a space; a pool vault has topics. Neither may be turned into the other in place. */
-export const canBecomePool=settings=>!settings?.boundSpace&&!settings?.workspaceId;
+export const canBecomePool=settings=>!settings?.boundSpace&&!settings?.workspaceId&&!Object.values(settings?.baselines||{}).some(bucket=>Object.keys(bucket||{}).length);
 export const canBecomeWorks=settings=>!Object.keys(settings?.pool?.entries||{}).length;
 
 /** Where each topic's note is and what it was last in step with, kept in the plugin settings. */

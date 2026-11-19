@@ -37,6 +37,14 @@ Commands: *Log in*, *Update works*, *Save this work*, *Check sync state of all w
 
 **Update** brings the Center's latest versions down into the vault, and **Save** sends edits up as private drafts. Internally an update is still a *pull*: the command id and the `pull` action for command links are unchanged, so existing hotkeys and links keep working.
 
+## Several spaces in one vault
+
+A new vault holds every space its login is approved for, each in a folder named after its site (for example `pet.piggytuck.com/`). Inside a space folder everything is laid out as in a vault of one space: `Works/`, `Works/en/`, `article-media/`, `.rssd/private-additions/`, `card-styles/`, `Card Samples/` and `Exports/cards/`. A part-time writer whose token is approved for one or two spaces sees only those. Settings → RSSD → **Spaces** lists the approved spaces; untick one to stop updating and saving it (its folder stays). Which spaces are approved is decided by the Center, not here.
+
+**Update** goes through the ticked spaces one after another. The Works list shows which space and how many works so far, and each note appears in the list as soon as it is written. A space that fails is reported and the rest still update. The Works list gets a **Space** filter when it holds more than one space, and each section label belongs to its space.
+
+A vault that already holds one space's works (or chose a sync space, or is a topic pool) keeps its layout, with `Works/` at the root. Logging in from the welcome window, for reading only, puts no space in the vault until one is ticked in Settings. See `docs/obsidian-center-vault.md` in RSSD for the plan: adopting existing single-space vaults and the topic pool come next.
+
 ## Topic pool
 
 A vault can instead show the topics waiting to be written, across every space the device is approved for. Use a separate, empty vault for it.
