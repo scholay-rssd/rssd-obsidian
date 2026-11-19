@@ -466,3 +466,12 @@ test('a revoked key is reported once, stops syncing, and a new key starts it aga
  response=who({workspaceIds:['pets']});await p.adoptToken('rssd_device_'+'j'.repeat(48));
  assert.equal(p.settings.keyRevoked,false);assert.ok(p.client());
 });
+test('a Center vault reads each site\'s newest publications after an update; other vaults do not ask',async()=>{
+ const p=spacesPlugin(),asked=[];p.settings.center=true;
+ p.client=()=>({publications:async options=>{asked.push(options);return [{workId:'w1',locale:'zh-CN',revision:2,destinationId:'site-pets',state:'blocked',title:'缅因猫'}];}});
+ await p.refreshPublications();
+ assert.deepEqual(asked,[{workspaceId:'pets',limit:200},{workspaceId:'legis',limit:200}]);
+ assert.equal(p.settings.publicationState.pets.byWork['w1|zh-CN'].state,'blocked');
+ const plain=spacesPlugin();plain.client=()=>({publications:async()=>{throw Error('not asked');}});
+ await plain.refreshPublications();assert.equal(plain.settings.publicationState,undefined);
+});

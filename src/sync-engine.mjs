@@ -139,7 +139,7 @@ export class SyncEngine{
   }
   const written=noteToWork(note.content,this.yaml.parse);
   const fingerprint=await syncFingerprint(written.data,localMediaPaths(written.media));
-  await this.store.set(workspaceId,detail.data.id,{articleId:detail.data.id,sectionId:detail.data.sectionId,locale:detail.data.locale||'zh-CN',
+  await this.store.set(workspaceId,detail.data.id,{articleId:detail.data.id,...(typeof detail.workId==='string'&&detail.workId?{workId:detail.workId}:{}),sectionId:detail.data.sectionId,locale:detail.data.locale||'zh-CN',
    version:detail.version,publishedVersion:detail.publishedVersion??null,fingerprint,mediaHashes,readOnly:isReadOnlyWork(detail)},locale);
   return note.path;
  }

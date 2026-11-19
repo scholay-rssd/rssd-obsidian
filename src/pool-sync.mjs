@@ -17,7 +17,8 @@ const requestId=()=>'obsidian-'+crypto.randomUUID().replace(/-/g,'');
 const fail=(message,code,extra={})=>Object.assign(Error(message),{code,...extra});
 
 export class PoolSync{
- constructor({client,vault,yaml,index}){this.client=client;this.vault=vault;this.yaml=yaml;this.index=index;}
+ /** `space`: this pool lives inside that site's folder (Topics/<section>/), and only that space's topics are in it. */
+ constructor({client,vault,yaml,index,space=''}){this.client=client;this.vault=vault;this.yaml=yaml;this.index=index;this.space=space;}
 
  /** A free path for a topic's note in its section folder, named after its title. */
  async freePath(folder,title){
@@ -39,7 +40,7 @@ export class PoolSync{
  /** Write the Center's version of a demand as its note and remember what it is in step with. */
  async place(demand,registry,{path,expectedContent=null}={}){
   const content=demandToNote(demand,this.yaml.stringify);
-  const target=path||await this.freePath(sectionFolder(registry,demand.workspaceId,demand.sectionId),demand.title);
+  const target=path||await this.freePath(sectionFolder(registry,demand.workspaceId,demand.sectionId,{flat:!!this.space}),demand.title);
   await this.vault.write(target,content,{expectedContent});
   // The index keeps a digest of the brief, not the brief: a pool of a thousand topics stays small in settings.
   const {brief,...fields}=topicOf(demand);
@@ -116,8 +117,8 @@ export class PoolSync{
   const note=noteToTopic(content,this.yaml.parse);
   if(!note)throw fail('Add a properties block with a title to make this note a topic','invalid_topic');
   if(!note.id){
-   const scope=topicScope(path,note.properties,registry);
-   if(!scope)throw fail('Put the note in a section folder ('+POOL_FOLDER+'/<space>/<section>/) or name its rssd-space and rssd-section','no_section');
+   const scope=topicScope(path,note.properties,registry,{space:this.space});
+   if(!scope)throw fail('Put the note in a section folder ('+POOL_FOLDER+(this.space?'':'/<space>')+'/<section>/) or name its rssd-section','no_section');
    let demand=await this.client.createDemand(newTopicDemand(note.topic,scope));
    if(note.topic.dueAt)demand=await this.client.editDemand(demand.id,{baseGeneration:demand.generation,requestId:requestId(),changes:{dueAt:note.topic.dueAt}});
    await this.place(demand,registry,{path,expectedContent:content});

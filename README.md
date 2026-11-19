@@ -43,6 +43,10 @@ Install the plugin (or open a starter vault) and the **连接 RSSD** window asks
 
 Settings → RSSD shows the key first: the sites it covers, or a field to paste one. Everything else is under **高级设置**. A later key must still cover the sites the vault holds; otherwise it is refused and nothing changes. When the Center answers that the key was revoked, the plugin says so once, stops syncing and asks for a new key; local works and unsaved edits stay and are saved after the new key is in. Revoking cannot remove what a vault already downloaded.
 
+## A key that includes RSSD Center
+
+A key made with **RSSD Center** ticked (Center → 设置 → 执行设备 → 连接设备) gives each site's folder its topics too: `<site>/Topics/<section>/<title>.md`, with the same rules as the topic pool vault (edit a topic nobody has claimed, a new note in a section folder becomes a topic, withdraw, replace with the Center's version; the commands act on the topic in front). **Update** brings works, then topics, then each site's newest website publications: a work whose publication is stuck shows a red **发布失败** mark with the Center's reason, one still going a quiet **发布中**. Publications are matched to works by their Center work ID (recorded from now on as works are updated) or, until then, by a title only one work has.
+
 ## Several spaces in one vault
 
 A new vault holds every space its login is approved for, each in a folder named after its site (for example `pet.piggytuck.com/`). Inside a space folder everything is laid out as in a vault of one space: `Works/`, `Works/en/`, `article-media/`, `.rssd/private-additions/`, `card-styles/`, `Card Samples/` and `Exports/cards/`. A part-time writer whose token is approved for one or two spaces sees only those. Settings → RSSD → **Spaces** lists the approved spaces; untick one to stop updating and saving it (its folder stays). Which spaces are approved is decided by the Center, not here.

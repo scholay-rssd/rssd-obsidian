@@ -222,3 +222,23 @@ test('a topic that was claimed can no longer be saved from the note',async()=>{
  await edit(vault,path,'priority: 0','priority: 9');
  await assert.rejects(pool.save(path,registry),{code:'read_only'});assert.match(await vault.read(path),/priority: 9/);
 });
+
+// Inside a site's folder of a Center vault: one space, topics under Topics/<section>/.
+test('a site folder pool holds only its space, under Topics/<section>, and queues a new note there',async()=>{
+ const client=center([demand('d1','缅因猫'),demand('m1','方法一',{workspaceId:'metho',sectionId:'methods'})]),vault=memoryVault(),index=memoryIndex();
+ const pool=new PoolSync({client,vault,yaml,index,space:'pets'}),own={workspaces:registry.workspaces.filter(w=>w.id==='pets')};
+ const summary=await pool.pull(own);
+ assert.deepEqual(summary.added,['缅因猫']);
+ assert.ok(vault.files.has('Topics/每日一猫/缅因猫.md'));assert.equal([...vault.files.keys()].some(path=>path.includes('方法一')),false);
+ const path='Topics/每日一狗/柯基.md';
+ await vault.write(path,'---\ntitle: 柯基\n---\n写柯基的性格。');
+ const created=await pool.save(path,own);
+ assert.equal(created.state,'created');assert.equal(client.store.get(created.id).sectionId,'daily-dog');assert.equal(client.store.get(created.id).workspaceId,'pets');
+ await vault.write('Topics/每日一狗/别处.md','---\ntitle: 别处\nrssd-space: metho\n---\n述');
+ await assert.rejects(pool.save('Topics/每日一狗/别处.md',own),{code:'no_section'},'a note naming another space is not queued here');
+});
+test('topic scope inside a site folder reads the section from Topics/<section>',()=>{
+ assert.deepEqual(topicScope('Topics/每日一猫/x.md',{},registry,{space:'pets'}),{workspaceId:'pets',sectionId:'daily-cat'});
+ assert.equal(topicScope('Topics/萌宠/每日一猫/x.md',{},registry,{space:'pets'}),null);
+ assert.equal(sectionFolder(registry,'pets','daily-cat',{flat:true}),'Topics/每日一猫');
+});
