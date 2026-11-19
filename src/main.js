@@ -498,12 +498,13 @@ export default class RssdPlugin extends Plugin{
    new Notice('RSSD rolled back to '+result.version+'. Releases up to '+skipped+' will not be installed again automatically.',10000);this.reloadWhenIdle();
   }catch(error){new Notice('Rollback failed: '+error.message,10000);}
  }
- /** Queue every work whose private record is waiting in .rssd/private-additions, so it is saved even if its note is unchanged. */
+ /** Queue every work whose private record is waiting in .rssd/private-additions, so it is saved even if its note is
+  * unchanged. This runs on every scan; a work whose save was refused stays blocked until its note is edited. */
  async queuePrivateAdditions(){
   try{
    const dir='.rssd/private-additions',adapter=this.app.vault.adapter;if(!await adapter.exists(dir))return;
    for(const file of (await adapter.list(dir)).files){
-    const match=/([^/]+)\.(zh-CN|en)\.json$/.exec(file);if(match)this.autoSync.mark(notePath(match[1],match[2]));
+    const match=/([^/]+)\.(zh-CN|en)\.json$/.exec(file);if(match)this.autoSync.queueWaiting(notePath(match[1],match[2]));
    }
   }catch(error){console.error('RSSD private additions',error);}
  }
