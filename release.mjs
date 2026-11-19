@@ -80,6 +80,8 @@ async function publish(){
   // Dependencies install without their scripts, so nothing from the lockfile runs on the Mac that holds the key.
   const env={PATH:process.env.PATH,HOME:process.env.HOME,...(process.env.TMPDIR?{TMPDIR:process.env.TMPDIR}:{})};
   run('npm',['ci','--ignore-scripts','--no-audit','--no-fund','--loglevel=error'],{cwd:plugin,env});
+  // A release reaches every vault, so it is built only from code whose tests pass here, against the rssd it is built with.
+  try{execFileSync('npm',['test'],{cwd:plugin,env,stdio:['ignore','inherit','inherit']});}catch{stop('The tests failed; nothing was built or released');}
   run(process.execPath,['esbuild.config.mjs'],{cwd:plugin,env:{...env,RSSD_RELEASE_VERSION:version}});
   const trusted=(await readFile(join(plugin,'release-key.pub'),'utf8')).trim();
   if(!(await readFile(join(plugin,'dist','main.js'),'utf8')).includes(JSON.stringify(trusted)))stop('The build does not carry release-key.pub');

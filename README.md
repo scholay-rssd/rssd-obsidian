@@ -101,7 +101,7 @@ Once a vault has a released version, it keeps its RSSD plugin current by itself.
 To release, merge to `main`, then run `npm run release` (`node release.mjs publish`) from any checkout of this repo on the Mac that holds the release key. It:
 
 - clones rssd-obsidian `main`, and rssd `main` with the themes and sites it pins, fresh from GitHub;
-- installs dependencies from the lockfile and builds;
+- installs dependencies from the lockfile, runs the tests (a failure stops the release) and builds;
 - numbers the release with `manifest.json`'s major.minor and a patch one past both the Center's latest and the last release recorded in `~/.rssd/obsidian-plugin-releases.json`;
 - signs it with the private key in `~/.rssd/obsidian-plugin-release.pem`;
 - uploads it to the Center over SSH (`--server`, default `scholay-postiz`). The Center refuses a release that isn't signed with the key it pinned at the first publish, or that lowers or reuses a version;
