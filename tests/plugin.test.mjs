@@ -344,7 +344,7 @@ test('a Keychain device token is checked with the Center, then used by name',asy
  response=async req=>{seen.push(req);return identity(['metho','pets'])(req);};
  const p=keychainPlugin({'rssd-pets':token});
  const result=await p.useKeychainToken('rssd-pets');
- assert.deepEqual(result,{loggedIn:true,spaces:['metho','pets']});
+ assert.deepEqual(result,{loggedIn:true,spaces:['metho','pets'],center:false,layout:'single'});
  assert.equal(p.settings.tokenSecret,'rssd-pets');assert.deepEqual(p.settings.spaces,['metho','pets']);
  assert.equal(p.token(),token);assert.equal(seen[0].headers.Authorization,'Bearer '+token);
 });
@@ -352,10 +352,10 @@ test('a Keychain token for other spaces, an unknown name or a revoked token chan
  const token='rssd_device_'+'c'.repeat(48);
  response=identity(['pets']);
  let p=keychainPlugin({'other':token});
- await assert.rejects(p.useKeychainToken('other'),/not approved for metho/);assert.equal(p.settings.tokenSecret,undefined);
+ await assert.rejects(p.useKeychainToken('other'),/metho/);assert.equal(p.settings.tokenSecret,undefined);
  await assert.rejects(p.useKeychainToken('missing'),/no secret named missing/);
  response=async()=>({status:401,json:{code:'unauthorized',message:'Device credential revoked or unknown'}});
- p=keychainPlugin({'old':token});await assert.rejects(p.useKeychainToken('old'),/revoked/);
+ p=keychainPlugin({'old':token});await assert.rejects(p.useKeychainToken('old'),/撤销/);
  assert.equal(p.settings.tokenSecret,undefined);assert.equal(p.operations.active,null);
 });
 test('a vault with no space takes the only space a Keychain token has',async()=>{
@@ -422,4 +422,47 @@ test('updating one space of a vault of several spaces uses that space engine',as
  p.engine=space=>{asked.push(space);return {store:{list:async()=>[]},pull:async()=>({downloaded:[],documents:{}})};};
  p.log=()=>({pending:false,checkpoint:async()=>{}});p.saveSettings=async()=>{};
  await p.pullAll('legis');assert.deepEqual(asked,['legis']);
+});
+
+// A pasted key decides what an empty vault is, then the vault follows it.
+function emptyVault(secrets={}){
+ const p=plugin();p.settings={origin:'https://center.example.org',boundOrigin:'https://center.example.org',workspaceId:'',layout:''};
+ p.app.secretStorage={getSecret:name=>secrets[name]??null,setSecret:(name,value)=>{secrets[name]=value;}};
+ p.setStatus=()=>{};p.idleStatus=()=>'';p.pull=async()=>{p.pulled=(p.pulled||0)+1;};return p;
+}
+const who=identity=>async req=>req.url.endsWith('/api/rssd/v1/identity')?{status:200,json:{protocolVersion:1,...identity}}:{status:404,json:{}};
+test('a pasted key for one site makes a one-site vault and starts its first update',async()=>{
+ const secrets={},p=emptyVault(secrets),key='rssd_device_'+'e'.repeat(48);response=who({workspaceIds:['pets']});
+ const result=await p.adoptToken('  '+key+'\n');
+ assert.equal(result.layout,'single');assert.equal(p.settings.workspaceId,'pets');assert.equal(p.settings.layout,'single');
+ assert.equal(secrets['rssd-center-device-token'],key,'kept in the Keychain under the plugin\'s own name');assert.equal(p.settings.tokenSecret,'');
+ assert.equal(p.pulled,1);
+});
+test('a pasted key for several sites, or with the Center, gives each site a folder',async()=>{
+ response=who({workspaceIds:['pets','legis']});
+ let p=emptyVault();await p.adoptToken('rssd_device_'+'f'.repeat(48));
+ assert.equal(p.settings.layout,'spaces');assert.deepEqual(Object.keys(p.settings.spaceFolders),['pets','legis']);assert.deepEqual(p.syncSpaces(),['pets','legis']);
+ response=who({workspaceIds:['pets'],grants:[{operation:'center'}]});
+ p=emptyVault();await p.adoptToken('rssd_device_'+'f'.repeat(48));
+ assert.equal(p.settings.layout,'spaces');assert.equal(p.settings.center,true);
+});
+test('a key that is not one, or that leaves out a site the vault holds, changes nothing',async()=>{
+ const p=emptyVault();
+ await assert.rejects(p.adoptToken('hello'),/rssd_device_/);
+ response=who({workspaceIds:['pets']});await p.adoptToken('rssd_device_'+'g'.repeat(48));
+ response=who({workspaceIds:['legis']});
+ await assert.rejects(p.adoptToken('rssd_device_'+'h'.repeat(48)),/pets/);
+ assert.equal(p.settings.workspaceId,'pets');assert.equal(p.token(),'rssd_device_'+'g'.repeat(48));
+});
+test('a revoked key is reported once, stops syncing, and a new key starts it again',async()=>{
+ const p=emptyVault(),notices=[];response=who({workspaceIds:['pets']});
+ await p.adoptToken('rssd_device_'+'i'.repeat(48));
+ response=async()=>({status:401,json:{code:'unauthorized',message:'Device credential revoked or unknown'}});
+ const client=p.client();
+ await assert.rejects(client.registry(),{status:401});await assert.rejects(client.registry(),{status:401});
+ await new Promise(resolve=>setTimeout(resolve,0));
+ assert.equal(p.settings.keyRevoked,true);
+ assert.throws(()=>p.client(),{code:'key_revoked'});assert.throws(()=>p.engine('pets'),{code:'key_revoked'});
+ response=who({workspaceIds:['pets']});await p.adoptToken('rssd_device_'+'j'.repeat(48));
+ assert.equal(p.settings.keyRevoked,false);assert.ok(p.client());
 });

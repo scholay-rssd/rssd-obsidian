@@ -2,14 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {layoutMode,spaceFolderName,VaultLayout,prefixedVault,SINGLE,SPACES} from '../src/vault-layout.mjs';
 
-test('a vault that already holds a space stays single; an empty one holds several spaces',()=>{
- assert.equal(layoutMode({}),SPACES);
- assert.equal(layoutMode({baselines:{pets:{}}}),SPACES,'an empty baseline bucket is not a synced space');
+test('a vault that already holds a space stays single; an empty one waits for its key',()=>{
+ assert.equal(layoutMode({}),'');
+ assert.equal(layoutMode({baselines:{pets:{}}}),'','an empty baseline bucket is not a synced space');
+ assert.equal(layoutMode({layout:SPACES}),'','a layout fixed on first load without any folder is still undecided');
+ assert.equal(layoutMode({layout:SPACES,spaceFolders:{pets:'pet.piggytuck.com'}}),SPACES);
  assert.equal(layoutMode({baselines:{pets:{a:{}}}}),SINGLE);
  assert.equal(layoutMode({workspaceId:'pets'}),SINGLE);
  assert.equal(layoutMode({boundSpace:'pets'}),SINGLE);
  assert.equal(layoutMode({mode:'pool'}),SINGLE);
- assert.equal(layoutMode({layout:SPACES,workspaceId:'pets'}),SPACES,'a chosen layout is kept');
+ assert.equal(layoutMode({layout:SINGLE}),SINGLE,'a chosen layout is kept');
 });
 
 test('a space folder is named after its site, falling back to the space ID',()=>{
