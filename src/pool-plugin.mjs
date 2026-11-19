@@ -6,6 +6,7 @@
 // new note as a topic, and withdraws one. It never publishes and never writes a work.
 import {PoolSync,pullSummary} from './pool-sync.mjs';
 import {POOL_FOLDER} from './pool-model.mjs';
+import {prefixedVault} from './vault-layout.mjs';
 
 export const POOL_DEFAULTS={mode:'works'};
 const HOUR=60*60*1000;
@@ -17,13 +18,16 @@ const REFUSALS={
 };
 export const poolFailure=error=>(REFUSALS[error?.code]||'The topic pool could not do that')+': '+String(error?.message||error).slice(0,300);
 export const isPoolVault=settings=>settings?.mode==='pool';
+/** A vault whose key includes RSSD Center: each site's folder also holds that site's topics, under Topics/<section>/. */
+export const isCenterVault=settings=>settings?.center===true&&settings?.layout==='spaces'&&settings?.mode!=='pool';
 /** A works vault has a space; a pool vault has topics. Neither may be turned into the other in place. */
 export const canBecomePool=settings=>!settings?.boundSpace&&!settings?.workspaceId&&!Object.values(settings?.baselines||{}).some(bucket=>Object.keys(bucket||{}).length);
 export const canBecomeWorks=settings=>!Object.keys(settings?.pool?.entries||{}).length;
 
 /** Where each topic's note is and what it was last in step with, kept in the plugin settings. */
-export function poolIndex(settings){
- const pool=()=>{const value=settings().pool??={entries:{},cursors:{}};value.entries??={};value.cursors??={};return value;};
+export function poolIndex(settings,space=''){
+ // A Center vault keeps one index per site, with paths inside that site's folder.
+ const pool=()=>{const root=space?(settings().poolBySpace??={}):null,value=space?(root[space]??={entries:{},cursors:{}}):(settings().pool??={entries:{},cursors:{}});value.entries??={};value.cursors??={};return value;};
  return {get:async id=>pool().entries[id]??null,set:async(id,value)=>{pool().entries[id]=value;},delete:async id=>{delete pool().entries[id];},
   list:async()=>Object.values(pool().entries),cursor:async space=>pool().cursors[space]??null,setCursor:async(space,value)=>{pool().cursors[space]=value;}};
 }
@@ -43,29 +47,51 @@ export function installTopicPool(plugin,obsidian){
   },
   remove:async path=>{const file=app.vault.getAbstractFileByPath(path);if(file instanceof TFile)await app.fileManager.trashFile(file);},
  };
- const sync=()=>new PoolSync({client:plugin.client(),vault:files,yaml:{parse:parseYaml,stringify:stringifyYaml},index:poolIndex(()=>plugin.settings)});
- const active=()=>{const file=app.workspace.getActiveFile();return isPoolVault(plugin.settings)&&file instanceof TFile&&file.extension==='md'?file:null;};
- const run=async(action,execute,done)=>{
+ // In a Center vault each site has its own pool: its folder is the pool's whole vault, and only its space is listed.
+ const sync=(space='')=>new PoolSync({client:plugin.client(),vault:space?prefixedVault(files,plugin.layout().root(space)):files,yaml:{parse:parseYaml,stringify:stringifyYaml},index:poolIndex(()=>plugin.settings,space),space});
+ const only=(registry,space)=>space?{...registry,workspaces:(registry?.workspaces||[]).filter(w=>w.id===space)}:registry;
+ const enabled=()=>isPoolVault(plugin.settings)||isCenterVault(plugin.settings);
+ // The topic note in front: {file, space, path} where path is inside the pool's vault.
+ const active=()=>{
+  const file=app.workspace.getActiveFile();if(!(file instanceof TFile)||file.extension!=='md')return null;
+  if(isPoolVault(plugin.settings))return {file,space:'',path:file.path};
+  if(!isCenterVault(plugin.settings))return null;
+  const at=plugin.locate(file.path);return at?.rel.startsWith(POOL_FOLDER+'/')?{file,space:at.space,path:at.rel}:null;
+ };
+ const run=async(action,execute,done,space='')=>{
   try{
-   if(!isPoolVault(plugin.settings))throw Error('This vault is not a topic pool. Choose "Topic pool" under Vault purpose in the RSSD settings.');
-   const result=await plugin.operations.run(action,async()=>{try{return await execute(sync(),await plugin.client().registry());}finally{await plugin.saveSettings();}});
+   if(!enabled())throw Error('This vault has no topics. A key that includes RSSD Center shows them, or choose "Topic pool" under Vault purpose.');
+   const result=await plugin.operations.run(action,async()=>{try{return await execute(sync(space),only(await plugin.client().registry(),space));}finally{await plugin.saveSettings();}});
    new Notice(done(result),8000);return result;
   }catch(error){console.error('RSSD topic pool: '+action+' failed',error?.status,error?.code,error?.message);new Notice(poolFailure(error),10000);return null;}
  };
  const writable=()=>{if(Platform.isMobile)throw Error('RSSD is read-only on mobile');};
  const pool={
-  update:({quiet=false}={})=>run('pool-update',async(engine,registry)=>{plugin.setStatus('RSSD: updating topics…');try{return await engine.pull(registry);}finally{plugin.setStatus(plugin.idleStatus());}},
+  update:({quiet=false}={})=>run('pool-update',async(engine,registry)=>{
+    plugin.setStatus('RSSD: updating topics…');
+    try{
+     if(!isCenterVault(plugin.settings))return await engine.pull(registry);
+     // A Center vault: every site in turn, each into its own folder.
+     const total={added:[],updated:[],removed:[],conflicts:[],edited:[],failed:[],unchanged:0};
+     for(const space of plugin.syncSpaces()){
+      const part=await sync(space).pull(only(registry,space));
+      for(const key of Object.keys(total))if(Array.isArray(total[key]))total[key].push(...part[key]);
+      total.unchanged+=part.unchanged;
+     }
+     return total;
+    }finally{plugin.setStatus(plugin.idleStatus());}
+   },
    summary=>{const text=pullSummary(summary);return quiet&&text==='up to date'?'RSSD topic pool is up to date':'Topic pool: '+text+(summary.conflicts.length?'. Changed on both sides: '+summary.conflicts.slice(0,3).join('; '):'');}),
-  save:file=>run('pool-save',async(engine,registry)=>{writable();return engine.save(file.path,registry);},
-   result=>result.state==='unchanged'?'Nothing to save':result.state==='created'?'Queued as a new topic: '+result.title:'Topic saved: '+result.title),
-  withdraw:file=>run('pool-withdraw',async engine=>{writable();return engine.withdraw(file.path);},result=>'Topic withdrawn: '+result.title),
-  restore:file=>run('pool-restore',async(engine,registry)=>engine.restore(file.path,registry),result=>result.state==='removed'?'The topic was withdrawn at the Center; its note was removed':'Replaced with the Center\'s version: '+result.title),
+  save:({path,space})=>run('pool-save',async(engine,registry)=>{writable();return engine.save(path,registry);},
+   result=>result.state==='unchanged'?'Nothing to save':result.state==='created'?'Queued as a new topic: '+result.title:'Topic saved: '+result.title,space),
+  withdraw:({path,space})=>run('pool-withdraw',async engine=>{writable();return engine.withdraw(path);},result=>'Topic withdrawn: '+result.title,space),
+  restore:({path,space})=>run('pool-restore',async(engine,registry)=>engine.restore(path,registry),result=>result.state==='removed'?'The topic was withdrawn at the Center; its note was removed':'Replaced with the Center\'s version: '+result.title,space),
  };
- plugin.addCommand({id:'pool-update',name:'Update the topic pool',checkCallback:checking=>{if(!isPoolVault(plugin.settings))return false;if(!checking)void pool.update();return true;}});
+ plugin.addCommand({id:'pool-update',name:'Update the topic pool',checkCallback:checking=>{if(!enabled())return false;if(!checking)void pool.update();return true;}});
  for(const [id,name,action] of [['pool-save','Save this topic to the Center',pool.save],['pool-withdraw','Withdraw this topic',pool.withdraw],['pool-restore','Replace this topic with the Center\'s version',pool.restore]])
-  plugin.addCommand({id,name,checkCallback:checking=>{const file=active();if(!file)return false;if(!checking)void action(file);return true;}});
+  plugin.addCommand({id,name,checkCallback:checking=>{const topic=active();if(!topic)return false;if(!checking)void action(topic);return true;}});
  // A pool vault follows the Center on its own: once shortly after opening, then hourly. Saving stays a command.
- const follow=()=>{if(isPoolVault(plugin.settings)&&plugin.token()&&plugin.settings.origin&&!plugin.operations.active)void pool.update({quiet:true});};
+ const follow=()=>{if(enabled()&&!plugin.settings.keyRevoked&&plugin.token()&&plugin.settings.origin&&!plugin.operations.active&&(isPoolVault(plugin.settings)||plugin.syncSpaces().length))void pool.update({quiet:true});};
  app.workspace.onLayoutReady(()=>{window.setTimeout(follow,5000);});
  plugin.registerInterval(window.setInterval(follow,HOUR));
  return pool;

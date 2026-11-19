@@ -88,6 +88,8 @@ export function createCenterClient({http,origin,token}){
   identity:()=>request('/identity'),
   registry:()=>request('/registry'),
   demands:options=>request('/demands?'+query(options)),
+  /** The newest publications of a space (website and other destinations), newest first. */
+  publications:options=>request('/publications?'+query(options)),
   createDemand:body=>request('/demands',{method:'POST',body}),
   /** Edit a queued demand against the generation it was read at; replays by request ID. */
   editDemand:(id,body)=>request('/demands/'+encodeURIComponent(id)+'/definition',{method:'PATCH',body}),

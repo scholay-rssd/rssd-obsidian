@@ -22,10 +22,13 @@ export function safeName(value,fallback='untitled'){
  return name||fallback;
 }
 
-/** The folder of a section's topics: Topics/<space>/<section>, by display name when the registry gives one. */
-export function sectionFolder(registry,workspaceId,sectionId){
+/**
+ * The folder of a section's topics: Topics/<space>/<section> in a topic pool vault, or Topics/<section> inside a
+ * site's folder (`flat`), where the folder already says which space. By display name when the registry gives one.
+ */
+export function sectionFolder(registry,workspaceId,sectionId,{flat=false}={}){
  const space=(registry?.workspaces||[]).find(w=>w.id===workspaceId),section=(space?.sections||[]).find(s=>s.id===sectionId);
- return POOL_FOLDER+'/'+safeName(space?.name,workspaceId)+'/'+safeName(section?.name,sectionId);
+ return POOL_FOLDER+'/'+(flat?'':safeName(space?.name,workspaceId)+'/')+safeName(section?.name,sectionId);
 }
 
 /**
@@ -33,14 +36,16 @@ export function sectionFolder(registry,workspaceId,sectionId){
  * its folder decides: Topics/<space>/<section>/…, each matched by ID or display name. Returns null when the note
  * does not sit in one section of an authorized space, so nothing is queued in the wrong place by guessing.
  */
-export function topicScope(path,properties,registry){
+export function topicScope(path,properties,registry,{space:fixed=''}={}){
  const spaces=registry?.workspaces||[],parts=String(path||'').split('/');
  const find=(list,key)=>{const wanted=clean(key);if(!wanted)return null;const hits=(list||[]).filter(x=>x.id===wanted||safeName(x.name,x.id)===wanted||clean(x.name)===wanted);return hits.length===1?hits[0]:null;};
- const stated=clean(properties?.[IDENTITY.space]);
- const space=stated?find(spaces,stated):parts[0]===POOL_FOLDER&&parts.length>=4?find(spaces,parts[1]):null;
+ // Inside a site's folder the space is that site's, and the path is Topics/<section>/….
+ const stated=clean(properties?.[IDENTITY.space]),depth=fixed?3:4,at=fixed?1:2;
+ if(fixed&&stated&&stated!==fixed)return null;
+ const space=fixed?spaces.find(w=>w.id===fixed):stated?find(spaces,stated):parts[0]===POOL_FOLDER&&parts.length>=4?find(spaces,parts[1]):null;
  if(!space)return null;
  const named=clean(properties?.[IDENTITY.section]);
- const section=named?find(space.sections,named):parts[0]===POOL_FOLDER&&parts.length>=4?find(space.sections,parts[2]):null;
+ const section=named?find(space.sections,named):parts[0]===POOL_FOLDER&&parts.length>=depth?find(space.sections,parts[at]):null;
  return section?{workspaceId:space.id,sectionId:section.id}:null;
 }
 

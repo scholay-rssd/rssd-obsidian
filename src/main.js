@@ -6,7 +6,8 @@ import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
 import {deviceLogin} from './device-login.mjs';
 import {SyncEngine} from './sync-engine.mjs';
-import {installTopicPool,poolSettingRows,isPoolVault,POOL_DEFAULTS} from './pool-plugin.mjs';
+import {installTopicPool,poolSettingRows,isPoolVault,isCenterVault,POOL_DEFAULTS} from './pool-plugin.mjs';
+import {latestPublications,publicationOf} from './publications.mjs';
 import {StagedSyncEngine} from './staged-sync-engine.mjs';
 import {canonicalPathIdentity,trackRename,trackDelete,confirmReturn} from './path-guard.mjs';
 import {AutoSync,startupDelay,syncLease} from './auto-sync.mjs';
@@ -42,7 +43,7 @@ export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_O
 const RELEASE_KEY=typeof RSSD_RELEASE_KEY==='string'&&RSSD_RELEASE_KEY?RSSD_RELEASE_KEY:null;
 // The version a release build was built as. A development build has none and updates only on a manual check.
 const BUILD_VERSION=typeof RSSD_BUILD_VERSION==='string'?RSSD_BUILD_VERSION:'';
-const DEFAULTS={...POOL_DEFAULTS,tokenSecret:'',pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',layout:'',center:false,keyRevoked:false,spaceFolders:{},syncSpaces:{},pathRecordsBySpace:{},baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
+const DEFAULTS={...POOL_DEFAULTS,tokenSecret:'',pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',layout:'',center:false,publicationState:{},keyRevoked:false,spaceFolders:{},syncSpaces:{},pathRecordsBySpace:{},baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
 // The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
 // between them.
@@ -440,7 +441,7 @@ export default class RssdPlugin extends Plugin{
   this.autoSync=new AutoSync({
    ready:()=>this.settings.autoSync!==false&&!this.settings.keyRevoked&&!!this.settings.origin&&this.syncSpaces().length>0&&!!this.token()&&!this.operations.active,
    lease:run=>{let locks;try{locks=globalThis.navigator?.locks;}catch{}return syncLease(locks,this.settings.origin)(run);},
-   pull:()=>this.operations.run('automatic-pull',()=>this.multiSpace()?this.pullSpaces():this.pullAll(this.settings.workspaceId)),
+   pull:async()=>{const result=await this.operations.run('automatic-pull',()=>this.multiSpace()?this.pullSpaces():this.pullAll(this.settings.workspaceId));void this.refreshPublications();return result;},
    save:path=>this.operations.run('automatic-save',async()=>{const at=this.locate(path);if(!at)return {state:'unchanged'};const engine=this.engine(at.space);if(!await engine.hasLocalChanges(at.space,at.rel))return {state:'unchanged'};return this.saveWork(at.space,path,engine);}),
    report:({path,error})=>{console.error('RSSD automatic sync',path||'',error?.code||'',error?.message||error);new Notice('RSSD automatic sync needs attention'+(path?' for '+path:'')+': '+saveFailureMessage(error),10000);}
   });
@@ -842,6 +843,20 @@ export default class RssdPlugin extends Plugin{
   return states;
  }
  /**
+  * In a vault whose key includes RSSD Center: each site's newest website publications, so the Works list can mark
+  * a publication that is stuck or still going. One read of 200 rows per site; a failure only leaves the old marks.
+  */
+ async refreshPublications(){
+  if(!isCenterVault(this.settings))return;
+  const state=this.settings.publicationState??={};
+  for(const space of this.syncSpaces()){
+   try{state[space]=latestPublications(await this.client().publications({workspaceId:space,limit:200}));}
+   catch(error){console.error('RSSD publications',space,error?.status,error?.code,error?.message);}
+  }
+  await this.saveSettings().catch(()=>{});
+  for(const leaf of this.app.workspace?.getLeavesOfType?.('rssd-works')||[])leaf.view?.render?.();
+ }
+ /**
   * Update every space this vault syncs, one after another. Works are reported by vault path. A space that fails
   * is reported and the others still update. `onProgress` hears {space, index, count} as each space starts and
   * each work's progress within it, so the Works list can show the notes written so far.
@@ -1000,6 +1015,8 @@ export default class RssdPlugin extends Plugin{
    const incomplete=['failed','conflicts','pending','metadataPending'].some(key=>summary[key]?.length);
    new Notice((incomplete?'Update incomplete: ':'Update finished: ')+parts.join(', '));
    if(summary.conflicts.length)new Notice('Conflicts were not changed: '+summary.conflicts.join(', '),10000);
+   // A vault whose key includes RSSD Center also brings its topics and publication states up to date.
+   if(isCenterVault(this.settings)){await this.refreshPublications();void this.topicPool?.update({quiet:true});}
    // The footer shows how it went: 'done', 'incomplete' or 'failed'.
    return incomplete?'incomplete':'done';
   }catch(error){new Notice('Update failed: '+error.message);return 'failed';}
@@ -1704,7 +1721,8 @@ class WorksView extends ItemView{
    const space=this.plugin.spaceOf(file),sectionId=String(p['rssd-section']||'');
    items.push({file,space,sectionId,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
     cardVariants:Object.keys(CARD_VARIANTS).filter(id=>this.plugin.sampleCard(file,id)),
-    section:this.plugin.multiSpace()?space+'/'+sectionId:sectionId,type:this.plugin.workType(file),author:String(p.author??''),category:String(p.category??''),
+    section:this.plugin.multiSpace()?space+'/'+sectionId:sectionId,type:this.plugin.workType(file),
+    publication:publicationOf(this.plugin.settings.publicationState?.[space],{workId:baselineBucket(this.plugin.settings,space,String(p['rssd-locale']||'zh-CN'))?.[String(p['rssd-id'])]?.workId,locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||'')}),author:String(p.author??''),category:String(p.category??''),
     version:p['rssd-version'],publishedVersion:p['rssd-published-version'],
     media:(this.app.metadataCache.getFileCache(file)?.embeds||[]).map(embed=>mediaName(embed.link)).filter(Boolean)});
   }

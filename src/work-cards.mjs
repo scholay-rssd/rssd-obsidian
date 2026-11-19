@@ -16,8 +16,11 @@ export function agoText(at,now=Date.now()){
  * work was edited is left out: the card describes the work, and the Save button says what is waiting. What the
  * website shows is left out too; a work with nothing to attend to has no chip.
  */
-export function cardChips({state,author,category,checks}){
+export function cardChips({state,author,category,checks,publication}){
  const chips=[];
+ // The website side, in a vault whose key includes RSSD Center: a publication that is stuck or still going.
+ if(publication&&['blocked','failed'].includes(publication.state))chips.push({text:'发布失败',icon:'circle-x',tone:'danger',title:'网站发布 v'+publication.revision+' 没有完成'+(publication.error?'：'+publication.error:'')});
+ else if(publication&&['queued','dispatching'].includes(publication.state))chips.push({text:'发布中',icon:'send',tone:'site',title:'网站正在发布 v'+publication.revision});
  if(state==='edited')chips.push({text:'Edited',icon:'pencil',tone:'warning',title:'Edited: changed since the last sync; not saved to the Center yet'});
  else if(state==='saving')chips.push({text:'Saving…',icon:'loader-2',tone:'site',title:'Saving to the Center'});
  else if(state==='conflict')chips.push({text:'Conflict',icon:'triangle-alert',tone:'danger',title:'Conflict: needs attention'});
