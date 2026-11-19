@@ -401,7 +401,9 @@ export class SyncEngine{
   // A private record waiting for this work (who drew its pictures) goes with the save, only to a Center that keeps it private.
   const additionPath=privateAdditionPath(work.data.id,work.data.locale),privateAppend=parsePrivateAddition(await this.vault.read(additionPath));
   if(privateAppend&&current.acceptsPrivateAppendOnSave!==true)throw Object.assign(Error('This Center cannot keep the private picture record yet; local edits were kept. Update the Center before saving'),{code:'private_append_unavailable'});
-  const packed=await packWorkMedia(work,mediaBytes);
+  // Pictures the Center already keeps with this exact revision go by path, so large ones are not sent again.
+  const stored=current.reusesStoredMediaOnSave===true?new Set((current.data?.assets||[]).map(asset=>asset.path)):new Set();
+  const packed=await packWorkMedia(work,mediaBytes,{stored});
   const requestKey=newRequestKey(),envelope=draftEnvelope({work:packed.work,base,requestKey,assets:packed.assets,allowEmptyOptional:blank.length>0,allowStructured:structured,privateAppend});
   // Keep the key before the first request so a lost answer can be recovered rather than resent.
   await this.store.set(workspaceId,work.data.id,{...base,pending:{requestKey,fingerprint,mediaHashes}},work.data.locale);

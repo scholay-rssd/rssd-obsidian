@@ -126,27 +126,36 @@ export async function mediaHash(bytes){
 }
 
 /** Convert referenced image bytes into content-addressed Center assets.
- * The local note is never rewritten; the returned data is a detached snapshot. */
-export async function packWorkMedia(work,mediaBytes){
+ * The local note is never rewritten; the returned data is a detached snapshot.
+ * `stored` holds the paths of images the Center already keeps with the base edition (when it accepts them by
+ * path): those go as {path} without their bytes, and only the rest count toward the 2 MiB. */
+export const MEDIA_LIMIT_BYTES=2*1024*1024;
+export async function packWorkMedia(work,mediaBytes,{stored=new Set()}={}){
  if(/!\[\[[^\]]+\]\]/.test(work.data.markdown))throw Object.assign(Error('Use a Markdown image or an explicit ![[article-media/name.png]] image; this embed cannot be sent safely'),{code:'unsupported_embed'});
  for(const match of work.data.markdown.matchAll(/!\[[^\]\r\n]*\]\(([^)\r\n]+)\)/g)){
   const target=match[1].trim().split(/\s+/)[0];
   if(!/^(?:https?:\/\/|\/article-media\/)/i.test(target))
    throw Object.assign(Error('Move local images to article-media and use their relative Markdown path'),{code:'unsupported_local_image'});
  }
- if(work.media.length>12)throw Error('A work can contain at most 12 images');
- let total=0,markdown=work.data.markdown;const assets=[],seen=new Set();
+ if(work.media.length>12)throw Object.assign(Error('A work can contain at most 12 images; this one has '+work.media.length),{code:'too_many_media'});
+ let total=0,markdown=work.data.markdown;const assets=[],seen=new Set(),sent=[];
  for(const name of work.media){
-  const bytes=mediaBytes[name];if(!bytes)throw Error('The image '+name+' is missing from the vault');
-  total+=bytes.length;if(total>2*1024*1024)throw Error('The images exceed the Center limit of 2 MiB');
+  const bytes=mediaBytes[name];if(!bytes)throw Object.assign(Error('The image '+name+' is missing from the vault'),{code:'media_missing'});
   const png=bytes.length>=8&&[137,80,78,71,13,10,26,10].every((v,i)=>bytes[i]===v);
   const jpg=bytes.length>=3&&bytes[0]===255&&bytes[1]===216&&bytes[2]===255;
   const webp=bytes.length>=12&&String.fromCharCode(...bytes.slice(0,4))==='RIFF'&&String.fromCharCode(...bytes.slice(8,12))==='WEBP';
-  if(!png&&!jpg&&!webp)throw Error('The image '+name+' must be PNG, JPEG or WebP');
+  if(!png&&!jpg&&!webp)throw Object.assign(Error('The image '+name+' must be PNG, JPEG or WebP'),{code:'unsupported_media'});
   const path='/article-media/'+await mediaHash(bytes)+'.'+(png?'png':jpg?'jpg':'webp');
   const escaped=name.replace(/\./g,'\\.');
   markdown=markdown.replace(new RegExp('([("])/article-media/'+escaped+'(?![A-Za-z0-9._-])','g'),(_,lead)=>lead+path);
-  if(!seen.has(path)){assets.push({path,data:bytesToBase64(bytes)});seen.add(path);}
+  if(seen.has(path))continue;
+  seen.add(path);
+  if(stored.has(path)){assets.push({path});continue;}
+  assets.push({path,data:bytesToBase64(bytes)});total+=bytes.length;sent.push([name,bytes.length]);
+ }
+ if(total>MEDIA_LIMIT_BYTES){
+  const mb=n=>(n/1024/1024).toFixed(1)+' MB';
+  throw Object.assign(Error('The images to send add up to '+mb(total)+', over the Center limit of 2 MiB per save ('+sent.map(([name,size])=>name+' '+mb(size)).join(', ')+'). Make them smaller'+(stored.size?'':', or update the Center so it can keep pictures it already has')+'.'),{code:'media_too_large'});
  }
  return {work:{...work,data:{...work.data,markdown}},assets};
 }
