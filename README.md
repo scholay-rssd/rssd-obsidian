@@ -33,6 +33,19 @@ Commands: *Log in*, *Update works*, *Save this work*, *Check sync state of all w
 
 **Update** brings the Center's latest versions down into the vault, and **Save** sends edits up as private drafts. Internally an update is still a *pull*: the command id and the `pull` action for command links are unchanged, so existing hotkeys and links keep working.
 
+## Topic pool
+
+A vault can instead show the topics waiting to be written, across every space the device is approved for. Use a separate, empty vault for it.
+
+1. Install the plugin, log in, and under Settings → RSSD set **Vault purpose** to **Topic pool**. Do not choose a sync space.
+2. Run **Update the topic pool**. Each open write demand becomes one note under `Topics/<space>/<section>/`, named after its title. The vault then follows the Center on its own, shortly after opening and hourly.
+3. A note's `title`, `priority`, `type` (`article` or `note`), `topic-key` and `due` properties, and its text (the brief), can be edited while nobody has claimed the topic. **Save this topic to the Center** sends only what changed.
+4. A new note with a `title` property and a brief, placed in a section folder, becomes a topic with the same command. The Center refuses a topic that repeats a work or an open topic of that section and says which.
+5. **Withdraw this topic** cancels a topic nobody has claimed and removes its note. **Replace this topic with the Center's version** discards a note's unsaved edits.
+
+A topic is identified by its `rssd-demand` property, so its note may be renamed. Properties starting with `rssd-` are the Center's and are rewritten on update. An update never overwrites a note with unsaved edits; when the Center's side changed too, the note is reported and left as written. Finished topics keep their note with the work's ID in `rssd-work`; the first update of a space brings only open topics. Mobile can update but not save.
+
+This needs a Center with the demand pool endpoints (list filters, `updatedSince`, device withdrawal). An older Center still lists topics, but returns the whole queue on every update and refuses a withdrawal.
 ## Annotating a work
 
 The review sidebar has a fourth tab, **标注**. For the open work it asks the Center which questions apply to the published revision readers see, and shows them: 1 to 5 scales, single choices and yes or no. Answers are kept on this device until submitted, so switching works or tabs loses nothing. Submitting adds a record at the Center and never changes the work. Submitting again adds a newer record, and the newest counts.

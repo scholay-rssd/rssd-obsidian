@@ -6,6 +6,7 @@ import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
 import {deviceLogin} from './device-login.mjs';
 import {SyncEngine} from './sync-engine.mjs';
+import {installTopicPool,poolSettingRows,isPoolVault,POOL_DEFAULTS} from './pool-plugin.mjs';
 import {StagedSyncEngine} from './staged-sync-engine.mjs';
 import {canonicalPathIdentity,trackRename,trackDelete,confirmReturn} from './path-guard.mjs';
 import {AutoSync,startupDelay,syncLease} from './auto-sync.mjs';
@@ -38,7 +39,7 @@ export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_O
 const RELEASE_KEY=typeof RSSD_RELEASE_KEY==='string'&&RSSD_RELEASE_KEY?RSSD_RELEASE_KEY:null;
 // The version a release build was built as. A development build has none and updates only on a manual check.
 const BUILD_VERSION=typeof RSSD_BUILD_VERSION==='string'?RSSD_BUILD_VERSION:'';
-const DEFAULTS={pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
+const DEFAULTS={...POOL_DEFAULTS,pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
 // The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
 // between them.
@@ -360,7 +361,9 @@ export default class RssdPlugin extends Plugin{
   // The status item is the quick way in: reading, works, sync and login in one menu.
   this.status.addClass('mod-clickable');this.status.setAttribute('aria-label','RSSD');
   this.registerDomEvent(this.status,'click',event=>this.statusMenu().showAtMouseEvent(event));
-  this.addSettingTab(new RssdSettings(this.app,this));
+  this.settingTab=new RssdSettings(this.app,this);this.addSettingTab(this.settingTab);
+  // The topic pool: a vault that shows the demand queue of every authorized space (see pool-plugin.mjs).
+  this.topicPool=installTopicPool(this,{Notice,TFile,Platform,parseYaml,stringifyYaml});
   this.addCommand({id:'login',name:'Log in to the RSSD Center',callback:()=>this.login().catch(error=>new Notice('Login failed: '+error.message))});
   this.addCommand({id:'pull',name:'Update works from the Center',callback:()=>this.pull()});
   this.addCommand({id:'save',name:'Save this work to the Center as a private draft',checkCallback:checking=>{
@@ -649,7 +652,7 @@ export default class RssdPlugin extends Plugin{
  }
  isWork(file){return file.extension==='md'&&file.path.startsWith(WORKS_FOLDER+'/');}
  setStatus(text){this.status?.setText(text);}
- idleStatus(){return this.token()?'RSSD'+(this.settings.workspaceId?' · '+this.settings.workspaceId:''):'RSSD · log in';}
+ idleStatus(){return this.token()?'RSSD'+(isPoolVault(this.settings)?' · topic pool':this.settings.workspaceId?' · '+this.settings.workspaceId:''):'RSSD · log in';}
  statusMenu(){
   const menu=new Menu(),loggedIn=!!this.token(),space=this.settings.workspaceId,active=this.app.workspace.getActiveFile();
   const login=()=>this.login({openBrowser:true,selectSyncSpace:false}).then(()=>this.setStatus(this.idleStatus())).catch(error=>{if(error?.code!=='cancelled')new Notice('Login failed: '+error.message,10000);});
@@ -1272,7 +1275,8 @@ class RssdSettings extends PluginSettingTab{
    .addButton(b=>b.setButtonText('Open reader').onClick(()=>this.plugin.openReader()));
   new Setting(containerEl).setName('Device name').setDesc('Shown in the Center when you approve this device.')
    .addText(t=>t.setValue(s.deviceName).onChange(async v=>{s.deviceName=v.trim();await this.plugin.saveSettings();}));
-  new Setting(containerEl).setName('Sync space').setDesc(s.boundSpace?'This vault is bound to '+s.boundSpace+'. Use a separate vault for another space.':'Only for editing: choosing a space downloads its works into this vault and syncs edits as private drafts. Reading online needs no space here.')
+  // A pool vault has no sync space: choosing one here would turn it into a works vault with topics in it.
+  if(!poolSettingRows(containerEl,this.plugin,Setting))new Setting(containerEl).setName('Sync space').setDesc(s.boundSpace?'This vault is bound to '+s.boundSpace+'. Use a separate vault for another space.':'Only for editing: choosing a space downloads its works into this vault and syncs edits as private drafts. Reading online needs no space here.')
    .addDropdown(t=>{t.addOption('','Choose a space');for(const id of new Set([s.workspaceId,...(s.spaces||[])].filter(Boolean)))t.addOption(id,id);t.setValue(s.workspaceId).setDisabled(!!s.boundSpace).onChange(async v=>{if(this.plugin.operations.active||s.boundSpace)return;s.workspaceId=v;await this.plugin.saveSettings();});});
   new Setting(containerEl).setName('Log in').setDesc(this.plugin.token()?'This device is logged in.':'Approve this device in your browser.')
    .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
