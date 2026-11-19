@@ -794,7 +794,7 @@ export default class RssdPlugin extends Plugin{
   });
  }
  async pullAll(space,{onProgress=()=>{}}={}){
-  const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],metadataPending:[],unchanged:0,removedFromCenter:[],transportByLocale:{}},engine=this.engine();
+  const summary={downloaded:[],updated:[],skipped:[],conflicts:[],pending:[],failed:[],metadataPending:[],unchanged:0,removedFromCenter:[],transportByLocale:{}},engine=this.engine(space);
   const info=spaceInfo(await this.client().registry(),space);
   if(!info.found)throw Object.assign(Error(readOnlyReason(info,space)),{code:'forbidden'});
   let finished=false;
@@ -1443,6 +1443,7 @@ class RssdSettings extends PluginSettingTab{
      if(plugin.operations.active){t.setValue(!on);new Notice('RSSD is busy; try again when it finishes.');return;}
      (s.syncSpaces??={})[space]=on;plugin.assignSpaceFolders([space]);await plugin.saveSettings();plugin.setStatus(plugin.idleStatus());
      for(const leaf of plugin.app.workspace.getLeavesOfType('rssd-works'))leaf.view?.render?.();
+     this.display();
     }));
   }
  }
@@ -1533,7 +1534,9 @@ class WorksFilterPanel{
   const spaceIds=[...new Set([...c.spaces.keys(),...f.spaces])].filter(Boolean);
   if(spaceIds.length>1||f.spaces.length)options(group('Space'),'spaces',spaceIds.map(id=>({value:id,name:view.spaceName(id),count:c.spaces.get(id)||0})));
   const sectionIds=[...new Set([...names.keys(),...c.sections.keys(),...f.sections])].filter(id=>!f.spaces.length||!names.get(id)?.space||f.spaces.includes(names.get(id).space));
-  options(group('Section'),'sections',sectionIds.map(id=>({value:id,name:names.get(id)?.name||id||'No section',count:c.sections.get(id)||0})));
+  // With several spaces listed, each section says whose it is, since two sites may use the same name.
+  const ofSpace=id=>spaceIds.length>1?' · '+view.spaceName(names.get(id)?.space||String(id).split('/')[0]):'';
+  options(group('Section'),'sections',sectionIds.map(id=>({value:id,name:(view.sectionName(id)||'No section')+ofSpace(id),count:c.sections.get(id)||0})));
   // Agents and models, most works first; works whose writer is not recorded last.
   for(const [facet,title] of [['agents','Agent'],['models','Model'],['machines','Machine']]){
    const box=group(title),count=c[facet],values=[...new Set([...count.keys(),...f[facet]])].filter(v=>v!==NO_WRITER).sort((a,b)=>(count.get(b)||0)-(count.get(a)||0)||a.localeCompare(b));
@@ -1721,7 +1724,8 @@ class WorksView extends ItemView{
   this.edited=inLanguage.filter(work=>this.states.get(work.file.path)?.state==='edited').map(work=>work.file);
   this.mark();this.renderFoot();void this.fillStates(every);void this.fillWriters([...this.shown.values(),...inLanguage]);
  }
- sectionName(id){return this.names?.get(id)?.name||id||'';}
+ /** A section's name; a section the site catalog does not name shows its own ID, never the space prefix. */
+ sectionName(id){return this.names?.get(id)?.name||String(id||'').split('/').pop()||'';}
  /** Apply a new filter, keep it on this device, and list from the top again. */
  setFilter(next){
   this.filterState=normalizeFilter(next);this.limit=WORKS_PAGE;

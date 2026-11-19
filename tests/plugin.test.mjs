@@ -416,3 +416,10 @@ test('saving a note in a space folder hands its space engine the path inside the
  assert.deepEqual(saved,[['legis','Works/a.md']]);
  await assert.rejects(p.saveWork('','Works/a.md',engine),/not in a space/);
 });
+test('updating one space of a vault of several spaces uses that space engine',async()=>{
+ const p=spacesPlugin(),asked=[];
+ p.client=()=>({registry:async()=>({workspaces:[{id:'legis',writable:true,migrationState:'active'}]})});
+ p.engine=space=>{asked.push(space);return {store:{list:async()=>[]},pull:async()=>({downloaded:[],documents:{}})};};
+ p.log=()=>({pending:false,checkpoint:async()=>{}});p.saveSettings=async()=>{};
+ await p.pullAll('legis');assert.deepEqual(asked,['legis']);
+});
