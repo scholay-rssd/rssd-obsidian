@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {OperationGate} from '../src/operations.mjs';
+import {AutoSync} from '../src/auto-sync.mjs';
 import {yaml} from './helpers.mjs';
 const result=await build({entryPoints:['src/main.js'],bundle:true,format:'cjs',platform:'browser',external:['obsidian'],write:false});
 let response,modal;
@@ -80,6 +81,20 @@ test('moving a linked note blocks recreation until the returned identity is veri
  assert.equal(p.settings.pathRecords['zh-CN/one'].state,'moved');
  await p.recordPathChange('rename','Archive/one.md','Works/one.md');
  assert.deepEqual(p.settings.pathRecords,{});assert.equal(marked,'Works/one.md');assert.equal(unblocked,marked);
+});
+test('each scan queues the works whose private record waits, and a refused one is reported once until its note is edited',async()=>{
+ const p=plugin(),saves=[],reports=[];let now=0,tooLarge=true;
+ const dir='.rssd/private-additions',files=[dir+'/one.zh-CN.json',dir+'/two.en.json',dir+'/notes.txt'];
+ p.app.vault={adapter:{exists:async path=>path===dir,list:async path=>({files:path===dir?files:[],folders:[]})}};
+ // As for a work whose pictures are over the Center's limit: refused before anything is sent, with no code.
+ p.autoSync=new AutoSync({now:()=>now,pull:async()=>({}),report:r=>reports.push(r),save:async path=>{
+  saves.push(path);if(path==='Works/one.md'&&tooLarge)throw Error('The images exceed the Center limit of 2 MiB');return {state:'unchanged'};}});
+ // Three hours as the plugin runs them: the scan and its queueing, then the next 10-second tick.
+ for(let hour=0;hour<3;hour++){await p.queuePrivateAdditions();await p.autoSync.tick({scan:true});now+=10000;await p.autoSync.tick();now+=3600000;}
+ assert.deepEqual(saves,['Works/one.md','Works/en/two.md'],'each waiting record queues its work once');
+ assert.deepEqual(reports.map(r=>r.path),['Works/one.md']);assert.equal(p.autoSync.blocked.has('Works/one.md'),true);
+ tooLarge=false;p.autoSync.mark('Works/one.md');now+=5000;await p.autoSync.tick();
+ assert.deepEqual(saves.slice(2),['Works/one.md'],'an edit retries the refused work');assert.equal(p.autoSync.blocked.size,0);assert.equal(reports.length,1);
 });
 test('concurrent settings writes preserve pending saves and path guards in order',async()=>{
  const p=plugin();let release;const writes=[];p.saveSettings=Plugin.prototype.saveSettings.bind(p);
@@ -316,4 +331,35 @@ test('the visible wording says Update for bringing works down, never Pull',async
   const shown=[...source.matchAll(/'([^'\n]*)'/g)].map(match=>match[1]).filter(text=>/(?<![-\w])(Pull|pulling|pulled|pull again|the pull)\b/.test(text));
   assert.deepEqual(shown,[],name+' still shows the old wording');
  }
+});
+
+// A device token created in the Center and added to Obsidian's Keychain logs the vault in without a browser.
+function keychainPlugin(secrets){
+ const p=plugin();p.app.secretStorage={getSecret:name=>secrets[name]??null,setSecret:(name,value)=>{secrets[name]=value;}};
+ p.setStatus=()=>{};p.idleStatus=()=>'';return p;
+}
+const identity=workspaceIds=>async req=>req.url.endsWith('/api/rssd/v1/identity')?{status:200,json:{protocolVersion:1,workspaceIds}}:{status:404,json:{}};
+test('a Keychain device token is checked with the Center, then used by name',async()=>{
+ const token='rssd_device_'+'b'.repeat(48),seen=[];
+ response=async req=>{seen.push(req);return identity(['metho','pets'])(req);};
+ const p=keychainPlugin({'rssd-pets':token});
+ const result=await p.useKeychainToken('rssd-pets');
+ assert.deepEqual(result,{loggedIn:true,spaces:['metho','pets']});
+ assert.equal(p.settings.tokenSecret,'rssd-pets');assert.deepEqual(p.settings.spaces,['metho','pets']);
+ assert.equal(p.token(),token);assert.equal(seen[0].headers.Authorization,'Bearer '+token);
+});
+test('a Keychain token for other spaces, an unknown name or a revoked token changes nothing',async()=>{
+ const token='rssd_device_'+'c'.repeat(48);
+ response=identity(['pets']);
+ let p=keychainPlugin({'other':token});
+ await assert.rejects(p.useKeychainToken('other'),/not approved for metho/);assert.equal(p.settings.tokenSecret,undefined);
+ await assert.rejects(p.useKeychainToken('missing'),/no secret named missing/);
+ response=async()=>({status:401,json:{code:'unauthorized',message:'Device credential revoked or unknown'}});
+ p=keychainPlugin({'old':token});await assert.rejects(p.useKeychainToken('old'),/revoked/);
+ assert.equal(p.settings.tokenSecret,undefined);assert.equal(p.operations.active,null);
+});
+test('a vault with no space takes the only space a Keychain token has',async()=>{
+ response=identity(['pets']);
+ const p=keychainPlugin({'pets-token':'rssd_device_'+'d'.repeat(48)});p.settings.workspaceId='';
+ await p.useKeychainToken('pets-token');assert.equal(p.settings.workspaceId,'pets');
 });

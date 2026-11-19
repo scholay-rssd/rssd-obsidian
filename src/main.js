@@ -1,6 +1,6 @@
 // RSSD for Obsidian, stage 1: open a space from the RSSD Center as a vault of drafts, see each work's sync
 // state, and save edits back as private drafts. Publishing is never done here.
-import {Plugin,PluginSettingTab,Setting,Notice,Modal,requestUrl,apiVersion,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu,setIcon,getIcon} from 'obsidian';
+import {Plugin,PluginSettingTab,Setting,SecretComponent,Notice,Modal,requestUrl,apiVersion,parseYaml,stringifyYaml,Platform,TFile,normalizePath,ItemView,MarkdownRenderer,Component,Menu,setIcon,getIcon} from 'obsidian';
 import {OUTPUT_ATTRIBUTE,inOutput,stripReadingMarks} from './reading-marks.mjs';
 import {createCenterClient,centerOrigin} from './center-client.mjs';
 import {OperationGate,automationRequest,recordedOperation,diagnosticError} from './operations.mjs';
@@ -23,7 +23,7 @@ import {updateFromCenter,rollback,diskVersion,newerVersion} from './self-update.
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
 import {sectionWorkPolicy,MAX_WORK_TAGS} from '../../contracts/work-types.mjs';
 import {wechatHtml,wechatSource,copyRich} from './wechat.mjs';
-import {wechatTemplate,wechatSite,cardTemplate} from './wechat-template.mjs';
+import {wechatTemplate,wechatSite,cardTemplate,WECHAT_SITES} from './wechat-template.mjs';
 import {decorateWechat,ARTICLE_THEMES,defaultArticleTheme} from './wechat-designs.mjs';
 import {buildCards,packageCardPages,cardSetRefusal,cardExportFolder} from './cards.mjs';
 import {CARD_WIDTH,CARD_HEIGHT,PHONE_ZOOM,TILE_ZOOMS,clampCardIndex,fitCardWidth,stepCardZoom,stepTileZoom,zoomLabel} from './card-view.mjs';
@@ -40,7 +40,7 @@ export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_O
 const RELEASE_KEY=typeof RSSD_RELEASE_KEY==='string'&&RSSD_RELEASE_KEY?RSSD_RELEASE_KEY:null;
 // The version a release build was built as. A development build has none and updates only on a manual check.
 const BUILD_VERSION=typeof RSSD_BUILD_VERSION==='string'?RSSD_BUILD_VERSION:'';
-const DEFAULTS={...POOL_DEFAULTS,pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
+const DEFAULTS={...POOL_DEFAULTS,tokenSecret:'',pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
 // The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
 // between them.
@@ -319,6 +319,7 @@ class WelcomeModal extends Modal{
  onOpen(){
   const {contentEl}=this;contentEl.createEl('h3',{text:'Welcome to RSSD'});
   contentEl.createEl('p',{text:'Log in once to read your site\'s articles here. Your browser opens; sign in to RSSD and approve this device. Nothing is downloaded into the vault.'});
+  contentEl.createEl('p',{text:'Got a device token from your editor? Add it under Settings → Keychain, then choose it under Settings → RSSD → Device token from the Keychain. No browser needed.'});
   contentEl.createEl('p',{text:'Center: '+this.plugin.settings.origin,cls:'setting-item-description'});
   new Setting(contentEl).addButton(b=>b.setButtonText('Log in to RSSD').setCta().onClick(async()=>{
    this.close();
@@ -429,7 +430,7 @@ export default class RssdPlugin extends Plugin{
   this.registerEvent(this.app.vault.on('delete',file=>{if(file instanceof TFile)void this.recordPathChange('delete',file.path);}));
   // Stagger open vaults; each successful scan repeats hourly. The scan also
   // rediscovers changes made while Obsidian was closed.
-  let nextScan=Date.now()+startupDelay(this.settings.workspaceId);
+  let nextScan=Date.now()+startupDelay(this.settings.workspaceId,Object.keys(WECHAT_SITES));
   this.registerInterval(window.setInterval(()=>{
    // Fold journaled baselines into the settings file once saving has been quiet for half a minute.
    if(this.log().pending&&!this.operations.active&&Date.now()-this.log().lastRecord>30000)void this.saveSettings().catch(()=>{});
@@ -510,12 +511,13 @@ export default class RssdPlugin extends Plugin{
    new Notice('RSSD rolled back to '+result.version+'. Releases up to '+skipped+' will not be installed again automatically.',10000);this.reloadWhenIdle();
   }catch(error){new Notice('Rollback failed: '+error.message,10000);}
  }
- /** Queue every work whose private record is waiting in .rssd/private-additions, so it is saved even if its note is unchanged. */
+ /** Queue every work whose private record is waiting in .rssd/private-additions, so it is saved even if its note is
+  * unchanged. This runs on every scan; a work whose save was refused stays blocked until its note is edited. */
  async queuePrivateAdditions(){
   try{
    const dir='.rssd/private-additions',adapter=this.app.vault.adapter;if(!await adapter.exists(dir))return;
    for(const file of (await adapter.list(dir)).files){
-    const match=/([^/]+)\.(zh-CN|en)\.json$/.exec(file);if(match)this.autoSync.mark(notePath(match[1],match[2]));
+    const match=/([^/]+)\.(zh-CN|en)\.json$/.exec(file);if(match)this.autoSync.queueWaiting(notePath(match[1],match[2]));
    }
   }catch(error){console.error('RSSD private additions',error);}
  }
@@ -683,7 +685,28 @@ export default class RssdPlugin extends Plugin{
   menu.addItem(item=>item.setTitle('RSSD settings').setIcon('settings').onClick(()=>{const setting=this.app.setting;setting?.open();setting?.openTabById(this.manifest.id);}));
   return menu;
  }
- token(){return this.app.secretStorage.getSecret(TOKEN_SECRET);}
+ /** The device token: the one a browser login stored, or the Keychain secret chosen in Settings. */
+ token(){return this.app.secretStorage.getSecret(this.settings.tokenSecret||TOKEN_SECRET);}
+ /**
+  * Use a device token created in the Center (Settings → 设备连接) and added to Obsidian's Keychain, instead of
+  * approving this device in the browser. The token is checked with the Center before the vault uses it, and the
+  * vault keeps only the secret's name.
+  */
+ async useKeychainToken(name){return this.operations.run('login',async()=>{
+  this.assertBinding();
+  const origin=centerOrigin(this.settings.origin),space=this.settings.workspaceId,token=name?this.app.secretStorage.getSecret(name):null;
+  if(!token)throw Error('The Keychain has no secret named '+name);
+  const identity=await createCenterClient({http,origin,token}).identity();
+  const spaces=Array.isArray(identity?.workspaceIds)?identity.workspaceIds:[];
+  if(!spaces.length)throw Error('This token has no spaces at the Center');
+  if(space&&!spaces.includes(space))throw Error('This token is not approved for '+space);
+  if(centerOrigin(this.settings.origin)!==origin||this.settings.workspaceId!==space)throw Error('Connection changed while checking the token; try again');
+  this.settings.tokenSecret=name;this.settings.boundOrigin=origin;this.settings.spaces=spaces;
+  if(!space&&spaces.length===1&&!isPoolVault(this.settings))this.settings.workspaceId=spaces[0];
+  await this.saveSettings();this.setStatus(this.idleStatus());
+  new Notice('Logged in to the RSSD Center with the Keychain secret '+name+' ('+spaces.join(', ')+')',8000);
+  return {loggedIn:true,spaces};
+ });}
  saveSettings(){
   // Vault events and sync receipts may update different parts of settings at
   // once. Serialize writes and take the snapshot only when its turn starts so
@@ -806,7 +829,7 @@ export default class RssdPlugin extends Plugin{
    if(space&&!spaces.includes(space))throw Error('This device was not approved for '+space);
    if(centerOrigin(this.settings.origin)!==origin||this.settings.workspaceId!==space)throw Error('Connection changed during login; start again');
    createCenterClient({http,origin,token:result.token});
-   this.app.secretStorage.setSecret(TOKEN_SECRET,result.token);
+   this.app.secretStorage.setSecret(TOKEN_SECRET,result.token);this.settings.tokenSecret='';
    this.settings.boundOrigin=origin;
    // Choosing a sync space starts downloading works into the vault; reader logins leave that to Settings.
    if(selectSyncSpace&&!space&&spaces.length===1)this.settings.workspaceId=spaces[0];
@@ -1327,8 +1350,16 @@ class RssdSettings extends PluginSettingTab{
   // A pool vault has no sync space: choosing one here would turn it into a works vault with topics in it.
   if(!poolSettingRows(containerEl,this.plugin,Setting))new Setting(containerEl).setName('Sync space').setDesc(s.boundSpace?'This vault is bound to '+s.boundSpace+'. Use a separate vault for another space.':'Only for editing: choosing a space downloads its works into this vault and syncs edits as private drafts. Reading online needs no space here.')
    .addDropdown(t=>{t.addOption('','Choose a space');for(const id of new Set([s.workspaceId,...(s.spaces||[])].filter(Boolean)))t.addOption(id,id);t.setValue(s.workspaceId).setDisabled(!!s.boundSpace).onChange(async v=>{if(this.plugin.operations.active||s.boundSpace)return;s.workspaceId=v;await this.plugin.saveSettings();});});
-  new Setting(containerEl).setName('Log in').setDesc(this.plugin.token()?'This device is logged in.':'Approve this device in your browser.')
+  new Setting(containerEl).setName('Log in').setDesc(this.plugin.token()?'This device is logged in'+(s.tokenSecret?' with the Keychain secret '+s.tokenSecret:'')+'.':'Approve this device in your browser.')
    .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
+  // A device token made in the Center's settings (设备连接) and added under Settings → Keychain: no browser here.
+  if(typeof SecretComponent==='function')new Setting(containerEl).setName('Device token from the Keychain')
+   .setDesc('Or create a device connection in the Center (设置 → 设备连接, choosing its spaces), copy its credential, add it under Settings → Keychain, and choose it here.')
+   .addComponent(el=>new SecretComponent(this.app,el).setValue(s.tokenSecret||'').onChange(async name=>{
+    if(!name)return;
+    try{await this.plugin.useKeychainToken(name);}catch(error){new Notice('Could not use that token: '+error.message,10000);}
+    this.display();
+   }));
   new Setting(containerEl).setName('Command links').setDesc('Allow local commands to drive this vault. Each request has its own receipt.').addToggle(t=>t.setValue(!!s.allowAutomation).onChange(async v=>{s.allowAutomation=v;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Automatic sync').setDesc('Periodically update from the Center and save changed works as private drafts. Conflicts and read-only spaces need attention; this never publishes.').addToggle(t=>t.setValue(s.autoSync!==false).onChange(async v=>{s.autoSync=v;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Properties in the article').setDesc('Work details are edited in the Details tab next to the note, so the properties block at the top of each note is hidden. Show it again here.')

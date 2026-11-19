@@ -24,9 +24,13 @@ Open one RSSD Center space as a vault of drafts, see each work's sync state, and
    node install.mjs /path/to/vault
    ```
    After this first install, new versions arrive by themselves (see *Plugin updates*).
+
+   **For a new writer:** `npm run starter` (`node release.mjs starter [--out <folder>]`) packages the Center's current signed release as `rssd-starter-vault-<version>.zip`: an empty vault named `RSSD` with the plugin installed and enabled, and a note `开始使用.md` with the steps. It checks the release's signature and file hashes the way a vault does, needs no key, and holds no token or settings, so it can be sent to anyone. They unzip it, open the folder in Obsidian, trust the plugin and add their device token (below); the plugin updates itself from then on.
 3. In Obsidian enable the plugin, open Settings → RSSD, enter the Center address and run **Log in to the RSSD Center**. Approve the device and its spaces in your browser.
+
+   **Without the browser:** someone with the Center's owner account creates a device connection under the Center's 设置 → 设备连接, choosing its spaces, and copies its credential. In Obsidian, add that credential under Settings → Keychain (any name), then choose it under Settings → RSSD → **Device token from the Keychain**. The plugin checks it with the Center and keeps only the secret's name; a vault with no space yet takes the token's only space. This suits a part-time writer who should see one or two spaces: give each person their own connection, and revoke it in the Center when they leave. A later browser login replaces the Keychain choice.
 4. Run **Update works from the Center**. Chinese works appear in `Works/<id>.md`, English works in `Works/en/<id>.md`, and images in `article-media/`.
-5. Automatic sync is on by default. While Obsidian and the vault are open, it checks for remote changes periodically and saves edits to linked works as private drafts after a short delay. It discovers offline edits after reopening. Use Settings → RSSD → **Automatic sync** to turn it off. The manual update and save commands remain available.
+5. Automatic sync is on by default. While Obsidian and the vault are open, it checks for remote changes periodically and saves edits to linked works as private drafts after a short delay. It discovers offline edits after reopening. A save that is refused is reported once, and that work waits until you edit it again; a lost connection is retried by itself. A private record waiting for a work in `.rssd/private-additions/` goes with that work's next save, even when its note is unchanged. Use Settings → RSSD → **Automatic sync** to turn it off. The manual update and save commands remain available.
 6. Active spaces save to Center private drafts. When the Center advertises staged-draft support, a staged space saves an independent private migration draft based on its imported snapshot; the original site still owns publication, and later legacy changes can require reconciliation. Neither kind of save publishes. Mobile is read-only.
 
 Commands: *Log in*, *Update works*, *Save this work*, *Check sync state of all works*.
@@ -61,7 +65,7 @@ Only a published revision of an article or a note can be annotated. When the not
 - A save carries the exact base version and is refused if the Center moved. The Center must explicitly confirm it preserves existing attachments and editorial metadata. It never publishes.
 - A save whose answer was lost keeps its request key and is recovered by that key, never resent.
 - Structured records (`year`, `history`, `openSource`) require a Center that explicitly supports safe private drafts. Only the title and the prose inside their existing named sections are editable; the first Markdown H1 must match the title. Other properties, section names and source fields must remain unchanged. Invalid edits stay local and are reported.
-- Referenced images are detected by their bytes and uploaded by content hash. Supported syntax is a relative Markdown path under `article-media/` or an explicit `![[article-media/name.png|alt]]` embed. Ambiguous `![[image.png]]`, files in other directories and unreferenced hidden-attachment replacement cannot be safely synchronized. A work may reference at most 12 PNG, JPEG or WebP images totaling 2 MiB.
+- Referenced images are detected by their bytes and uploaded by content hash. Supported syntax is a relative Markdown path under `article-media/` or an explicit `![[article-media/name.png|alt]]` embed. Ambiguous `![[image.png]]`, files in other directories and unreferenced hidden-attachment replacement cannot be safely synchronized. A work may reference at most 12 PNG, JPEG or WebP images. A save sends at most 2 MiB of picture bytes: pictures the Center already keeps with the work go by their path alone (on a Center whose work details say `reusesStoredMediaOnSave`), so only new or changed pictures count. Over the limit, the save is refused before anything is sent and names each picture with its size.
 - New unlinked notes, local renames and local deletions do not create, rename or delete Center works. Moved or missing linked notes are reported and are not silently recreated. Return the original note to its linked path to resume syncing.
 
 ## Work types, tags and notes
@@ -111,7 +115,7 @@ Once a vault has a released version, it keeps its RSSD plugin current by itself.
 To release, merge to `main`, then run `npm run release` (`node release.mjs publish`) from any checkout of this repo on the Mac that holds the release key. It:
 
 - clones rssd-obsidian `main`, and rssd `main` with the themes and sites it pins, fresh from GitHub;
-- installs dependencies from the lockfile and builds;
+- installs dependencies from the lockfile, runs the tests (a failure stops the release) and builds;
 - numbers the release with `manifest.json`'s major.minor and a patch one past both the Center's latest and the last release recorded in `~/.rssd/obsidian-plugin-releases.json`;
 - signs it with the private key in `~/.rssd/obsidian-plugin-release.pem`;
 - uploads it to the Center over SSH (`--server`, default `scholay-postiz`). The Center refuses a release that isn't signed with the key it pinned at the first publish, or that lowers or reuses a version;
@@ -127,7 +131,7 @@ Publishing, live production logs, the chat sidebar, merge view, logged-in source
 
 ## Develop
 
-`npm test` runs the sync rules against an in-memory vault and a stub Center (no Obsidian needed). The pure rules live in `src/sync-model.mjs`, `src/sync-engine.mjs`, `src/center-client.mjs` and `src/device-login.mjs`; `src/main.js` is the only file that touches Obsidian. Sync-state logic is shared with the rest of RSSD through `contracts/sync-state.mjs`.
+`npm test` runs the plugin's rules against an in-memory vault and a stub Center, with a stand-in for Obsidian's API, so Obsidian itself is not needed. Three files import Obsidian: `src/main.js`, `src/review-sidebar.mjs` and `src/annotation-tab.mjs`. Every other module is handed the vault, the network and whatever else it needs from Obsidian, so the same code runs in the tests, on desktop and on mobile. The sync rules are in `src/sync-model.mjs`, `src/sync-engine.mjs`, `src/center-client.mjs` and `src/device-login.mjs`. Sync-state logic is shared with the rest of RSSD through `contracts/sync-state.mjs`.
 
 ## Works panel and command links
 
@@ -142,8 +146,6 @@ obsidian://rssd?vault=metho&do=status&requestId=status-001
 Supported actions: `login`, `pull`, `status`, `spaces`, `save`. Save also requires an exact `path=Works/<id>.md` or `path=Works/en/<id>.md` (URL-encode the path). Each accepted command writes `.obsidian/plugins/rssd/runs/<requestId>.json`; `last-run.json` is a convenience copy. Reusing an ID returns the previous record, including an interrupted `running` record; it never repeats the action. Use a new command ID for an intentional retry. A pending draft save is still reconciled by its original **Center** request key. Keep these receipts private; no token is written into them.
 
 Buttons, commands, panel refresh and command links share one operation gate. A busy vault refuses another operation rather than queuing a potentially stale save. Failed login preserves the server error and closes its modal; an old token does not turn that failure into a success.
-
-See [product scope and remaining work](../docs/obsidian-product.md).
 
 ## Reading a work
 

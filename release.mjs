@@ -4,6 +4,8 @@
 //                                     ~/.rssd/obsidian-plugin-release.pem (back it up); the public half to
 //                                     release-key.pub, which is committed and compiled into every build.
 //   node release.mjs publish          Build, sign, upload to the Center, and check what vaults will receive.
+//   node release.mjs starter          Package the Center's current release as a starter vault (a zip) for a new
+//                                     writer: open it in Obsidian, trust the plugin, add a device token. Needs no key.
 //
 // Options for publish:
 //   --origin <Center URL>   default: the plugin's default Center
@@ -20,8 +22,9 @@
 import {generateKeyPairSync,createPrivateKey,createPublicKey,sign,createHash} from 'node:crypto';
 import {readFile,writeFile,mkdir,mkdtemp,copyFile,rename,rm,access} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
+import {deflateRawSync,crc32} from 'node:zlib';
 import {homedir,tmpdir} from 'node:os';
-import {join,dirname} from 'node:path';
+import {join,dirname,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 const HOME=join(homedir(),'.rssd'),KEY=process.env.RSSD_RELEASE_KEY_FILE||join(HOME,'obsidian-plugin-release.pem'),LEDGER=join(HOME,'obsidian-plugin-releases.json');
@@ -80,6 +83,8 @@ async function publish(){
   // Dependencies install without their scripts, so nothing from the lockfile runs on the Mac that holds the key.
   const env={PATH:process.env.PATH,HOME:process.env.HOME,...(process.env.TMPDIR?{TMPDIR:process.env.TMPDIR}:{})};
   run('npm',['ci','--ignore-scripts','--no-audit','--no-fund','--loglevel=error'],{cwd:plugin,env});
+  // A release reaches every vault, so it is built only from code whose tests pass here, against the rssd it is built with.
+  try{execFileSync('npm',['test'],{cwd:plugin,env,stdio:['ignore','inherit','inherit']});}catch{stop('The tests failed; nothing was built or released');}
   run(process.execPath,['esbuild.config.mjs'],{cwd:plugin,env:{...env,RSSD_RELEASE_VERSION:version}});
   const trusted=(await readFile(join(plugin,'release-key.pub'),'utf8')).trim();
   if(!(await readFile(join(plugin,'dist','main.js'),'utf8')).includes(JSON.stringify(trusted)))stop('The build does not carry release-key.pub');
@@ -122,9 +127,64 @@ async function publish(){
  }finally{await rm(work,{recursive:true,force:true});}
 }
 
+// A starter vault: an empty vault with the Center's current signed release installed and enabled. It holds no
+// token, no settings and nothing private, so it can be sent to anyone; the plugin then updates itself.
+const STARTER_GUIDE=`# 开始使用 RSSD
+
+这个 vault 已经装好 RSSD 插件，以后的新版本会自动更新。
+
+1. 打开这个文件夹时，Obsidian 会问是否信任插件作者：选 **信任作者并启用插件**。
+2. 打开 **设置 → 钥匙串（Keychain）**，点 **+**，名字随意（例如 \`rssd\`），把你拿到的设备密钥粘贴进去。
+3. 打开 **设置 → RSSD**，在 **Device token from the Keychain** 里选中刚才的名字。看到登录成功的提示就好了。
+4. 左侧的 **Works** 列表点 **Update**，就会下载你能看到的空间里的作品。
+
+没有密钥的话，也可以在 **设置 → RSSD** 点 **Log in**，在浏览器里登录 Center 并批准这台设备。
+
+密钥只给你一个人用，不要转发。不再需要时，告诉管理员撤销它。
+`;
+/** A zip of [{name, bytes}], names marked UTF-8 so 开始使用.md reads right on every system. */
+export function zipFiles(entries){
+ const locals=[],centrals=[],now=new Date();let offset=0;
+ const stamp=((((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate())<<16|((now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1)))>>>0;
+ for(const {name,bytes} of entries){
+  const nameBytes=Buffer.from(name,'utf8'),data=deflateRawSync(bytes),crc=crc32(bytes);
+  const head=Buffer.alloc(30);head.writeUInt32LE(0x04034b50,0);head.writeUInt16LE(20,4);head.writeUInt16LE(0x0800,6);head.writeUInt16LE(8,8);
+  head.writeUInt32LE(stamp,10);head.writeUInt32LE(crc,14);head.writeUInt32LE(data.length,18);head.writeUInt32LE(bytes.length,22);head.writeUInt16LE(nameBytes.length,26);
+  const central=Buffer.alloc(46);central.writeUInt32LE(0x02014b50,0);central.writeUInt16LE(0x031e,4);central.writeUInt16LE(20,6);central.writeUInt16LE(0x0800,8);central.writeUInt16LE(8,10);
+  central.writeUInt32LE(stamp,12);central.writeUInt32LE(crc,16);central.writeUInt32LE(data.length,20);central.writeUInt32LE(bytes.length,24);central.writeUInt16LE(nameBytes.length,28);
+  central.writeUInt32LE((0o100644<<16)>>>0,38);central.writeUInt32LE(offset,42);
+  locals.push(head,nameBytes,data);centrals.push(central,nameBytes);offset+=head.length+nameBytes.length+data.length;
+ }
+ const directory=Buffer.concat(centrals),end=Buffer.alloc(22);
+ end.writeUInt32LE(0x06054b50,0);end.writeUInt16LE(entries.length,8);end.writeUInt16LE(entries.length,10);end.writeUInt32LE(directory.length,12);end.writeUInt32LE(offset,16);
+ return Buffer.concat([...locals,directory,end]);
+}
+async function starter(){
+ const origin=option('origin',/DEFAULT_ORIGIN=.*?'(https:\/\/[^']+)'/.exec(await readFile('src/main.js','utf8'))[1]);
+ const {readRelease,verifyRelease,releasePath}=await import(pathToFileURL(join(process.cwd(),'src','self-update.mjs')).href);
+ const response=await fetch(releasePath(origin)+'/latest');
+ if(!response.ok)stop('The Center did not return its latest release (HTTP '+response.status+')');
+ const release=readRelease(await response.json());
+ if(!release)stop('The Center returned an invalid release');
+ // Checked exactly as a vault checks an update: the signature against release-key.pub, then every file's hash.
+ if(!await verifyRelease(release,(await readFile('release-key.pub','utf8')).trim()))stop('Release '+release.version+' is not signed with release-key.pub');
+ const entries=[];
+ for(const file of release.files){
+  const got=await fetch(releasePath(origin)+'/files/'+file.sha256);
+  const bytes=Buffer.from(await got.arrayBuffer());
+  if(!got.ok||bytes.length!==file.size||sha256(bytes)!==file.sha256)stop(file.name+' does not match the signed release');
+  entries.push({name:'RSSD/.obsidian/plugins/rssd/'+file.name,bytes});
+ }
+ entries.push({name:'RSSD/.obsidian/community-plugins.json',bytes:Buffer.from(JSON.stringify(['rssd'])+'\n')},{name:'RSSD/开始使用.md',bytes:Buffer.from(STARTER_GUIDE)});
+ const out=option('out','.'),zip=join(out,'rssd-starter-vault-'+release.version+'.zip');
+ await mkdir(out,{recursive:true});await writeFile(zip,zipFiles(entries));
+ console.log('Starter vault for RSSD '+release.version+' (rssd-obsidian '+release.commit.slice(0,7)+'): '+resolve(zip)+'\nUnzip, open the RSSD folder in Obsidian and trust the plugin; it updates itself from then on.');
+}
+
 const command=args[0];
 try{
  if(command==='key')await createKey();
  else if(command==='publish')await publish();
- else stop('Usage: node release.mjs key [--rotate] | publish [--dry-run] [--out <folder>] [--origin <url>] [--server <ssh host>] [--plugin-ref <branch>]');
+ else if(command==='starter')await starter();
+ else stop('Usage: node release.mjs key [--rotate] | publish [--dry-run] [--out <folder>] [--origin <url>] [--server <ssh host>] [--plugin-ref <branch>] | starter [--out <folder>] [--origin <url>]');
 }catch(error){console.error(error.stop?error.message:error);process.exitCode=1;}

@@ -407,7 +407,9 @@ export class SyncEngine{
   if(privateAppend&&current.acceptsPrivateAppendOnSave!==true)throw Object.assign(Error('This Center cannot keep the private picture record yet; local edits were kept. Update the Center before saving'),{code:'private_append_unavailable'});
   // The type, source link and tags go only to a Center that keeps them, and only when they differ from its own.
   const workFields=workFieldChanges({data:work.data,current:current.data||{},kind:work.kind,capable:await this.workTypesSupported(workspaceId),policy:this.sectionPolicy(work.data.sectionId)});
-  const packed=await packWorkMedia(work,mediaBytes);
+  // Pictures the Center already keeps with this exact revision go by path, so large ones are not sent again.
+  const stored=current.reusesStoredMediaOnSave===true?new Set((current.data?.assets||[]).map(asset=>asset.path)):new Set();
+  const packed=await packWorkMedia(work,mediaBytes,{stored});
   const requestKey=newRequestKey(),envelope=draftEnvelope({work:packed.work,base,requestKey,assets:packed.assets,allowEmptyOptional:blank.length>0,allowStructured:structured,privateAppend,workFields});
   // Keep the key before the first request so a lost answer can be recovered rather than resent.
   await this.store.set(workspaceId,work.data.id,{...base,pending:{requestKey,fingerprint,mediaHashes}},work.data.locale);
