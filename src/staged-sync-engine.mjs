@@ -1,5 +1,5 @@
 // Private staged drafts are a separate branch, never a canonical edition.
-import {draftEnvelope,packWorkMedia,notePath,checkLocale,workToNote,noteToWork,workFingerprint,localMediaPaths,base64ToBytes,mediaHash,MEDIA_FOLDER,isStructuredKind,verifyStructuredDetail} from './sync-model.mjs';
+import {draftEnvelope,packWorkMedia,notePath,checkLocale,workToNote,noteToWork,syncFingerprint,workFieldChanges,localMediaPaths,base64ToBytes,mediaHash,MEDIA_FOLDER,isStructuredKind,verifyStructuredDetail} from './sync-model.mjs';
 import {newRequestKey} from './sync-engine.mjs';
 import {checkCanonicalPull} from './path-guard.mjs';
 const fail=(message,code='staged_conflict')=>{throw Object.assign(Error(message),{code,conflict:true});};
@@ -47,6 +47,8 @@ export class StagedSyncEngine{
    base={...base,mediaHashes};await this.store.set(workspaceId,id,base,locale);
   }
   if(this.engine.localChanges(base,local)===false)return {state:'unchanged'};
+  // A staged draft keeps its edition's type, source link and tags: a change is refused here, before anything is sent.
+  workFieldChanges({data:work.data,current:detail.data,kind:work.kind,capable:await this.engine.workTypesSupported(workspaceId),staged:true});
   const packed=await packWorkMedia(work,local.mediaBytes),requestKey=newRequestKey(),draft=draftEnvelope({work:packed.work,base,requestKey,assets:packed.assets,allowEmptyOptional:true,allowStructured:structured});
   if(detail.data.translationOf)draft.data.translationOf=detail.data.translationOf;
   const current=await this.store.get(workspaceId,id,locale);if(!same(base,current))fail('The local baseline changed; local edits were kept');
@@ -109,7 +111,7 @@ export class StagedSyncEngine{
     const original=await this.engine.client.work(workspaceId,id,locale);
     if(original?.articleId!==id||original.version!==base.version||(original.publishedVersion??null)!==(base.publishedVersion??null)||original?.data?.id!==id||(original?.data?.locale||'zh-CN')!==locale){result.conflicts.push(id);continue;}
     const originalNote=workToNote(original,this.yaml.stringify),originalWork=noteToWork(originalNote.content,this.yaml.parse);
-    if(await workFingerprint(originalWork.data,localMediaPaths(originalWork.media))!==base.fingerprint){result.conflicts.push(id);continue;}
+    if(await syncFingerprint(originalWork.data,localMediaPaths(originalWork.media))!==base.fingerprint){result.conflicts.push(id);continue;}
     const hashes=await this.engine.centerMediaHashes(original);
     if(!same(await this.store.get(workspaceId,id,locale),base)){result.conflicts.push(id);continue;}
     base={...base,mediaHashes:hashes};await this.store.set(workspaceId,id,base,locale);

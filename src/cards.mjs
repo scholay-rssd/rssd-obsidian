@@ -152,6 +152,11 @@ const pause=()=>new Promise(resolve=>{const timer=setTimeout(resolve,50);if(type
 const sha256=async bytes=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(byte=>byte.toString(16).padStart(2,'0')).join('');
 const dataUrl=(name,bytes)=>{const data=bytesToBase64(bytes);return 'data:'+mediaType(name,data)+';base64,'+data;};
 
+/** A long article gets a card set; a note does not: its pictures are its content. Returns the refusal, or null. */
+export function cardSetRefusal(type){return type==='note'?Object.assign(Error('A note has no card set: its pictures are its content.'),{code:'note_has_no_cards'}):null;}
+/** Where a work's card package is saved: one folder per language edition, so each edition keeps its own set. */
+export const cardExportFolder=(name,locale='zh-CN')=>'Exports/cards/'+(locale==='en'?'en/':'')+name;
+
 /**
  * Build the cards for a note. `render(markdown,element)` fills an element with the rendered body,
  * `readMedia(name)` returns a vault image's bytes or null, `frame()` returns an iframe attached to the page

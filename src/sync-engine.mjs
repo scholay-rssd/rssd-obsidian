@@ -2,7 +2,7 @@
 // are injected. Rules (see the RSSD business spec): the Center is the source of truth; a pull never overwrites a
 // note with local changes; a save carries the exact base and is refused when the Center moved; saving never
 // publishes; a save whose answer was lost is recovered by its original request key, never resent.
-import {workToNote,noteToWork,updateNoteVersion,workFingerprint,centerMediaPaths,localMediaPaths,workState,draftEnvelope,isReadOnlyWork,isStructuredKind,verifyStructuredDetail,mediaHash,packWorkMedia,
+import {workToNote,noteToWork,updateNoteVersion,syncFingerprint,workFieldChanges,centerMediaPaths,localMediaPaths,workState,draftEnvelope,isReadOnlyWork,isStructuredKind,verifyStructuredDetail,mediaHash,packWorkMedia,
  bytesToBase64,base64ToBytes,notePath,checkLocale,MEDIA_FOLDER,privateAdditionPath,parsePrivateAddition} from './sync-model.mjs';
 import {checkCanonicalPull} from './path-guard.mjs';
 
@@ -47,7 +47,11 @@ async function* catalogPages(client,workspaceId,locale){
 
 export class SyncEngine{
  /** `store` keeps baselines: get(workspaceId,articleId), set(...), delete(...), list(workspaceId). */
- constructor({client,vault,store,yaml,pathRecords=()=>({})}){this.client=client;this.vault=vault;this.store=store;this.yaml=yaml;this.pathRecords=pathRecords;}
+ /** `sectionPolicy(sectionId)` returns what a section takes (sectionWorkPolicy over the site's bundled section catalog), or null when unknown. */
+ constructor({client,vault,store,yaml,pathRecords=()=>({}),sectionPolicy=()=>null}){this.client=client;this.vault=vault;this.store=store;this.yaml=yaml;this.pathRecords=pathRecords;this.sectionPolicy=sectionPolicy;}
+
+ /** Whether this space's Center keeps work types, note source links and tags. A client that cannot say means no. */
+ async workTypesSupported(workspaceId){return typeof this.client.workTypes==='function'&&await this.client.workTypes(workspaceId)===true;}
 
  async noteFingerprint(path){
   const content=await this.vault.read(path);if(content==null)return null;
@@ -58,7 +62,7 @@ export class SyncEngine{
    mediaBytes[name]=bytes==null?null:new Uint8Array(bytes);
    mediaHashes[name]=bytes==null?null:await mediaHash(mediaBytes[name]);
   }
-  return {work,content,fingerprint:await workFingerprint(work.data,localMediaPaths(work.media)),mediaBytes,mediaHashes};
+  return {work,content,fingerprint:await syncFingerprint(work.data,localMediaPaths(work.media)),mediaBytes,mediaHashes};
  }
 
  /** Compare legacy text baseline and byte-level image baseline without trusting
@@ -134,7 +138,7 @@ export class SyncEngine{
    }
   }
   const written=noteToWork(note.content,this.yaml.parse);
-  const fingerprint=await workFingerprint(written.data,localMediaPaths(written.media));
+  const fingerprint=await syncFingerprint(written.data,localMediaPaths(written.media));
   await this.store.set(workspaceId,detail.data.id,{articleId:detail.data.id,sectionId:detail.data.sectionId,locale:detail.data.locale||'zh-CN',
    version:detail.version,publishedVersion:detail.publishedVersion??null,fingerprint,mediaHashes,readOnly:isReadOnlyWork(detail)},locale);
   return note.path;
@@ -387,7 +391,7 @@ export class SyncEngine{
    // An older baseline can lack image hashes. Rebuild it only from the same
    // authenticated Center revision and verify its text fingerprint first.
    const original=noteToWork(workToNote(current,this.yaml.stringify).content,this.yaml.parse);
-   if(await workFingerprint(original.data,localMediaPaths(original.media))!==base.fingerprint)
+   if(await syncFingerprint(original.data,localMediaPaths(original.media))!==base.fingerprint)
     throw Object.assign(Error('The original image baseline could not be verified; local edits were kept'),{code:'media_baseline_unknown'});
    const originalHashes=await this.centerMediaHashes(current),verified={...base,mediaHashes:originalHashes};
    if(this.localChanges(verified,local)===false){
@@ -401,8 +405,10 @@ export class SyncEngine{
   // A private record waiting for this work (who drew its pictures) goes with the save, only to a Center that keeps it private.
   const additionPath=privateAdditionPath(work.data.id,work.data.locale),privateAppend=parsePrivateAddition(await this.vault.read(additionPath));
   if(privateAppend&&current.acceptsPrivateAppendOnSave!==true)throw Object.assign(Error('This Center cannot keep the private picture record yet; local edits were kept. Update the Center before saving'),{code:'private_append_unavailable'});
+  // The type, source link and tags go only to a Center that keeps them, and only when they differ from its own.
+  const workFields=workFieldChanges({data:work.data,current:current.data||{},kind:work.kind,capable:await this.workTypesSupported(workspaceId),policy:this.sectionPolicy(work.data.sectionId)});
   const packed=await packWorkMedia(work,mediaBytes);
-  const requestKey=newRequestKey(),envelope=draftEnvelope({work:packed.work,base,requestKey,assets:packed.assets,allowEmptyOptional:blank.length>0,allowStructured:structured,privateAppend});
+  const requestKey=newRequestKey(),envelope=draftEnvelope({work:packed.work,base,requestKey,assets:packed.assets,allowEmptyOptional:blank.length>0,allowStructured:structured,privateAppend,workFields});
   // Keep the key before the first request so a lost answer can be recovered rather than resent.
   await this.store.set(workspaceId,work.data.id,{...base,pending:{requestKey,fingerprint,mediaHashes}},work.data.locale);
   let receipt;
@@ -418,6 +424,68 @@ export class SyncEngine{
   // Saved with the draft; a copy left behind would only be skipped by the Center as already recorded.
   if(privateAppend&&this.vault.remove)await this.vault.remove(additionPath).catch(()=>{});
   return confirmed;
+ }
+
+ /**
+  * Rewrite a long article as a note: a new note work in the same space and section, linked to the revision of the
+  * article it was written from and saved as a private draft for the writer to finish. The article is not changed,
+  * and the note is a work of its own, never the article's card page. It starts with the article's title, summary,
+  * standalone pictures and tags. Only for the Chinese edition of a saved long article, in a section that takes
+  * notes, on a Center that keeps work types. Returns {state:'created',path,articleId,revision}.
+  */
+ async rewriteAsNote(workspaceId,path,{date=new Date().toISOString().slice(0,10)}={}){
+  const coded=(message,code)=>Object.assign(Error(message),{code});
+  const local=await this.noteFingerprint(path);
+  if(!local)throw Error('This note is not an RSSD work');
+  const {work}=local,{id,locale,sectionId}=work.data;
+  if(path!==notePath(id,locale))throw Error('The rssd-id property does not match this work file; restore it first');
+  if(locale!=='zh-CN')throw coded('A note is rewritten from the Chinese edition of an article','not_chinese');
+  const policy=this.sectionPolicy(sectionId);
+  if(work.kind!=='news'||(work.data.workType??policy?.defaultType??'article')!=='article')throw coded('Only a long article can be rewritten as a note','not_article');
+  if(!policy?.workTypes.includes('note'))throw coded('This section does not take notes','section_takes_no_notes');
+  if(!/^[a-z0-9][a-z0-9-]{2,99}$/.test(id))throw coded('This article ID cannot be named as the source of a note','invalid_source');
+  const base=await this.store.get(workspaceId,id,locale);
+  this.assertLocalPath(base,id,locale,true);
+  if(!base||base.readOnly)throw coded('Update this article from the Center first','not_linked');
+  if(base.pending||base.staged)throw coded('Finish saving this article first','article_pending');
+  if(this.localChanges(base,local)!==false)throw coded('Save this article first, so the note names the revision it was written from','article_edited');
+  if(!await this.workTypesSupported(workspaceId))throw coded('This Center does not keep notes yet; update the Center first','work_types_unavailable');
+  const missing=['summary','author','category'].filter(key=>!work.data[key].trim());
+  if(missing.length)throw coded('Add the article\'s '+missing.join(' and ')+' first; a new work needs them','article_incomplete');
+  // A readable ID beside the article's: <article>-note, then -note-2 and so on, free in the vault and at the Center.
+  const stem=id.slice(0,90).replace(/-+$/,'');let noteId=null;
+  for(let n=1;n<=20&&!noteId;n++){
+   const candidate=stem+'-note'+(n>1?'-'+n:'');
+   if(await this.vault.read(notePath(candidate,'zh-CN'))!=null||await this.vault.read(notePath(candidate,'en'))!=null)continue;
+   if(await this.store.get(workspaceId,candidate,'zh-CN')||await this.store.get(workspaceId,candidate,'en'))continue;
+   if(await this.client.idAvailable(workspaceId,candidate))noteId=candidate;
+  }
+  if(!noteId)throw coded('Every note ID beside this article is taken; update works from the Center and try again','no_free_id');
+  const pictures=[...work.data.markdown.matchAll(/^!\[[^\]\r\n]*\]\(\/article-media\/[A-Za-z0-9._-]+\)[ \t]*$/gm)].map(match=>match[0].trim());
+  const tags=work.data.tags?.length?work.data.tags:undefined;
+  const note=workToNote({version:0,publishedVersion:null,data:{id:noteId,title:work.data.title,summary:work.data.summary,
+   markdown:[work.data.summary.trim(),...new Set(pictures)].join('\n\n')+'\n',date,author:work.data.author,category:work.data.category,sectionId,
+   assets:[],workType:'note',adaptedFrom:{articleId:id,revision:base.version},...(tags?{tags}:{})}},this.yaml.stringify);
+  await this.vault.write(note.path,note.content,{expectedContent:null});
+  const created=await this.noteFingerprint(note.path);
+  const draft={articleId:noteId,sectionId,locale:'zh-CN',version:0,publishedVersion:null,fingerprint:null,mediaHashes:{},readOnly:false};
+  const removeNote=async()=>{if(await this.vault.read(note.path)===note.content&&this.vault.remove)await this.vault.remove(note.path).catch(()=>{});};
+  let envelope,requestKey;
+  try{
+   const workFields=workFieldChanges({data:created.work.data,current:{},capable:true,policy});
+   const packed=await packWorkMedia(created.work,created.mediaBytes);requestKey=newRequestKey();
+   envelope=draftEnvelope({work:packed.work,base:draft,requestKey,assets:packed.assets,workFields});
+  }catch(error){await removeNote();throw error;}
+  // Keep the key before the first request so a lost answer can be recovered rather than resent.
+  await this.store.set(workspaceId,noteId,{...draft,pending:{requestKey,fingerprint:created.fingerprint,mediaHashes:created.mediaHashes}},'zh-CN');
+  let receipt;
+  try{receipt=await this.client.saveDraft(workspaceId,envelope);}
+  catch(error){
+   if(error.status>=400&&error.status<500&&error.status!==408){await this.store.delete(workspaceId,noteId,'zh-CN');await removeNote();throw error;}
+   throw Object.assign(error,{retained:true,path:note.path});
+  }
+  const confirmed=await this.confirm(workspaceId,noteId,draft,created.fingerprint,receipt,requestKey,created.mediaHashes);
+  return {...confirmed,state:'created',path:note.path,articleId:noteId};
  }
 
  async recover(workspaceId,path,base){
