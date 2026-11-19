@@ -117,7 +117,7 @@ Publishing, live production logs, the chat sidebar, merge view, logged-in source
 
 ## Develop
 
-`npm test` runs the sync rules against an in-memory vault and a stub Center (no Obsidian needed). The pure rules live in `src/sync-model.mjs`, `src/sync-engine.mjs`, `src/center-client.mjs` and `src/device-login.mjs`; `src/main.js` is the only file that touches Obsidian. Sync-state logic is shared with the rest of RSSD through `contracts/sync-state.mjs`.
+`npm test` runs the plugin's rules against an in-memory vault and a stub Center, with a stand-in for Obsidian's API, so Obsidian itself is not needed. Three files import Obsidian: `src/main.js`, `src/review-sidebar.mjs` and `src/annotation-tab.mjs`. Every other module is handed the vault, the network and whatever else it needs from Obsidian, so the same code runs in the tests, on desktop and on mobile. The sync rules are in `src/sync-model.mjs`, `src/sync-engine.mjs`, `src/center-client.mjs` and `src/device-login.mjs`. Sync-state logic is shared with the rest of RSSD through `contracts/sync-state.mjs`.
 
 ## Works panel and command links
 
@@ -132,8 +132,6 @@ obsidian://rssd?vault=metho&do=status&requestId=status-001
 Supported actions: `login`, `pull`, `status`, `spaces`, `save`. Save also requires an exact `path=Works/<id>.md` or `path=Works/en/<id>.md` (URL-encode the path). Each accepted command writes `.obsidian/plugins/rssd/runs/<requestId>.json`; `last-run.json` is a convenience copy. Reusing an ID returns the previous record, including an interrupted `running` record; it never repeats the action. Use a new command ID for an intentional retry. A pending draft save is still reconciled by its original **Center** request key. Keep these receipts private; no token is written into them.
 
 Buttons, commands, panel refresh and command links share one operation gate. A busy vault refuses another operation rather than queuing a potentially stale save. Failed login preserves the server error and closes its modal; an old token does not turn that failure into a success.
-
-See [product scope and remaining work](../docs/obsidian-product.md).
 
 ## Reading a work
 
