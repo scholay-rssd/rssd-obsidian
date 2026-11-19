@@ -64,8 +64,24 @@ test('each option is counted with every other facet applied but its own',()=>{
 test('stored or hand-built filters are cleaned, and an inverted range is put the right way round',()=>{
  assert.deepEqual(normalizeFilter(null),emptyFilter());
  assert.deepEqual(normalizeFilter({status:'nope',locale:'fr',sections:['a','a',3],writers:'x',from:'2026-11-10',to:'2026-11-01'}),
-  {status:'all',locale:'zh-CN',sections:['a'],agents:[],models:[],machines:[],from:'2026-11-01',to:'2026-11-10'});
+  {status:'all',locale:'zh-CN',cardVariants:[],sections:['a'],agents:[],models:[],machines:[],from:'2026-11-01',to:'2026-11-10'});
  assert.deepEqual(normalizeFilter({from:'11/01/2026'}).from,'');
+});
+
+test('card versions list matching works once and count each version within the other filters',()=>{
+ const cards=[work('code',{cardVariants:['ai-code']}),work('image',{cardVariants:['ai-image']}),
+  work('both',{cardVariants:['ai-code','ai-image']}),work('neither'),work('other',{locale:'en',cardVariants:['ai-image']})];
+ const filter=normalizeFilter({cardVariants:['ai-code','unknown','ai-code']});
+ const listed=f=>cards.filter(w=>matches(w,f)).map(w=>w.id);
+ assert.deepEqual(listed(filter),['code','both']);
+ const combined=toggled(filter,'cardVariants','ai-image');
+ assert.deepEqual(listed(combined),['code','image','both']);
+ assert.equal(narrowedBy(combined),1);
+ const chips=activeChips(combined);
+ assert.deepEqual(chips.map(c=>c.text),['智能排版','模型生图']);
+ assert.deepEqual(listed(withoutChip(combined,chips[0])),['image','both']);
+ assert.deepEqual(Object.fromEntries(facetCounts(cards,filter,()=>({})).cardVariants),{'ai-code':2,'ai-image':2});
+ assert.deepEqual(Object.fromEntries(facetCounts(cards,filter,()=>({}),'both').cardVariants),{'ai-code':1,'ai-image':1});
 });
 
 test('chosen values show as chips that each remove only themselves',()=>{

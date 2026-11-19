@@ -46,6 +46,11 @@ A vault can instead show the topics waiting to be written, across every space th
 A topic is identified by its `rssd-demand` property, so its note may be renamed. Properties starting with `rssd-` are the Center's and are rewritten on update. An update never overwrites a note with unsaved edits; when the Center's side changed too, the note is reported and left as written. Finished topics keep their note with the work's ID in `rssd-work`; the first update of a space brings only open topics. Mobile can update but not save.
 
 This needs a Center with the demand pool endpoints (list filters, `updatedSince`, device withdrawal). An older Center still lists topics, but returns the whole queue on every update and refuses a withdrawal.
+## Annotating a work
+
+The review sidebar has a fourth tab, **标注**. For the open work it asks the Center which questions apply to the published revision readers see, and shows them: 1 to 5 scales, single choices and yes or no. Answers are kept on this device until submitted, so switching works or tabs loses nothing. Submitting adds a record at the Center and never changes the work. Submitting again adds a newer record, and the newest counts.
+
+Only a published revision of an article or a note can be annotated. When the note in the vault is a newer draft than what is published, the tab says which revision the answers are about. This needs a Center with the annotation endpoints; an older Center is reported as not supporting annotation.
 
 ## Rules (from the RSSD business spec)
 
