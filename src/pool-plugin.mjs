@@ -71,7 +71,10 @@ export function installTopicPool(plugin,obsidian){
  return pool;
 }
 
-/** The pool rows of the settings tab: the vault's purpose, and in a pool vault the update button. */
+/**
+ * The pool rows of the settings tab: the vault's purpose, and in a pool vault the update button. Returns whether
+ * this is a pool vault, so the caller leaves out the rows that only make sense for a space's works.
+ */
 export function poolSettingRows(containerEl,plugin,Setting){
  const s=plugin.settings,pool=isPoolVault(s),locked=pool?!canBecomeWorks(s):!canBecomePool(s);
  new Setting(containerEl).setName('Vault purpose')
@@ -82,4 +85,5 @@ export function poolSettingRows(containerEl,plugin,Setting){
   });});
  if(pool)new Setting(containerEl).setName('Update topics').setDesc('Bring new and changed topics into '+POOL_FOLDER+'/. A note with unsaved edits is never overwritten.')
   .addButton(b=>b.setButtonText('Update').onClick(()=>plugin.topicPool.update()));
+ return pool;
 }

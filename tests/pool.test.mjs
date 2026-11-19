@@ -124,6 +124,17 @@ test('an update never overwrites a note with unsaved edits, and says when both s
  const restored=await pool.restore(one,registry);assert.equal(restored.state,'restored');
  assert.match(await vault.read(one),/rssd-state: claimed[\s\S]*rssd-claimed-by: w9/);assert.match(await vault.read(one),/写清识别特征与照护需求。/);assert.equal(await pool.edited(one),false);
 });
+test('restoring finds the topic even after its title changed at the Center, and removes a withdrawn one',async()=>{
+ const {pool,vault,client,index}=setup([demand('d1','缅因猫：温柔的巨人'),demand('d2','布偶猫：性格与照护')]);
+ await pool.pull(registry);const one='Topics/萌宠/每日一猫/缅因猫：温柔的巨人.md',two='Topics/萌宠/每日一猫/布偶猫：性格与照护.md';
+ await edit(vault,one,'写清识别特征与照护需求。','本地改的。');
+ const d1=client.store.get('d1');d1.title='完全不同的新标题';d1.generation++;d1.updatedAt=tick();
+ const restored=await pool.restore(one,registry);assert.equal(restored.state,'restored');assert.equal(restored.title,'完全不同的新标题');
+ assert.match(await vault.read(one),/title: 完全不同的新标题[\s\S]*rssd-generation: 1[\s\S]*写清识别特征与照护需求。/);assert.equal((await index.get('d1')).generation,1);
+ client.store.get('d2').state='cancelled';
+ assert.equal((await pool.restore(two,registry)).state,'removed');assert.equal(vault.files.has(two),false);assert.equal(await index.get('d2'),null);
+ client.store.delete('d1');await assert.rejects(pool.restore(one,registry),{code:'not_found'});
+});
 test('saving sends only the edited fields against the generation the note was in step with',async()=>{
  const {pool,vault,client,index}=setup([demand('d1','缅因猫：温柔的巨人',{payload:{topicKey:'maine'}})]);
  await pool.pull(registry);const path='Topics/萌宠/每日一猫/缅因猫：温柔的巨人.md';

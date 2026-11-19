@@ -143,13 +143,31 @@ export class PoolSync{
   return {state:'withdrawn',id:note.id,title:demand?.title||note.topic.title};
  }
 
+ /**
+  * One demand by its ID. The Center has no such read, so this looks where the topic most likely is: a search by
+  * the titles this vault knows it under, then, because the title may have changed at the Center, every demand of
+  * its section. Null when the Center does not list it.
+  */
+ async find(id,{workspaceId,sectionId,titles=[]}){
+  for(const title of [...new Set(titles.filter(Boolean))]){
+   const rows=await this.client.demands({workspaceId,sectionId,search:title,limit:PAGE});
+   const hit=(Array.isArray(rows)?rows:[]).find(row=>row.id===id);if(hit)return hit;
+  }
+  for(let page=0;page<MAX_PAGES;page++){
+   const rows=await this.client.demands({workspaceId,sectionId,limit:PAGE,offset:page*PAGE});
+   if(!Array.isArray(rows))return null;
+   const hit=rows.find(row=>row.id===id);if(hit)return hit;
+   if(rows.length<PAGE)return null;
+  }
+  return null;
+ }
+
  /** Replace one note with the Center's version, discarding its unsaved edits. */
  async restore(path,registry){
   const content=await this.vault.read(path),note=content==null?null:noteToTopic(content,this.yaml.parse);
   if(!note?.id)throw fail('This note is not a topic of the Center','invalid_topic');
   const entry=await this.index.get(note.id);
-  const rows=await this.client.demands({workspaceId:entry?.workspaceId||note.workspaceId,sectionId:entry?.sectionId||note.sectionId,search:entry?.base?.title||note.topic.title,limit:PAGE});
-  const demand=(Array.isArray(rows)?rows:[]).find(row=>row.id===note.id);
+  const demand=await this.find(note.id,{workspaceId:entry?.workspaceId||note.workspaceId,sectionId:entry?.sectionId||note.sectionId,titles:[entry?.base?.title,note.topic.title]});
   if(!demand)throw fail('The Center no longer lists this topic; update the topic pool','not_found');
   if(demand.state==='cancelled'){await this.vault.remove(path);await this.index.delete(note.id);return {state:'removed',id:note.id,title:demand.title};}
   await this.place(demand,registry,{path,expectedContent:content});
