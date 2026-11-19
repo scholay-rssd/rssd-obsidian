@@ -312,6 +312,7 @@ class WelcomeModal extends Modal{
  onOpen(){
   const {contentEl}=this;contentEl.createEl('h3',{text:'Welcome to RSSD'});
   contentEl.createEl('p',{text:'Log in once to read your site\'s articles here. Your browser opens; sign in to RSSD and approve this device. Nothing is downloaded into the vault.'});
+  contentEl.createEl('p',{text:'Got a device token from your editor? Add it under Settings → Keychain, then choose it under Settings → RSSD → Device token from the Keychain. No browser needed.'});
   contentEl.createEl('p',{text:'Center: '+this.plugin.settings.origin,cls:'setting-item-description'});
   new Setting(contentEl).addButton(b=>b.setButtonText('Log in to RSSD').setCta().onClick(async()=>{
    this.close();
