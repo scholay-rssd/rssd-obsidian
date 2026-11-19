@@ -38,8 +38,8 @@ async function hash(text){
  const value=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
  return [...new Uint8Array(value)].map(x=>x.toString(16).padStart(2,'0')).join('');
 }
-async function readEdition(plugin,front){
- const {workspaceId,documents}=plugin.settings,id=String(front['rssd-id']),locale=front['rssd-locale']||'zh-CN',version=Number(front['rssd-version']);
+async function readEdition(plugin,front,file){
+ const workspaceId=plugin.spaceOf?.(file)||plugin.settings.workspaceId,{documents}=plugin.settings,id=String(front['rssd-id']),locale=front['rssd-locale']||'zh-CN',version=Number(front['rssd-version']);
  if(!Number.isSafeInteger(version)||version<1)return null;
  const client=plugin.client();let workId=documents?.[workspaceId]?.[locale]?.[id];
  // Migrated document IDs can differ from Center work IDs.
@@ -89,18 +89,18 @@ export class ReviewSidebar extends ItemView{
   const front=file&&this.app.metadataCache.getFileCache(file)?.frontmatter;
   const cardView=ws.getMostRecentLeaf?.(ws.rootSplit)?.view;
   const manifest=cardView?.getViewType?.()==='rssd-cards'&&cardView.file===file?cardView.result?.manifest:null;
-  const key=JSON.stringify([this.plugin.settings.origin,this.plugin.settings.workspaceId,file?.path,file?.stat?.mtime,front?.['rssd-id'],front?.['rssd-version'],manifest?.style,manifest?.source?.hash]);
+  const key=JSON.stringify([this.plugin.settings.origin,(this.plugin.spaceOf?.(file)||this.plugin.settings.workspaceId),file?.path,file?.stat?.mtime,front?.['rssd-id'],front?.['rssd-version'],manifest?.style,manifest?.source?.hash]);
   if(key===this.key)return;
   this.key=key;this.file=file;this.front=front;this.card=manifest;this.data=null;this.storage=null;this.local=[];this.error=false;this.busy=!!front;
   const seq=++this.seq;this.draw();
   if(!front?.['rssd-id'])return;
   const text=await this.app.vault.cachedRead(file),digest=await hash(text);
   if(seq!==this.seq)return;
-  const base=JSON.stringify([this.plugin.settings.origin,this.plugin.settings.workspaceId,front['rssd-id'],front['rssd-locale']||'zh-CN',front['rssd-version']||0]);
-  this.storage='rssd-review-v1:'+JSON.stringify([this.plugin.settings.origin,this.plugin.settings.workspaceId,front['rssd-id'],front['rssd-locale']||'zh-CN']);this.digest=digest;this.local=localReferences(text);this.draw();
+  const base=JSON.stringify([this.plugin.settings.origin,(this.plugin.spaceOf?.(file)||this.plugin.settings.workspaceId),front['rssd-id'],front['rssd-locale']||'zh-CN',front['rssd-version']||0]);
+  this.storage='rssd-review-v1:'+JSON.stringify([this.plugin.settings.origin,(this.plugin.spaceOf?.(file)||this.plugin.settings.workspaceId),front['rssd-id'],front['rssd-locale']||'zh-CN']);this.digest=digest;this.local=localReferences(text);this.draw();
   let request=this.cache.get(base);
   if(!request){
-   request=Promise.allSettled([readEdition(this.plugin,front),this.plugin.privateRecord(file)]);
+   request=Promise.allSettled([readEdition(this.plugin,front,file),this.plugin.privateRecord(file)]);
    this.cache.set(base,request);if(this.cache.size>12)this.cache.delete(this.cache.keys().next().value);
   }
   const [edition,record]=await request;

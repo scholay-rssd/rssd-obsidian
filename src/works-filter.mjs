@@ -12,7 +12,7 @@ export const CARD_VARIANTS=Object.freeze({'ai-code':'智能排版','ai-image':'�
 export const NO_WRITER='';
 const DATE=/^\d{4}-\d{2}-\d{2}$/;
 
-export function emptyFilter(locale='zh-CN'){return {status:'all',locale,cardVariants:[],sections:[],agents:[],models:[],machines:[],from:'',to:''};}
+export function emptyFilter(locale='zh-CN'){return {status:'all',locale,cardVariants:[],spaces:[],sections:[],agents:[],models:[],machines:[],from:'',to:''};}
 
 /** A filter read back from storage or built by the panel: anything unknown or malformed falls back to "all". */
 export function normalizeFilter(value){
@@ -22,7 +22,7 @@ export function normalizeFilter(value){
  if(from&&to&&from>to)[from,to]=[to,from];
  return {status:STATUSES.includes(v.status)?v.status:base.status,locale:LOCALES.includes(v.locale)?v.locale:base.locale,
   cardVariants:list(v.cardVariants).filter(id=>Object.hasOwn(CARD_VARIANTS,id)),
-  sections:list(v.sections),agents:list(v.agents),models:list(v.models),machines:list(v.machines),from,to};
+  spaces:list(v.spaces),sections:list(v.sections),agents:list(v.agents),models:list(v.models),machines:list(v.machines),from,to};
 }
 
 const localeOf=work=>work.locale==='en'?'en':'zh-CN';
@@ -45,6 +45,8 @@ export function matches(work,filter,{state,writer,query=''}={},skip=''){
  if(skip!=='locale'&&localeOf(work)!==filter.locale)return false;
  if(skip!=='status'&&!statusMatches(filter.status,work,state))return false;
  if(skip!=='cardVariants'&&filter.cardVariants.length&&!work.cardVariants?.some(id=>filter.cardVariants.includes(id)))return false;
+ // A vault of several spaces: `space` is the work's space, and `section` is unique across spaces.
+ if(skip!=='spaces'&&filter.spaces.length&&!filter.spaces.includes(work.space||''))return false;
  if(skip!=='sections'&&filter.sections.length&&!filter.sections.includes(work.section||''))return false;
  if(skip!=='agents'&&filter.agents.length&&!filter.agents.includes(agentOf(writer)))return false;
  if(skip!=='models'&&filter.models.length&&!filter.models.includes(modelOf(writer)))return false;
@@ -61,13 +63,14 @@ export function matches(work,filter,{state,writer,query=''}={},skip=''){
  * not. `context(work)` returns {state, writer}. Sections, agents, models and machines come back as Maps of value → count.
  */
 export function facetCounts(works,filter,context,query=''){
- const counts={status:{all:0,edited:0,check:0},locale:{'zh-CN':0,en:0},cardVariants:new Map(),sections:new Map(),agents:new Map(),models:new Map(),machines:new Map(),dates:0};
+ const counts={status:{all:0,edited:0,check:0},locale:{'zh-CN':0,en:0},cardVariants:new Map(),spaces:new Map(),sections:new Map(),agents:new Map(),models:new Map(),machines:new Map(),dates:0};
  const add=(map,key)=>map.set(key,(map.get(key)||0)+1);
  for(const work of works){
   const c={...context(work),query};
   if(matches(work,filter,c,'status'))for(const status of STATUSES)if(statusMatches(status,work,c.state))counts.status[status]++;
   if(matches(work,filter,c,'locale'))counts.locale[localeOf(work)]++;
   if(matches(work,filter,c,'cardVariants'))for(const id of work.cardVariants||[])add(counts.cardVariants,id);
+  if(matches(work,filter,c,'spaces'))add(counts.spaces,work.space||'');
   if(matches(work,filter,c,'sections'))add(counts.sections,work.section||'');
   if(matches(work,filter,c,'agents'))add(counts.agents,agentOf(c.writer));
   if(matches(work,filter,c,'models'))add(counts.models,modelOf(c.writer));
@@ -78,13 +81,14 @@ export function facetCounts(works,filter,context,query=''){
 }
 
 /** How many facets narrow the list (the language is a choice of list, not a narrowing). */
-export const narrowedBy=filter=>(filter.status!=='all')+(filter.cardVariants.length>0)+(filter.sections.length>0)+(filter.agents.length>0)+(filter.models.length>0)+(filter.machines.length>0)+(!!(filter.from||filter.to));
+export const narrowedBy=filter=>(filter.status!=='all')+(filter.cardVariants.length>0)+(filter.spaces.length>0)+(filter.sections.length>0)+(filter.agents.length>0)+(filter.models.length>0)+(filter.machines.length>0)+(!!(filter.from||filter.to));
 
-/** One removable chip per chosen value, in the panel's order. `sectionName(id)` names a section. */
-export function activeChips(filter,{sectionName=id=>id}={}){
+/** One removable chip per chosen value, in the panel's order. `sectionName(id)` names a section, `spaceName(id)` a space. */
+export function activeChips(filter,{sectionName=id=>id,spaceName=id=>id}={}){
  const chips=[];
  if(filter.status!=='all')chips.push({facet:'status',value:filter.status,text:filter.status==='edited'?'Edited':'To check'});
  for(const id of filter.cardVariants)chips.push({facet:'cardVariants',value:id,text:CARD_VARIANTS[id]});
+ for(const id of filter.spaces)chips.push({facet:'spaces',value:id,text:spaceName(id)||id});
  for(const id of filter.sections)chips.push({facet:'sections',value:id,text:sectionName(id)||'No section'});
  for(const agent of filter.agents)chips.push({facet:'agents',value:agent,text:agent||'No agent recorded'});
  for(const model of filter.models)chips.push({facet:'models',value:model,text:model||'No model recorded'});
@@ -97,7 +101,7 @@ export function withoutChip(filter,{facet,value}){
  const next=normalizeFilter(filter);
  if(facet==='status')next.status='all';
  else if(facet==='dates'){next.from='';next.to='';}
- else if(['cardVariants','sections','agents','models','machines'].includes(facet))next[facet]=next[facet].filter(item=>item!==value);
+ else if(['cardVariants','spaces','sections','agents','models','machines'].includes(facet))next[facet]=next[facet].filter(item=>item!==value);
  return next;
 }
 /** The filter with one value of a multi-choice facet turned on or off. */

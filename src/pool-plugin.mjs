@@ -18,7 +18,7 @@ const REFUSALS={
 export const poolFailure=error=>(REFUSALS[error?.code]||'The topic pool could not do that')+': '+String(error?.message||error).slice(0,300);
 export const isPoolVault=settings=>settings?.mode==='pool';
 /** A works vault has a space; a pool vault has topics. Neither may be turned into the other in place. */
-export const canBecomePool=settings=>!settings?.boundSpace&&!settings?.workspaceId;
+export const canBecomePool=settings=>!settings?.boundSpace&&!settings?.workspaceId&&!Object.values(settings?.baselines||{}).some(bucket=>Object.keys(bucket||{}).length);
 export const canBecomeWorks=settings=>!Object.keys(settings?.pool?.entries||{}).length;
 
 /** Where each topic's note is and what it was last in step with, kept in the plugin settings. */
@@ -79,8 +79,8 @@ export function poolSettingRows(containerEl,plugin,Setting){
  const s=plugin.settings,pool=isPoolVault(s),locked=pool?!canBecomeWorks(s):!canBecomePool(s);
  new Setting(containerEl).setName('Vault purpose')
   .setDesc(pool?'This vault is a topic pool: it shows the topics waiting to be written in every space this device is authorized for, under '+POOL_FOLDER+'/. Use a separate vault to edit a space\'s works.'
-   :locked?'This vault holds the works of '+(s.boundSpace||s.workspaceId)+'. Use a separate, empty vault for the topic pool.':'Works of one space, or the topic pool of all spaces. Choose the topic pool only in a vault that holds no works.')
-  .addDropdown(t=>{t.addOption('works','Works of one space');t.addOption('pool','Topic pool');t.setValue(pool?'pool':'works').setDisabled(locked).onChange(async value=>{
+   :locked?'This vault holds the works of '+(s.boundSpace||s.workspaceId)+'. Use a separate, empty vault for the topic pool.':(s.layout==='spaces'?'Works of the spaces below':'Works of one space')+', or the topic pool of all spaces. Choose the topic pool only in a vault that holds no works.')
+  .addDropdown(t=>{t.addOption('works',s.layout==='spaces'?'Works':'Works of one space');t.addOption('pool','Topic pool');t.setValue(pool?'pool':'works').setDisabled(locked).onChange(async value=>{
    if(plugin.operations.active||locked)return;s.mode=value==='pool'?'pool':'works';await plugin.saveSettings();plugin.setStatus(plugin.idleStatus());plugin.settingTab?.display?.();
   });});
  if(pool)new Setting(containerEl).setName('Update topics').setDesc('Bring new and changed topics into '+POOL_FOLDER+'/. A note with unsaved edits is never overwritten.')

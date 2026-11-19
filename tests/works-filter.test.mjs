@@ -64,7 +64,7 @@ test('each option is counted with every other facet applied but its own',()=>{
 test('stored or hand-built filters are cleaned, and an inverted range is put the right way round',()=>{
  assert.deepEqual(normalizeFilter(null),emptyFilter());
  assert.deepEqual(normalizeFilter({status:'nope',locale:'fr',sections:['a','a',3],writers:'x',from:'2026-11-10',to:'2026-11-01'}),
-  {status:'all',locale:'zh-CN',cardVariants:[],sections:['a'],agents:[],models:[],machines:[],from:'2026-11-01',to:'2026-11-10'});
+  {status:'all',locale:'zh-CN',cardVariants:[],spaces:[],sections:['a'],agents:[],models:[],machines:[],from:'2026-11-01',to:'2026-11-10'});
  assert.deepEqual(normalizeFilter({from:'11/01/2026'}).from,'');
 });
 
@@ -104,4 +104,15 @@ test('date ranges read briefly, and quick ranges end today',()=>{
  assert.deepEqual(datePreset('7d',today),{from:'2026-11-06',to:'2026-11-12'});
  assert.deepEqual(datePreset('30d',today),{from:'2026-10-14',to:'2026-11-12'});
  assert.deepEqual(datePreset('month',today),{from:'2026-11-01',to:'2026-11-12'});
+});
+
+test('in a vault of several spaces, works can be narrowed to some spaces',()=>{
+ const works=[{title:'a',space:'pets',section:'pets/cats',locale:'zh-CN'},{title:'b',space:'legis',section:'legis/cases',locale:'zh-CN'},{title:'c',space:'pets',section:'pets/dogs',locale:'zh-CN'}];
+ const f={...emptyFilter(),spaces:['pets']};
+ assert.deepEqual(works.filter(work=>matches(work,f,{})).map(work=>work.title),['a','c']);
+ const counts=facetCounts(works,f,()=>({}));
+ assert.equal(counts.spaces.get('pets'),2);assert.equal(counts.spaces.get('legis'),1,'a facet counts as if it were not chosen');
+ assert.equal(narrowedBy(f),1);
+ assert.deepEqual(activeChips(f,{spaceName:id=>id==='pets'?'萌宠':id}),[{facet:'spaces',value:'pets',text:'萌宠'}]);
+ assert.deepEqual(withoutChip(f,{facet:'spaces',value:'pets'}).spaces,[]);
 });

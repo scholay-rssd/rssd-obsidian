@@ -18,7 +18,7 @@ export const annotationStyle=`
 
 /** Load what to ask about the open work, once per work and published revision. */
 export function loadAnnotation(view){
- const front=view.front,plugin=view.plugin,workspaceId=plugin.settings.workspaceId,articleId=String(front['rssd-id']),locale=front['rssd-locale']||'zh-CN';
+ const front=view.front,plugin=view.plugin,workspaceId=plugin.spaceOf?.(view.file)||plugin.settings.workspaceId,articleId=String(front['rssd-id']),locale=front['rssd-locale']||'zh-CN';
  const key=JSON.stringify([plugin.settings.origin,workspaceId,articleId,locale,front['rssd-published-version']||0]);
  if(view.annotation?.key===key)return;
  const state=view.annotation={key,workspaceId,articleId,locale,loading:true};

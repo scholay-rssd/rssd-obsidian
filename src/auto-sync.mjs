@@ -21,7 +21,10 @@ export function syncLease(locks,origin){
   catch(error){if(entered)throw error;return run();}
  };
 }
-const WORK_PATH=/^Works\/(?:en\/)?[a-zA-Z0-9._:-]+\.md$/;
+// A work note, in a single-space vault or inside a space folder of a vault of several spaces.
+const WORK_PATH=/^(?:[A-Za-z0-9][A-Za-z0-9.-]*\/)?Works\/(?:en\/)?[a-zA-Z0-9._:-]+\.md$/;
+// A scan reports works by ID ("x", "en/x") in a single-space vault, or by their vault path ("…/Works/x.md").
+const workPath=id=>id.endsWith('.md')?id:'Works/'+id+'.md';
 export class AutoSync {
  constructor({save,pull,ready=()=>true,report=()=>{},now=Date.now,lease=async run=>run()}){
   Object.assign(this,{save,pull,ready,report,now,lease});this.dirty=new Map();this.blocked=new Set();this.fixable=new Set();this.waiting=new Set();this.sequence=0;this.running=false;this.stopped=false;
@@ -47,8 +50,8 @@ export class AutoSync {
    let incomplete=false;
    if(scan){
     const result=await this.pull();
-    for(const id of [...(result.skipped||[]),...(result.pending||[])])this.enqueue(id.startsWith('en/')?'Works/'+id+'.md':'Works/'+id+'.md');
-    for(const id of result.conflicts||[]){const path='Works/'+id+'.md';this.blocked.add(path);this.fixable.delete(path);}
+    for(const id of [...(result.skipped||[]),...(result.pending||[])])this.enqueue(workPath(id));
+    for(const id of result.conflicts||[]){const path=workPath(id);this.blocked.add(path);this.fixable.delete(path);}
     if(result.conflicts?.length)this.report({error:Error(result.conflicts.length+' works have conflicts; local edits were kept')});
     if(result.failed?.length||result.metadataPending?.length){incomplete=true;this.report({error:Error('Some works could not be refreshed; the next scan will retry')});}
    }
