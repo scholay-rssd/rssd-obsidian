@@ -20,6 +20,7 @@ import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,w
 import {CARD_STYLE_ICONS,styleOptions,nextStyle} from './style-switch.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {layoutMode,spaceFolderName,VaultLayout,prefixedVault,SPACES} from './vault-layout.mjs';
+import {adoptKey,centerAccess} from './key-vault.mjs';
 import {updateFromCenter,rollback,diskVersion,newerVersion} from './self-update.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
 import {sectionWorkPolicy,MAX_WORK_TAGS} from '../../contracts/work-types.mjs';
@@ -41,7 +42,7 @@ export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_O
 const RELEASE_KEY=typeof RSSD_RELEASE_KEY==='string'&&RSSD_RELEASE_KEY?RSSD_RELEASE_KEY:null;
 // The version a release build was built as. A development build has none and updates only on a manual check.
 const BUILD_VERSION=typeof RSSD_BUILD_VERSION==='string'?RSSD_BUILD_VERSION:'';
-const DEFAULTS={...POOL_DEFAULTS,tokenSecret:'',pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',layout:'',spaceFolders:{},syncSpaces:{},pathRecordsBySpace:{},baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
+const DEFAULTS={...POOL_DEFAULTS,tokenSecret:'',pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',layout:'',center:false,keyRevoked:false,spaceFolders:{},syncSpaces:{},pathRecordsBySpace:{},baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
 // The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
 // between them.
@@ -302,6 +303,8 @@ textarea.rssd-details-input{resize:vertical;min-height:4.5em;line-height:var(--l
 .rssd-work-header .rssd-date,.nav-file-title-content .rssd-date{color:var(--text-faint);font-size:var(--font-ui-smaller);margin-right:.5em;font-variant-numeric:tabular-nums}
 `;
 const http=request=>requestUrl(request);
+// The device key's own path to the Center. A 401 answer means the key was revoked (or deleted) at the Center.
+export const CENTER_KEYS_PATH='/rssd?tab=workers';
 
 class CodeModal extends Modal{
  constructor(app,info){super(app);this.info=info;}
@@ -315,18 +318,32 @@ class CodeModal extends Modal{
  onClose(){this.contentEl.empty();this.onCancel?.();}
 }
 
+// The first thing a new vault shows: paste a key, or get one. What the key covers decides what the vault holds.
 class WelcomeModal extends Modal{
  constructor(app,plugin){super(app);this.plugin=plugin;}
  onOpen(){
-  const {contentEl}=this;contentEl.createEl('h3',{text:'Welcome to RSSD'});
-  contentEl.createEl('p',{text:'Log in once to read your site\'s articles here. Your browser opens; sign in to RSSD and approve this device. Nothing is downloaded into the vault.'});
-  contentEl.createEl('p',{text:'Got a device token from your editor? Add it under Settings → Keychain, then choose it under Settings → RSSD → Device token from the Keychain. No browser needed.'});
-  contentEl.createEl('p',{text:'Center: '+this.plugin.settings.origin,cls:'setting-item-description'});
-  new Setting(contentEl).addButton(b=>b.setButtonText('Log in to RSSD').setCta().onClick(async()=>{
-   this.close();
-   try{await this.plugin.login({openBrowser:true,selectSyncSpace:false});await this.plugin.openReader();}
+  const {contentEl}=this,plugin=this.plugin;
+  contentEl.createEl('h3',{text:'连接 RSSD'});
+  contentEl.createEl('p',{text:'填入你的 RSSD 密钥。密钥里有哪些站点，这个 vault 就下载哪些站点的作品，之后自动保持同步。'});
+  let value='';
+  new Setting(contentEl).setName('密钥').addText(t=>{t.inputEl.type='password';t.setPlaceholder('rssd_device_…').onChange(v=>{value=v;});t.inputEl.style.width='18em';window.setTimeout(()=>t.inputEl.focus(),0);})
+   .addButton(b=>b.setButtonText('连接').setCta().onClick(async()=>{
+    b.setDisabled(true);
+    try{await plugin.adoptToken(value);this.close();await plugin.openWorks();}
+    catch(error){new Notice('没有连接：'+error.message,12000);}
+    finally{b.setDisabled(false);}
+   }));
+  const help=contentEl.createEl('p',{cls:'setting-item-description'});
+  let origin='';try{origin=centerOrigin(plugin.settings.origin);}catch{}
+  if(origin){help.appendText('还没有密钥？请管理员');const a=help.createEl('a',{text:'在 RSSD Center 生成密钥',href:origin+CENTER_KEYS_PATH});a.target='_blank';help.appendText('；管理员自己也可以');}
+  const browser=help.createEl('a',{text:'用浏览器登录',href:'#'});help.appendText('。');
+  browser.addEventListener('click',async event=>{
+   event.preventDefault();this.close();
+   try{await plugin.login({openBrowser:true});await plugin.openWorks();}
    catch(error){if(error?.code!=='cancelled')new Notice('Login failed: '+error.message,10000);}
-  })).addButton(b=>b.setButtonText('Later').onClick(()=>this.close()));
+  });
+  contentEl.createEl('p',{text:'Center: '+plugin.settings.origin,cls:'setting-item-description'});
+  new Setting(contentEl).addButton(b=>b.setButtonText('稍后').onClick(()=>this.close()));
  }
  onClose(){this.contentEl.empty();}
 }
@@ -421,7 +438,7 @@ export default class RssdPlugin extends Plugin{
   this.app.workspace.onLayoutReady(()=>{void this.tidySidebar().catch(error=>console.error('RSSD sidebar',error));});
   this.app.workspace.onLayoutReady(()=>{if(!this.token())new WelcomeModal(this.app,this).open();});
   this.autoSync=new AutoSync({
-   ready:()=>this.settings.autoSync!==false&&!!this.settings.origin&&this.syncSpaces().length>0&&!!this.token()&&!this.operations.active,
+   ready:()=>this.settings.autoSync!==false&&!this.settings.keyRevoked&&!!this.settings.origin&&this.syncSpaces().length>0&&!!this.token()&&!this.operations.active,
    lease:run=>{let locks;try{locks=globalThis.navigator?.locks;}catch{}return syncLease(locks,this.settings.origin)(run);},
    pull:()=>this.operations.run('automatic-pull',()=>this.multiSpace()?this.pullSpaces():this.pullAll(this.settings.workspaceId)),
    save:path=>this.operations.run('automatic-save',async()=>{const at=this.locate(path);if(!at)return {state:'unchanged'};const engine=this.engine(at.space);if(!await engine.hasLocalChanges(at.space,at.rel))return {state:'unchanged'};return this.saveWork(at.space,path,engine);}),
@@ -582,7 +599,8 @@ export default class RssdPlugin extends Plugin{
  readClient(){
   if(centerOrigin(this.settings.origin)!==centerOrigin(this.settings.boundOrigin||this.settings.origin))throw Error('This login belongs to a different Center. Use a separate vault.');
   const token=this.token();if(!token||!this.settings.origin)throw Error('Log in to RSSD first');
-  return createCenterClient({http,origin:this.settings.origin,token});
+  if(this.settings.keyRevoked)throw Error('这把密钥已被撤销。请在 设置 → RSSD 填入新的密钥。');
+  return createCenterClient({http:this.keyHttp(token),origin:this.settings.origin,token});
  }
  /** Show the Works list in the left sidebar (one left by an earlier version elsewhere is moved there). */
  /** A work's private Center record ({privateEditorial, firstMachine}), read once per version and kept for the
@@ -702,7 +720,7 @@ export default class RssdPlugin extends Plugin{
   this.pullProgress=progress;
   for(const leaf of this.app.workspace?.getLeavesOfType?.('rssd-works')||[])if(leaf.view instanceof WorksView)leaf.view.renderFoot();
  }
- idleStatus(){const spaces=this.syncSpaces();return this.token()?'RSSD'+(isPoolVault(this.settings)?' · topic pool':this.multiSpace()?(spaces.length===1?' · '+spaces[0]:spaces.length?' · '+spaces.length+' spaces':''):this.settings.workspaceId?' · '+this.settings.workspaceId:''):'RSSD · log in';}
+ idleStatus(){const spaces=this.syncSpaces();if(this.token()&&this.settings.keyRevoked)return 'RSSD · 密钥失效';return this.token()?'RSSD'+(isPoolVault(this.settings)?' · topic pool':this.multiSpace()?(spaces.length===1?' · '+spaces[0]:spaces.length?' · '+spaces.length+' spaces':''):this.settings.workspaceId?' · '+this.settings.workspaceId:''):'RSSD · log in';}
  statusMenu(){
   const menu=new Menu(),loggedIn=!!this.token(),space=this.syncSpaces().length>0,active=this.app.workspace.getActiveFile();
   const login=()=>this.login({openBrowser:true,selectSyncSpace:false}).then(()=>this.setStatus(this.idleStatus())).catch(error=>{if(error?.code!=='cancelled')new Notice('Login failed: '+error.message,10000);});
@@ -731,21 +749,11 @@ export default class RssdPlugin extends Plugin{
   * approving this device in the browser. The token is checked with the Center before the vault uses it, and the
   * vault keeps only the secret's name.
   */
- async useKeychainToken(name){return this.operations.run('login',async()=>{
-  this.assertBinding();
-  const origin=centerOrigin(this.settings.origin),space=this.settings.workspaceId,token=name?this.app.secretStorage.getSecret(name):null;
+ async useKeychainToken(name){
+  const token=name?this.app.secretStorage.getSecret(name):null;
   if(!token)throw Error('The Keychain has no secret named '+name);
-  const identity=await createCenterClient({http,origin,token}).identity();
-  const spaces=Array.isArray(identity?.workspaceIds)?identity.workspaceIds:[];
-  if(!spaces.length)throw Error('This token has no spaces at the Center');
-  if(!this.multiSpace()&&space&&!spaces.includes(space))throw Error('This token is not approved for '+space);
-  if(centerOrigin(this.settings.origin)!==origin||this.settings.workspaceId!==space)throw Error('Connection changed while checking the token; try again');
-  this.settings.tokenSecret=name;this.settings.boundOrigin=origin;this.settings.spaces=spaces;this.assignSpaceFolders(spaces);
-  if(!this.multiSpace()&&!space&&spaces.length===1&&!isPoolVault(this.settings))this.settings.workspaceId=spaces[0];
-  await this.saveSettings();this.setStatus(this.idleStatus());
-  new Notice('Logged in to the RSSD Center with the Keychain secret '+name+' ('+spaces.join(', ')+')',8000);
-  return {loggedIn:true,spaces};
- });}
+  return this.adoptToken(token,{secretName:name});
+ }
  saveSettings(){
   // Vault events and sync receipts may update different parts of settings at
   // once. Serialize writes and take the snapshot only when its turn starts so
@@ -772,9 +780,10 @@ export default class RssdPlugin extends Plugin{
   const token=this.token();if(!token||!this.settings.origin)throw Error('Log in to the RSSD Center first');
   if(!space)throw Error(this.multiSpace()?'No space to sync; check the spaces in the RSSD settings':'Choose a space in the RSSD settings');
   if(this.multiSpace()&&!this.settings.spaceFolders?.[space])throw Error('Space '+space+' has no folder in this vault yet');
+  if(this.settings.keyRevoked)throw Object.assign(Error('这把密钥已被撤销。请在 设置 → RSSD 填入新的密钥。'),{code:'key_revoked'});
   const adapter=this.app.vault.adapter,vault=this.app.vault;
   return new SyncEngine({
-   client:createCenterClient({http,origin:this.settings.origin,token}),
+   client:createCenterClient({http:this.keyHttp(token),origin:this.settings.origin,token}),
    pathRecords:()=>this.pathRecords(space),
    sectionPolicy:sectionId=>this.sectionPolicy(sectionId,space),
    yaml:{parse:parseYaml,stringify:stringifyYaml},
@@ -900,16 +909,18 @@ export default class RssdPlugin extends Plugin{
    const result=await deviceLogin({http,origin,name:this.settings.deviceName||('Obsidian on '+(Platform.isMobile?'mobile':'desktop')),signal:controller.signal,
     onCode:info=>{modal=new CodeModal(this.app,info);modal.onCancel=()=>controller.abort();modal.open();if(openBrowser)window.open(info.verificationUriComplete);}});
    const spaces=result.identity?.workspaceIds||[];
-   if(!this.multiSpace()&&space&&!spaces.includes(space))throw Error('This device was not approved for '+space);
+   // A login for editing is a key like any other: its sites decide what this vault is. A login for reading only
+   // (the welcome window) decides nothing; the vault stays empty until a key is used for editing.
+   const next=selectSyncSpace?adoptKey(this.settings,{spaces,center:centerAccess(result.identity),origin:id=>wechatSite(id)?.origin||''}):null;
+   if(next?.error)throw Object.assign(Error(next.error),{code:'key_scope'});
    if(centerOrigin(this.settings.origin)!==origin||this.settings.workspaceId!==space)throw Error('Connection changed during login; start again');
    createCenterClient({http,origin,token:result.token});
    this.app.secretStorage.setSecret(TOKEN_SECRET,result.token);this.settings.tokenSecret='';
-   this.settings.boundOrigin=origin;
-   // Choosing a sync space starts downloading works into the vault; reader logins leave that to Settings.
-   if(!this.multiSpace()&&selectSyncSpace&&!space&&spaces.length===1)this.settings.workspaceId=spaces[0];
-   // A login for reading only (the welcome window) gives no space a folder; Settings → RSSD ticks them later.
-   this.settings.spaces=spaces;if(selectSyncSpace)this.assignSpaceFolders(spaces);await this.saveSettings();
+   this.settings.boundOrigin=origin;this.settings.keyRevoked=false;
+   if(next)Object.assign(this.settings,next);else this.settings.spaces=spaces;
+   await this.saveSettings();
    new Notice('Logged in to the RSSD Center');this.setStatus(this.idleStatus());
+   if(next&&this.syncSpaces().length)setTimeout(()=>void this.pull(),0);
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
  }
@@ -997,7 +1008,49 @@ export default class RssdPlugin extends Plugin{
  client(){
   this.assertBinding();
   const token=this.token();if(!token||!this.settings.origin)throw Error('Log in to the RSSD Center first');
-  return createCenterClient({http,origin:this.settings.origin,token});
+  if(this.settings.keyRevoked)throw Object.assign(Error('这把密钥已被撤销。请在 设置 → RSSD 填入新的密钥。'),{code:'key_revoked'});
+  return createCenterClient({http:this.keyHttp(token),origin:this.settings.origin,token});
+ }
+ /** Requests made with the vault's key. The first 401 marks the key revoked: one notice, and syncing stops. */
+ keyHttp(token){
+  return async request=>{
+   const response=await http(request);
+   if(response?.status===401&&this.token()===token)void this.keyRevoked();
+   return response;
+  };
+ }
+ async keyRevoked(){
+  if(this.settings.keyRevoked)return;
+  this.settings.keyRevoked=true;await this.saveSettings().catch(()=>{});
+  this.setStatus(this.idleStatus());this.settingTab?.display?.();
+  new Notice('RSSD：这把密钥已被撤销，同步已停止。本地的作品和没保存的编辑都还在；在 设置 → RSSD 填入新的密钥后会继续同步、保存。',0);
+ }
+ /**
+  * Use a device key: check it with the Center, let it decide what this vault is (key-vault.mjs), keep it in
+  * Obsidian's Keychain, and start the first update. `secretName` is a Keychain secret the person chose; a pasted
+  * key is stored under the plugin's own secret. Nothing changes when the key is refused.
+  */
+ async adoptToken(token,{secretName='',update=true}={}){
+  const result=await this.operations.run('login',async()=>{
+   this.assertBinding();
+   token=String(token||'').trim();if(!/^rssd_device_[A-Za-z0-9_-]{48}$/.test(token))throw Error('这不是 RSSD 的设备密钥。密钥以 rssd_device_ 开头，请从 RSSD Center 复制完整的一串。');
+   const origin=centerOrigin(this.settings.origin);
+   let identity;
+   try{identity=await createCenterClient({http,origin,token}).identity();}
+   catch(error){if(error?.status===401)throw Object.assign(Error('Center 不认这把密钥：它可能已被撤销，或者复制得不完整。'),{code:'unauthorized'});throw error;}
+   const spaces=Array.isArray(identity?.workspaceIds)?identity.workspaceIds:[];
+   const next=adoptKey(this.settings,{spaces,center:centerAccess(identity),origin:space=>wechatSite(space)?.origin||''});
+   if(next.error)throw Object.assign(Error(next.error),{code:'key_scope'});
+   if(centerOrigin(this.settings.origin)!==origin)throw Error('Connection changed while checking the key; try again');
+   if(secretName)this.settings.tokenSecret=secretName;
+   else{this.app.secretStorage.setSecret(TOKEN_SECRET,token);this.settings.tokenSecret='';}
+   Object.assign(this.settings,next,{boundOrigin:origin,keyRevoked:false});
+   await this.saveSettings();this.setStatus(this.idleStatus());
+   return {loggedIn:true,spaces,center:next.center,layout:next.layout};
+  });
+  new Notice('已连接 RSSD Center：'+result.spaces.map(space=>wechatSite(space)?.name||space).join('、')+(result.center?'，以及 Center':'')+'。',8000);
+  if(update&&this.syncSpaces().length)void this.pull();
+  return result;
  }
  /** What a section of this space's site takes (sectionWorkPolicy over the bundled section catalog), or null when unknown. */
  sectionPolicy(sectionId,space=this.settings.workspaceId){
@@ -1447,8 +1500,40 @@ class RssdSettings extends PluginSettingTab{
     }));
   }
  }
+ /** The key, first and on its own: what it covers, or where to paste one and where to get one. */
+ keyRows(containerEl){
+  const plugin=this.plugin,s=plugin.settings,token=plugin.token(),revoked=token&&s.keyRevoked;
+  new Setting(containerEl).setName('RSSD 密钥').setHeading();
+  if(token&&!revoked&&!this.changingKey){
+   const sites=(s.spaces||[]).map(space=>wechatSite(space)?.name||space).join('、');
+   new Setting(containerEl).setName('已连接').setDesc((sites?'站点：'+sites:'')+(s.center?'；包括 RSSD Center':'')+'。')
+    .addButton(b=>b.setButtonText('换一把密钥').onClick(()=>{this.changingKey=true;this.display();}));
+   return;
+  }
+  let value='';
+  const paste=new Setting(containerEl).setName(revoked?'这把密钥已被撤销，请填入新的密钥':'填入密钥')
+   .setDesc('密钥决定这个 vault 里有哪些站点：只有一个站点时，作品直接放在 vault 里；有几个站点，或者勾了 RSSD Center，每个站点各占一个文件夹。')
+   .addText(t=>{t.inputEl.type='password';t.setPlaceholder('rssd_device_…').onChange(v=>{value=v;});t.inputEl.style.width='16em';})
+   .addButton(b=>b.setButtonText('连接').setCta().onClick(async()=>{
+    b.setDisabled(true);
+    try{await plugin.adoptToken(value);this.changingKey=false;}catch(error){new Notice('没有连接：'+error.message,12000);}
+    finally{b.setDisabled(false);this.display();}
+   }));
+  const origin=(()=>{try{return centerOrigin(s.origin);}catch{return '';}})();
+  const help=paste.descEl.createDiv();
+  if(origin){help.appendText('还没有密钥？');const a=help.createEl('a',{text:'在 RSSD Center 生成密钥',href:origin+CENTER_KEYS_PATH});a.target='_blank';help.appendText('，或者 ');}
+  const browser=help.createEl('a',{text:'用浏览器登录',href:'#'});
+  browser.addEventListener('click',event=>{event.preventDefault();plugin.login().then(()=>{this.changingKey=false;this.display();}).catch(error=>{if(error?.code!=='cancelled')new Notice('Login failed: '+error.message,10000);});});
+  help.appendText('。');
+  if(this.changingKey)paste.addButton(b=>b.setButtonText('取消').onClick(()=>{this.changingKey=false;this.display();}));
+ }
  display(){
-  const {containerEl}=this,s=this.plugin.settings;containerEl.empty();
+  const {containerEl:root}=this,s=this.plugin.settings;root.empty();
+  this.keyRows(root);
+  // Everything else is rarely needed: kept, folded away under 高级设置.
+  const details=root.createEl('details',{cls:'rssd-settings-advanced'});details.createEl('summary',{text:'高级设置'});
+  if(this.advancedOpen)details.open=true;details.addEventListener('toggle',()=>{this.advancedOpen=details.open;});
+  const containerEl=details.createDiv();
   new Setting(containerEl).setName('Center address').setDesc('The HTTPS address of your RSSD Center.')
    .addText(t=>t.setPlaceholder('https://center.example.org').setValue(s.origin).setDisabled(!!this.plugin.token()||!!s.boundSpace).onChange(async v=>{if(this.plugin.operations.active||this.plugin.token()||s.boundSpace)return;t.inputEl.value=v;s.origin=v.trim();s.boundOrigin=s.origin;await this.plugin.saveSettings();}));
   new Setting(containerEl).setName('Read articles online').setDesc('Browse the site\'s articles without downloading them into this vault.')
@@ -1460,8 +1545,6 @@ class RssdSettings extends PluginSettingTab{
   else if(this.plugin.multiSpace())this.spaceRows(containerEl);
   else new Setting(containerEl).setName('Sync space').setDesc(s.boundSpace?'This vault is bound to '+s.boundSpace+'. Use a separate vault for another space.':'Only for editing: choosing a space downloads its works into this vault and syncs edits as private drafts. Reading online needs no space here.')
    .addDropdown(t=>{t.addOption('','Choose a space');for(const id of new Set([s.workspaceId,...(s.spaces||[])].filter(Boolean)))t.addOption(id,id);t.setValue(s.workspaceId).setDisabled(!!s.boundSpace).onChange(async v=>{if(this.plugin.operations.active||s.boundSpace)return;s.workspaceId=v;await this.plugin.saveSettings();});});
-  new Setting(containerEl).setName('Log in').setDesc(this.plugin.token()?'This device is logged in'+(s.tokenSecret?' with the Keychain secret '+s.tokenSecret:'')+'.':'Approve this device in your browser.')
-   .addButton(b=>b.setButtonText('Log in').setCta().onClick(()=>this.plugin.login().catch(error=>new Notice('Login failed: '+error.message))));
   // A device token made in the Center's settings (设备连接) and added under Settings → Keychain: no browser here.
   if(typeof SecretComponent==='function')new Setting(containerEl).setName('Device token from the Keychain')
    .setDesc('Or create a device connection in the Center (设置 → 设备连接, choosing its spaces), copy its credential, add it under Settings → Keychain, and choose it here.')

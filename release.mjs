@@ -134,13 +134,12 @@ const STARTER_GUIDE=`# 开始使用 RSSD
 这个 vault 已经装好 RSSD 插件，以后的新版本会自动更新。
 
 1. 打开这个文件夹时，Obsidian 会问是否信任插件作者：选 **信任作者并启用插件**。
-2. 打开 **设置 → 钥匙串（Keychain）**，点 **+**，名字随意（例如 \`rssd\`），把你拿到的设备密钥粘贴进去。
-3. 打开 **设置 → RSSD**，在 **Device token from the Keychain** 里选中刚才的名字。看到登录成功的提示就好了。
-4. 左侧的 **Works** 列表点 **Update**，就会下载你能看到的空间里的作品。
+2. 弹出 **连接 RSSD** 窗口后，把你拿到的密钥粘贴进去，点 **连接**。
+3. 密钥里有哪些站点，就会自动下载哪些站点的作品。左侧的作品列表会显示进度。
 
-没有密钥的话，也可以在 **设置 → RSSD** 点 **Log in**，在浏览器里登录 Center 并批准这台设备。
+窗口关掉了也没关系：在 **设置 → RSSD** 里同样可以填密钥。
 
-密钥只给你一个人用，不要转发。不再需要时，告诉管理员撤销它。
+密钥只给你一个人用，不要转发。不再需要时，告诉管理员撤销它；撤销后这个 vault 会停止同步，本地的作品还在。
 `;
 /** A zip of [{name, bytes}], names marked UTF-8 so 开始使用.md reads right on every system. */
 export function zipFiles(entries){

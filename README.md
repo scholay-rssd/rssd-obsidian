@@ -37,6 +37,12 @@ Commands: *Log in*, *Update works*, *Save this work*, *Check sync state of all w
 
 **Update** brings the Center's latest versions down into the vault, and **Save** sends edits up as private drafts. Internally an update is still a *pull*: the command id and the `pull` action for command links are unchanged, so existing hotkeys and links keep working.
 
+## A key decides the vault
+
+Install the plugin (or open a starter vault) and the **连接 RSSD** window asks for a key. Keys are made by the Center's owner at `/rssd?tab=workers` (设备连接), each with the sites it covers and, when ticked, the RSSD Center itself. The key decides what the vault is: one site and no Center gives a vault of that site with `Works/` at the root; several sites, or the Center, give each site a folder of its own. Every site in the key is downloaded at once, with progress in the Works list. The owner can also use **用浏览器登录**, which approves this device in the browser and works the same way.
+
+Settings → RSSD shows the key first: the sites it covers, or a field to paste one. Everything else is under **高级设置**. A later key must still cover the sites the vault holds; otherwise it is refused and nothing changes. When the Center answers that the key was revoked, the plugin says so once, stops syncing and asks for a new key; local works and unsaved edits stay and are saved after the new key is in. Revoking cannot remove what a vault already downloaded.
+
 ## Several spaces in one vault
 
 A new vault holds every space its login is approved for, each in a folder named after its site (for example `pet.piggytuck.com/`). Inside a space folder everything is laid out as in a vault of one space: `Works/`, `Works/en/`, `article-media/`, `.rssd/private-additions/`, `card-styles/`, `Card Samples/` and `Exports/cards/`. A part-time writer whose token is approved for one or two spaces sees only those. Settings → RSSD → **Spaces** lists the approved spaces; untick one to stop updating and saving it (its folder stays). Which spaces are approved is decided by the Center, not here.

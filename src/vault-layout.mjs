@@ -9,12 +9,14 @@ export const SINGLE='single',SPACES='spaces';
 
 /**
  * The layout of a vault. A vault that already holds one space's works (or chose one, or is a topic pool) stays
- * single; an empty vault takes the layout of several spaces.
+ * single. An empty vault has none yet ('') until a key decides it (key-vault.mjs). A vault of several spaces that
+ * never got a folder (0.2.6 fixed the layout on first load) is still empty, so its key decides too.
  */
 export function layoutMode(settings){
- if(settings?.layout===SINGLE||settings?.layout===SPACES)return settings.layout;
  const synced=Object.values(settings?.baselines||{}).some(bucket=>Object.keys(bucket||{}).length);
- return settings?.mode==='pool'||settings?.boundSpace||settings?.workspaceId||synced?SINGLE:SPACES;
+ if(settings?.layout===SINGLE)return SINGLE;
+ if(settings?.layout===SPACES&&(Object.keys(settings.spaceFolders||{}).length||synced))return SPACES;
+ return settings?.mode==='pool'||settings?.boundSpace||settings?.workspaceId||synced?SINGLE:'';
 }
 
 const FOLDER=/^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/;
