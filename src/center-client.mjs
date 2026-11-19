@@ -69,12 +69,14 @@ export function createCenterClient({http,origin,token}){
  const request=(path,options={})=>centerRequest(http,origin,path,{...options,token});
  const query=options=>new URLSearchParams(Object.entries(options||{}).filter(([,v])=>v!==undefined&&v!==null)).toString();
  const editorial=(workspaceId,path)=>'/editorial/'+encodeURIComponent(workspaceId)+'/'+path;
- const site=workspaceId=>request(editorial(workspaceId,'site')),boundedSites=new Map();
+ const site=workspaceId=>request(editorial(workspaceId,'site')),sites=new Map();
+ // What the space's Center can do, read once per client. A failed read is asked again next time.
+ const capabilities=workspaceId=>{
+  if(!sites.has(workspaceId))sites.set(workspaceId,site(workspaceId).then(value=>Array.isArray(value?.capabilities)?value.capabilities:[]).catch(error=>{sites.delete(workspaceId);throw error;}));
+  return sites.get(workspaceId);
+ };
  const requireBounded=async workspaceId=>{
-  if(!boundedSites.has(workspaceId))boundedSites.set(workspaceId,site(workspaceId).then(value=>{
-   if(!value?.capabilities?.includes('bounded-media-v1'))throw Object.assign(Error('This Center does not support bounded media reads; update it before syncing'),{code:'bounded_media_unavailable'});
-  }).catch(error=>{boundedSites.delete(workspaceId);throw error;}));
-  return boundedSites.get(workspaceId);
+  if(!(await capabilities(workspaceId)).includes('bounded-media-v1'))throw Object.assign(Error('This Center does not support bounded media reads; update it before syncing'),{code:'bounded_media_unavailable'});
  };
  const boundedDetail=async(workspaceId,path,options)=>{
   await requireBounded(workspaceId);const value=await request(path,options);
@@ -99,6 +101,16 @@ export function createCenterClient({http,origin,token}){
   // Images can make a batch substantially larger than a single note. Give it a
   // bounded longer window and do not duplicate a request that is still in flight.
   workBatch:async(workspaceId,ids,locale)=>{await requireBounded(workspaceId);const result=await request(editorial(workspaceId,'cloud/batch/read?'+query({locale,ids:ids.join(','),media:'referenced'})),{timeoutMs:120000,timeoutGraceMs:180000});if(result?.items?.some(item=>item?.ok&&item.detail?.boundedMediaReads!==true))throw Object.assign(Error('The Center did not confirm bounded media reads'),{code:'bounded_media_unavailable'});return result;},
+  /** Whether the space keeps work types, note source links and work tags (`work-types-v1`); only then are they sent. */
+  workTypes:async workspaceId=>(await capabilities(workspaceId)).includes('work-types-v1'),
+  /** Whether a work ID is free in both languages (the status read answers version 0 for an unknown work). */
+  idAvailable:async(workspaceId,articleId)=>{
+   for(const locale of ['zh-CN','en']){
+    try{if((await request(editorial(workspaceId,encodeURIComponent(articleId)+'?'+query({locale}))))?.version!==0)return false;}
+    catch(error){if(error?.status===410)return false;throw error;}
+   }
+   return true;
+  },
   /** Exact-base private save; never publishes. */
   saveDraft:(workspaceId,envelope)=>request(editorial(workspaceId,'drafts'),{method:'POST',body:envelope}),
   /** Recovery of a draft save whose answer was lost, by its original request key. */

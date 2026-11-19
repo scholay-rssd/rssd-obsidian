@@ -2,6 +2,8 @@
 // author, category) are edited here, each measured against the limits of the outputs that use it; the fields
 // that link the note to its Center work are shown but not editable, because changing one breaks the link.
 import * as spec from '../../contracts/output-package.mjs';
+import {WORK_TYPES,MAX_WORK_TAGS,MAX_TAG_LENGTH,workTypeLabel} from '../../contracts/work-types.mjs';
+import {normalizeTags} from './sync-model.mjs';
 
 // Limits come from the shared output spec (contracts/output-package.mjs), in either of its shapes.
 const article=spec.OUTPUT_DESTINATIONS?.['wechat-official-account']?.limits||spec.OUTPUT_FORMATS?.['wechat-article']?.limits||{title:64,digest:120,author:16};
@@ -33,4 +35,34 @@ export function cleanValue(field,value){
  const text=String(value??'').replace(/\r\n?/g,'\n').trim();
  if(field.type==='date'&&text&&(!/^\d{4}-\d{2}-\d{2}$/.test(text)||Number.isNaN(Date.parse(text))))throw Object.assign(Error('Enter the date as YYYY-MM-DD'),{code:'invalid_date'});
  return field.multiline?text:text.replace(/\s*\n\s*/g,' ');
+}
+
+// A work's own fields (see contracts/work-types.mjs): its type, picked from what its section takes, and its #tags.
+const typeName=type=>Object.prototype.hasOwnProperty.call(WORK_TYPES,type)?workTypeLabel(type,'en')+' · '+workTypeLabel(type,'zh-CN'):String(type);
+const RECORD_TYPES={year:'event',history:'event',openSource:'resource'};
+
+/**
+ * What the Type row offers. `stated` is the note's rssd-type (or undefined), `kind` its rssd-kind, `policy` its
+ * section's (sectionWorkPolicy, null when the section is unknown) and `capable` whether the Center keeps work
+ * types. Without a stated type the work is its section's default, and says so. Returns {value, options, editable, hint}.
+ */
+export function typeChoice({stated,kind='news',policy=null,capable=false}){
+ if(kind!=='news'){const type=RECORD_TYPES[kind]||'article';return {value:type,options:[{value:type,label:typeName(type)}],editable:false,hint:'Fixed by the record kind.'};}
+ const allowed=policy?.workTypes||['article'],value=stated||policy?.defaultType||'article';
+ const options=allowed.map(type=>({value:type,label:typeName(type)+(!stated&&type===value?' (section default)':'')}));
+ // A type the section no longer takes stays visible, so the writer sees what the work is.
+ if(!allowed.includes(value))options.push({value,label:typeName(value)+' (not taken by this section)',disabled:true});
+ const hint=!capable?'This Center does not keep work types yet.':allowed.length<2?'This section takes '+workTypeLabel(allowed[0],'en').toLowerCase()+'s only ('+workTypeLabel(allowed[0],'zh-CN')+').':'';
+ return {value,options,editable:capable&&allowed.length>1,hint};
+}
+
+/** Tags as typed in the Tags field: separated by commas (either width), 、 or new lines; a leading # is dropped. */
+export const parseTagInput=text=>normalizeTags(String(text??'').split(/[,，、\n]/));
+/** What is wrong with a list of tags, if anything: too many, or one too long. */
+export function tagProblems(tags){
+ const problems=[];
+ if(tags.length>MAX_WORK_TAGS)problems.push('A work has at most '+MAX_WORK_TAGS+' tags');
+ const long=tags.filter(tag=>[...tag].length>MAX_TAG_LENGTH);
+ if(long.length)problems.push('Each tag has at most '+MAX_TAG_LENGTH+' characters: '+long.join(', '));
+ return problems;
 }

@@ -21,16 +21,17 @@ import {CARD_STYLE_ICONS,styleOptions,nextStyle} from './style-switch.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {updateFromCenter,rollback,diskVersion,newerVersion} from './self-update.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
+import {sectionWorkPolicy,MAX_WORK_TAGS} from '../../contracts/work-types.mjs';
 import {wechatHtml,wechatSource,copyRich} from './wechat.mjs';
 import {wechatTemplate,wechatSite,cardTemplate,WECHAT_SITES} from './wechat-template.mjs';
 import {decorateWechat,ARTICLE_THEMES,defaultArticleTheme} from './wechat-designs.mjs';
-import {buildCards,packageCardPages} from './cards.mjs';
+import {buildCards,packageCardPages,cardSetRefusal,cardExportFolder} from './cards.mjs';
 import {CARD_WIDTH,CARD_HEIGHT,PHONE_ZOOM,TILE_ZOOMS,clampCardIndex,fitCardWidth,stepCardZoom,stepTileZoom,zoomLabel} from './card-view.mjs';
 import {ReviewSidebar,REVIEW_VIEW} from './review-sidebar.mjs';
 import {CARD_STYLE_FOLDER,cardStylePath,checkCardStylesheet,cardStyleBrief} from './card-stylesheet.mjs';
-import {DETAIL_FIELDS,IDENTITY_FIELDS,fieldText,counters,cleanValue} from './details.mjs';
+import {DETAIL_FIELDS,IDENTITY_FIELDS,fieldText,counters,cleanValue,typeChoice,parseTagInput,tagProblems} from './details.mjs';
 import {checkSource} from '../../contracts/output-package.mjs';
-import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,notePath,noteToWork,workFingerprint,localMediaPaths} from './sync-model.mjs';
+import {STATE_LABELS,WORKS_FOLDER,MEDIA_FOLDER,WORK_FIELDS,notePath,noteToWork,workFingerprint,syncFingerprint,sourceId,localMediaPaths} from './sync-model.mjs';
 
 const TOKEN_SECRET='rssd-center-device-token';
 // The Scholay Center. A build can point elsewhere with RSSD_DEFAULT_ORIGIN; the address stays editable until login.
@@ -181,6 +182,8 @@ const TITLE_STYLE=`
 .rssd-works button.rssd-works-clear{height:auto;padding:0 6px;border:0;background:none;box-shadow:none;color:var(--text-faint);font-size:var(--font-ui-smaller);cursor:pointer}
 .rssd-works-section{display:inline-block;margin-right:5px;padding:0 5px;border-radius:3px;background:color-mix(in srgb,var(--rssd-section,var(--text-muted)) 14%,transparent);color:var(--rssd-section,var(--text-muted));font-size:var(--font-ui-smaller);font-weight:var(--font-normal);line-height:1.5;vertical-align:1px;white-space:nowrap}
 .rssd-works-row .rssd-works-section{flex:0 0 auto;margin-right:0}
+.rssd-works-type{display:inline-block;margin-right:5px;padding:0 4px;border:1px solid var(--background-modifier-border);border-radius:3px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-weight:var(--font-normal);line-height:1.4;vertical-align:1px;white-space:nowrap}
+.rssd-works-row .rssd-works-type{flex:0 0 auto;margin-right:0}
 /* The filter panel floats under the filter button. */
 .rssd-filter-panel{position:fixed;z-index:var(--layer-menu);width:300px;max-height:min(70vh,560px);overflow-y:auto;padding:0 var(--size-4-3);border:1px solid var(--background-modifier-border);border-radius:var(--radius-m);background:var(--background-primary);box-shadow:var(--shadow-l);font-size:var(--font-ui-small)}
 .rssd-filter-group{padding:var(--size-4-2) 0;border-bottom:1px solid var(--background-modifier-border)}
@@ -282,6 +285,10 @@ textarea.rssd-details-input{resize:vertical;min-height:4.5em;line-height:var(--l
 .rssd-details-key{flex:0 0 7.5em;color:var(--text-muted)}
 .rssd-details-value{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;color:var(--text-normal);font-family:var(--font-monospace)}
 .rssd-details-note{margin-top:var(--size-4-2);color:var(--text-faint);font-size:var(--font-ui-smaller)}
+.rssd-details-work{margin-bottom:var(--size-4-3)}
+.rssd-details-work .rssd-details-meter{flex-wrap:wrap}
+.rssd-details-source{font-family:var(--font-interface)}
+.rssd-details-action{margin-top:var(--size-4-2)}
 /* While a preview is built the last result stays visible, dimmed, under a spinner that follows the scroll. */
 .rssd-preview-stage{position:relative;min-height:180px}
 .rssd-preview-loading{position:absolute;inset:0;z-index:2;display:none;background:color-mix(in srgb,var(--background-primary) 78%,transparent)}
@@ -380,6 +387,8 @@ export default class RssdPlugin extends Plugin{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.openPreview();return true;}});
   this.addCommand({id:'save-cards',name:'Save this work as cards',checkCallback:checking=>{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.saveCards(file);return true;}});
+  this.addCommand({id:'rewrite-as-note',name:'Rewrite this article as a note',checkCallback:checking=>{
+   const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file)||this.workType(file)!=='article')return false;if(!checking)void this.rewriteAsNote(file);return true;}});
   this.addCommand({id:'status',name:'Check sync state of all works',callback:()=>this.refreshStates()});
   this.addCommand({id:'spaces',name:'Show which spaces accept saves',callback:()=>this.showSpaces()});
   this.addCommand({id:'check-plugin-update',name:'Check for an RSSD plugin update',callback:()=>this.checkPluginUpdate({manual:true})});
@@ -725,6 +734,7 @@ export default class RssdPlugin extends Plugin{
   return new SyncEngine({
    client:createCenterClient({http,origin:this.settings.origin,token}),
    pathRecords:()=>this.settings.pathRecords||{},
+   sectionPolicy:sectionId=>this.sectionPolicy(sectionId),
    yaml:{parse:parseYaml,stringify:stringifyYaml},
    vault:{
     read:async path=>await adapter.exists(path)?adapter.read(path):null,
@@ -906,6 +916,42 @@ export default class RssdPlugin extends Plugin{
   const token=this.token();if(!token||!this.settings.origin)throw Error('Log in to the RSSD Center first');
   return createCenterClient({http,origin:this.settings.origin,token});
  }
+ /** What a section of this space's site takes (sectionWorkPolicy over the bundled section catalog), or null when unknown. */
+ sectionPolicy(sectionId){
+  const site=wechatSite(this.settings.workspaceId),section=(SITE_SECTIONS[site?.id]||[]).find(item=>item.id===sectionId);
+  return section?sectionWorkPolicy(section):null;
+ }
+ /** A work's type: what its note states, else its section's default. `content` is the note text when at hand. */
+ workType(file,content){
+  let front=this.app.metadataCache.getFileCache(file)?.frontmatter||{},stated;
+  if(content!=null){try{const work=noteToWork(content,parseYaml);if(work){stated=work.data.workType;front={'rssd-kind':work.kind,'rssd-section':work.data.sectionId};}}catch{}}
+  else stated=typeof front[WORK_FIELDS.workType]==='string'&&front[WORK_FIELDS.workType].trim()?front[WORK_FIELDS.workType].trim():undefined;
+  if(String(front['rssd-kind']||'news')!=='news')return 'article';
+  return stated||this.sectionPolicy(String(front['rssd-section']||''))?.defaultType||'article';
+ }
+ /** Whether this space's Center keeps work types, tags and note sources. Asked again after ten minutes or a failure. */
+ async workTypesSupported(){
+  const key=this.settings.origin+' '+this.settings.workspaceId,cached=this.workTypesCache;
+  if(cached?.key===key&&Date.now()-cached.at<600000)return cached.value;
+  try{const value=await this.client().workTypes(this.settings.workspaceId);this.workTypesCache={key,at:Date.now(),value};return value;}
+  catch{return false;}
+ }
+ /** Rewrite the open long article as a note: a new private note draft, linked to the article, opened for writing. */
+ async rewriteAsNote(file){
+  try{
+   const result=await this.operations.run('rewrite-as-note',async()=>{
+    if(Platform.isMobile)throw Error('RSSD is read-only on mobile');
+    const space=this.settings.workspaceId,info=spaceInfo(await this.client().registry(),space);
+    if(!info.writable)throw Object.assign(Error(info.migrationState==='staged'?'New works cannot be made while this space is migrating.':readOnlyReason(info,space)),{code:'migration_staged'});
+    return this.engine().rewriteAsNote(space,file.path);
+   });
+   new Notice('Created the note draft '+result.articleId+' from this article. It is a private draft, not published; finish it and save as usual.',10000);
+   const created=this.app.vault.getAbstractFileByPath(result.path);if(created instanceof TFile)await this.openWorkFile(created);
+  }catch(error){
+   console.error('RSSD rewrite as note',error?.code,error?.message);
+   new Notice((error?.retained?'The note draft may already be saved; run Save on '+(error.path||'the new note')+' to recover it. ':'Could not rewrite as a note: ')+(error?.message||error)+(error?.code?' ['+error.code+']':''),12000);
+  }
+ }
  async showSpaces(){
   const id=crypto.randomUUID(),workspaceId=this.settings.workspaceId;
   try{
@@ -1039,6 +1085,7 @@ export default class RssdPlugin extends Plugin{
   const component=new Component();component.load();
   try{
    const adapter=this.app.vault.adapter;content??=await this.app.vault.read(file);
+   const refusal=cardSetRefusal(this.workType(file,content));if(refusal)throw refusal;
    const space=this.settings.workspaceId,site=wechatSite(space);
    if(style==='ai-code'||style==='ai-image'){
     const sample=this.sampleCard(file,style);
@@ -1091,10 +1138,12 @@ export default class RssdPlugin extends Plugin{
  /** Writes the cards as a package into the vault: the pictures, their caption and the manifest. Nothing is sent anywhere. */
  async saveCards(file,result){
   try{
+   const refusal=cardSetRefusal(this.workType(file));if(refusal)throw refusal;
    if(this.nightPreview()&&result?.manifest.style==='site')result=null;
    result??=await this.cardsResult(file,undefined,{night:false});
-   const adapter=this.app.vault.adapter,folder=normalizePath('Exports/cards/'+file.basename);
-   for(const part of ['Exports','Exports/cards',folder])if(!await adapter.exists(part))await adapter.mkdir(part);
+   // Each language edition keeps its own set, made from its own revision: English cards never replace Chinese ones.
+   const locale=result.manifest.locale==='en'?'en':'zh-CN',folder=normalizePath(cardExportFolder(file.basename,locale));
+   for(const part of ['Exports','Exports/cards',...(locale==='en'?['Exports/cards/en']:[]),folder])if(!await adapter.exists(part))await adapter.mkdir(part);
    // A shorter set must not leave pages of an earlier, longer one behind.
    const keep=new Set(result.pages.map(page=>page.name));
    for(const path of (await adapter.list(folder)).files){const name=path.split('/').at(-1);if(/^\d+\.png$/.test(name)&&!keep.has(name))await adapter.remove(path);}
@@ -1455,7 +1504,7 @@ class WorksView extends ItemView{
    const p=this.app.metadataCache.getFileCache(file)?.frontmatter;if(!p?.['rssd-id'])continue;
    items.push({file,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
     cardVariants:Object.keys(CARD_VARIANTS).filter(id=>this.plugin.sampleCard(file,id)),
-    section:String(p['rssd-section']||''),author:String(p.author??''),category:String(p.category??''),
+    section:String(p['rssd-section']||''),type:this.plugin.workType(file),author:String(p.author??''),category:String(p.category??''),
     version:p['rssd-version'],publishedVersion:p['rssd-published-version'],
     media:(this.app.metadataCache.getFileCache(file)?.embeds||[]).map(embed=>mediaName(embed.link)).filter(Boolean)});
   }
@@ -1473,7 +1522,7 @@ class WorksView extends ItemView{
    else if(base.pending)state='saving';
    else{
     const note=noteToWork(await this.app.vault.cachedRead(file),parseYaml);
-    if(note&&await workFingerprint(note.data,localMediaPaths(note.media))!==base.fingerprint)state='edited';
+    if(note&&await syncFingerprint(note.data,localMediaPaths(note.media))!==base.fingerprint)state='edited';
    }
   }catch{state='synced';}
   this.states.set(file.path,{key,state});return state;
@@ -1590,6 +1639,8 @@ class WorksView extends ItemView{
   // The section's label leads the title, in the section's colour.
   const title=body.createDiv({cls:'rssd-works-card-title'}),sectionName=this.sectionName(work.section);
   if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
+  // Long articles are the usual work; a note says so after its section.
+  if(work.type==='note')title.createSpan({cls:'rssd-works-type',text:'笔记',attr:{'aria-label':'Note'}});
   title.appendText(work.title);
   // Most works need nothing, so the chip row is only there when there is a chip.
   // What the work is made of. Length, references and the brand line arrive with the background pass.
@@ -1628,6 +1679,7 @@ class WorksView extends ItemView{
   row.createSpan({cls:'rssd-works-date',text:work.date.slice(5)});
   const sectionName=this.sectionName(work.section);
   if(sectionName){const tag=row.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.section);if(accent)tag.style.setProperty('--rssd-section',accent);}
+  if(work.type==='note')row.createSpan({cls:'rssd-works-type',text:'笔记',attr:{'aria-label':'Note'}});
   row.createSpan({cls:'rssd-works-title',text:work.title});
   row.setAttribute('aria-label',[work.title,work.date,WORK_STATES[state]].filter(Boolean).join(' · '));
   row.addEventListener('click',()=>void this.openWork(work.file));
@@ -2095,7 +2147,7 @@ class LayoutPreview extends ItemView{
     page.append(title,body);this.root.replaceChildren(style,page);
    }
    this.contentEl.scrollTop=scroll;
-  }catch(error){if(seq===this.seq&&error?.name!=='AbortError'){this.file=file;this.content=null;this.result=null;this.message(error.code==='no_pictures'?'这篇稿件没有可用的正文配图。':'Could not preview: '+error.message);this.actionButton.disabled=true;}}
+  }catch(error){if(seq===this.seq&&error?.name!=='AbortError'){this.file=file;this.content=null;this.result=null;this.message(error.code==='no_pictures'?'这篇稿件没有可用的正文配图。':error.code==='note_has_no_cards'?'A note has no card set: its pictures are its content. Cards are made from long articles.':'Could not preview: '+error.message);this.actionButton.disabled=true;}}
  }
 }
 
@@ -2136,6 +2188,7 @@ class WorkDetails{
   let work=null;try{work=noteToWork(content,parseYaml);}catch{}
   el.empty();
   for(const field of DETAIL_FIELDS)this.field(el,file,field,fieldText(properties[field.key]));
+  if(work)this.workFields(el,file,work,seq);
   if(work){
    const checks=checkSource({...work.data,kind:work.kind,media:work.media}).warnings;
    if(checks.length){const box=el.createDiv({cls:'rssd-details-checks'});box.createDiv({cls:'rssd-details-label',text:'To check'});for(const check of checks)box.createDiv({cls:'rssd-details-check',text:check.message});}
@@ -2176,6 +2229,65 @@ class WorkDetails{
    try{await this.app.fileManager.processFrontMatter(file,properties=>{properties[field.key]=next;});value=next;}
    catch(error){console.error('RSSD work details',error);new Notice('Could not save '+field.label.toLowerCase()+': '+error.message,10000);input.value=value;measure();}
   });
+ }
+ /**
+  * The work's own fields: its type, from what its section takes, and its #tags, both written to the note's
+  * properties and saved with it (they reach the Center only when it keeps work types); for a note, the article it
+  * was rewritten from; for a long article, the notes rewritten from it and the action that makes one.
+  */
+ workFields(el,file,work,seq){
+  const box=el.createDiv({cls:'rssd-details-work'}),policy=this.plugin.sectionPolicy(work.data.sectionId);
+  const type=work.kind!=='news'?null:work.data.workType||policy?.defaultType||'article';
+  const typeRow=box.createDiv({cls:'rssd-details-field'});typeRow.createEl('label',{cls:'rssd-details-label',text:'Type'});
+  const select=typeRow.createEl('select',{cls:'rssd-details-input dropdown',attr:{'aria-label':'Work type'}}),typeHint=typeRow.createDiv({cls:'rssd-details-meter'});
+  const tagRow=box.createDiv({cls:'rssd-details-field'});tagRow.createEl('label',{cls:'rssd-details-label',text:'Tags'});
+  const tagInput=tagRow.createEl('input',{cls:'rssd-details-input',type:'text',attr:{placeholder:'猫, 养护指南','aria-label':'Tags, separated by commas'}}),tagMeter=tagRow.createDiv({cls:'rssd-details-meter'});
+  let tags=work.data.tags||[];tagInput.value=tags.join(', ');
+  const measure=()=>{const next=parseTagInput(tagInput.value),problems=tagProblems(next);tagMeter.empty();tagMeter.createSpan({cls:'rssd-details-count'+(problems.length?' is-over':''),text:'Tags '+next.length+'/'+MAX_WORK_TAGS});for(const problem of problems)tagMeter.createSpan({cls:'rssd-details-count is-over',text:problem});};
+  const draw=(capable,checking=false)=>{
+   const choice=typeChoice({stated:work.data.workType,kind:work.kind,policy,capable});
+   select.empty();for(const option of choice.options){const item=select.createEl('option',{value:option.value,text:option.label});if(option.disabled)item.disabled=true;}
+   select.value=choice.value;select.disabled=!choice.editable;typeHint.setText(checking?'Checking what the Center keeps…':choice.hint);
+   tagInput.disabled=!capable;measure();if(!capable&&!checking)tagMeter.createSpan({cls:'rssd-details-count',text:'This Center does not keep tags yet.'});
+   if(rewrite)rewrite.disabled=!capable;
+  };
+  tagInput.addEventListener('input',measure);
+  tagInput.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();tagInput.blur();}if(event.key==='Escape'){tagInput.value=tags.join(', ');measure();tagInput.blur();}});
+  select.addEventListener('change',async()=>{
+   try{await this.app.fileManager.processFrontMatter(file,properties=>{properties[WORK_FIELDS.workType]=select.value;});void this.show(file);}
+   catch(error){console.error('RSSD work type',error);new Notice('Could not change the type: '+error.message,10000);void this.show(file);}
+  });
+  tagInput.addEventListener('change',async()=>{
+   const next=parseTagInput(tagInput.value),problems=tagProblems(next);
+   if(problems.length){new Notice(problems.join('. '),8000);return;}
+   if(JSON.stringify(next)===JSON.stringify(tags)){tagInput.value=tags.join(', ');return;}
+   // An emptied list stays in the note as [], so the next save clears the tags at the Center.
+   try{await this.app.fileManager.processFrontMatter(file,properties=>{properties[WORK_FIELDS.tags]=next;});tags=next;tagInput.value=next.join(', ');measure();}
+   catch(error){console.error('RSSD work tags',error);new Notice('Could not save the tags: '+error.message,10000);tagInput.value=tags.join(', ');measure();}
+  });
+  const linkTo=(parent,target,text)=>{
+   const link=parent.createEl('a',{text,href:'#',cls:'rssd-details-source'});
+   link.addEventListener('click',event=>{event.preventDefault();if(target instanceof TFile)void this.plugin.openWorkFile(target);else new Notice('That work is not in this vault yet; update works from the Center.');});
+  };
+  if(type==='note'&&work.data.adaptedFrom){
+   const source=work.data.adaptedFrom,row=box.createDiv({cls:'rssd-details-row'});row.createSpan({cls:'rssd-details-key',text:'Rewritten from'});
+   let target=null;try{target=this.app.vault.getAbstractFileByPath(notePath(source.articleId,'zh-CN'));}catch{}
+   const value=row.createSpan({cls:'rssd-details-value'});linkTo(value,target,target instanceof TFile?this.plugin.workLabel(target):source.articleId);value.appendText(' · revision '+source.revision);
+   const now=target instanceof TFile?Number(this.app.metadataCache.getFileCache(target)?.frontmatter?.['rssd-version']):NaN;
+   if(Number.isSafeInteger(now)&&now>source.revision)box.createDiv({cls:'rssd-details-note',text:'The article has a newer revision ('+now+') than the one this note was written from.'});
+  }
+  let rewrite=null;
+  if(type==='article'&&work.data.locale==='zh-CN'){
+   const notes=this.app.vault.getMarkdownFiles().filter(other=>other.path.startsWith(WORKS_FOLDER+'/')&&!other.path.startsWith(WORKS_FOLDER+'/en/')&&other.path!==file.path).filter(other=>{
+    const front=this.app.metadataCache.getFileCache(other)?.frontmatter;return front?.[WORK_FIELDS.adaptedFrom]!=null&&sourceId(front[WORK_FIELDS.adaptedFrom])===work.data.id;});
+   if(notes.length){const row=box.createDiv({cls:'rssd-details-row'});row.createSpan({cls:'rssd-details-key',text:'Notes from it'});const value=row.createSpan({cls:'rssd-details-value'});notes.forEach((note,index)=>{if(index)value.appendText(', ');linkTo(value,note,this.plugin.workLabel(note));});}
+   if(policy?.workTypes.includes('note')){
+    rewrite=box.createEl('button',{text:'Rewrite as note',cls:'rssd-details-action',attr:{title:'Make a new note work from this article: a private draft in the same section, linked to this revision'}});
+    rewrite.addEventListener('click',()=>void this.plugin.rewriteAsNote(file));
+   }
+  }
+  draw(false,true);
+  this.plugin.workTypesSupported().then(capable=>{if(seq===this.seq)draw(capable);});
  }
  /** Whether the note matches its last sync. Read locally; nothing is sent to the Center. */
  async syncState(file,work){
