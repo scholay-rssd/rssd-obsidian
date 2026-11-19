@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {OperationGate} from '../src/operations.mjs';
+import {AutoSync} from '../src/auto-sync.mjs';
 import {yaml} from './helpers.mjs';
 const result=await build({entryPoints:['src/main.js'],bundle:true,format:'cjs',platform:'browser',external:['obsidian'],write:false});
 let response,modal;
@@ -80,6 +81,20 @@ test('moving a linked note blocks recreation until the returned identity is veri
  assert.equal(p.settings.pathRecords['zh-CN/one'].state,'moved');
  await p.recordPathChange('rename','Archive/one.md','Works/one.md');
  assert.deepEqual(p.settings.pathRecords,{});assert.equal(marked,'Works/one.md');assert.equal(unblocked,marked);
+});
+test('each scan queues the works whose private record waits, and a refused one is reported once until its note is edited',async()=>{
+ const p=plugin(),saves=[],reports=[];let now=0,tooLarge=true;
+ const dir='.rssd/private-additions',files=[dir+'/one.zh-CN.json',dir+'/two.en.json',dir+'/notes.txt'];
+ p.app.vault={adapter:{exists:async path=>path===dir,list:async path=>({files:path===dir?files:[],folders:[]})}};
+ // As for a work whose pictures are over the Center's limit: refused before anything is sent, with no code.
+ p.autoSync=new AutoSync({now:()=>now,pull:async()=>({}),report:r=>reports.push(r),save:async path=>{
+  saves.push(path);if(path==='Works/one.md'&&tooLarge)throw Error('The images exceed the Center limit of 2 MiB');return {state:'unchanged'};}});
+ // Three hours as the plugin runs them: the scan and its queueing, then the next 10-second tick.
+ for(let hour=0;hour<3;hour++){await p.queuePrivateAdditions();await p.autoSync.tick({scan:true});now+=10000;await p.autoSync.tick();now+=3600000;}
+ assert.deepEqual(saves,['Works/one.md','Works/en/two.md'],'each waiting record queues its work once');
+ assert.deepEqual(reports.map(r=>r.path),['Works/one.md']);assert.equal(p.autoSync.blocked.has('Works/one.md'),true);
+ tooLarge=false;p.autoSync.mark('Works/one.md');now+=5000;await p.autoSync.tick();
+ assert.deepEqual(saves.slice(2),['Works/one.md'],'an edit retries the refused work');assert.equal(p.autoSync.blocked.size,0);assert.equal(reports.length,1);
 });
 test('concurrent settings writes preserve pending saves and path guards in order',async()=>{
  const p=plugin();let release;const writes=[];p.saveSettings=Plugin.prototype.saveSettings.bind(p);

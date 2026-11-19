@@ -21,16 +21,22 @@ export function syncLease(locks,origin){
   catch(error){if(entered)throw error;return run();}
  };
 }
+const WORK_PATH=/^Works\/(?:en\/)?[a-zA-Z0-9._:-]+\.md$/;
 export class AutoSync {
  constructor({save,pull,ready=()=>true,report=()=>{},now=Date.now,lease=async run=>run()}){
-  Object.assign(this,{save,pull,ready,report,now,lease});this.dirty=new Map();this.blocked=new Set();this.fixable=new Set();this.sequence=0;this.running=false;this.stopped=false;
+  Object.assign(this,{save,pull,ready,report,now,lease});this.dirty=new Map();this.blocked=new Set();this.fixable=new Set();this.waiting=new Set();this.sequence=0;this.running=false;this.stopped=false;
  }
- mark(path){if(this.stopped||!/^Works\/(?:en\/)?[a-zA-Z0-9._:-]+\.md$/.test(path))return;
+ // A user edit. It lifts a block the edit may have fixed, never a conflict.
+ mark(path){if(this.stopped||!WORK_PATH.test(path))return;
   if(this.fixable.delete(path))this.blocked.delete(path);
   const old=this.dirty.get(path);this.dirty.set(path,{generation:(old?.generation||0)+1,sequence:++this.sequence,attempts:0,next:this.now()+5000});
  }
  enqueue(path){if(!this.blocked.has(path)&&!this.dirty.has(path))this.dirty.set(path,{generation:1,attempts:0,next:this.now()});}
- unblock(path){this.blocked.delete(path);this.fixable.delete(path);}
+ // A private record is waiting for this note, so it is saved even when unchanged. Every scan finds the record
+ // again, so a note is queued once per session, and again only after one of its saves went through. This is not
+ // an edit: a refused note stays blocked, reported once, until the user edits it.
+ queueWaiting(path){if(this.stopped||!WORK_PATH.test(path)||this.waiting.has(path))return;this.waiting.add(path);this.enqueue(path);}
+ unblock(path){this.blocked.delete(path);this.fixable.delete(path);this.waiting.delete(path);}
  stop(){this.stopped=true;}
  async tick({scan=false}={}){
   if(this.stopped||this.running||!this.ready())return false;
@@ -59,7 +65,7 @@ export class AutoSync {
      const current=this.dirty.get(path);
      // Recheck once after a save: the user may have edited while its request
      // was in flight, or the result may have recovered an earlier receipt.
-     if(current===item){this.dirty.delete(path);if(result?.state==='saved')this.enqueue(path);}
+     if(current===item){this.dirty.delete(path);if(result?.state==='saved'){this.waiting.delete(path);this.enqueue(path);}}
     }catch(error){
      if(error?.code==='operation_busy')break;
      const current=this.dirty.get(path);if(current!==item)continue;

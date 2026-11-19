@@ -45,6 +45,59 @@ test('editing fixes a validation error but does not silently clear an unresolved
  const c=new AutoSync({now:()=>now,pull:async()=>({}),save:async()=>{throw Object.assign(Error('conflict'),{status:409,conflict:true});}});
  c.enqueue('Works/a.md');await c.tick();c.mark('Works/a.md');assert.equal(c.blocked.has('Works/a.md'),true);
 });
+// A note with a private record waiting, on the plugin's clock. The save sends the record, whose vault file is
+// removed once the Center confirms; a refused save sends nothing.
+function waitingRecord({refuse=()=>false}={}){
+ const s={time:0,record:true,saves:0,reports:[]};
+ s.sync=new AutoSync({now:()=>s.time,pull:async()=>({}),report:r=>s.reports.push(r),save:async()=>{
+  s.saves++;
+  if(refuse())throw Object.assign(Error('The summary property is read-only for this structured record; local edits were kept'),{code:'structured_property_unmapped'});
+  if(!s.record)return {state:'unchanged'};
+  s.record=false;return {state:'saved',revision:2};
+ }});
+ const minute=async()=>{for(let i=0;i<6;i++){s.time+=10000;await s.sync.tick();}};
+ // An hour as the plugin runs it: a scan that queues the notes whose record still waits, then a tick every 10 seconds.
+ s.hour=async()=>{if(s.record)s.sync.queueWaiting('Works/a.md');await s.sync.tick({scan:true});await minute();s.time+=3540000;};
+ s.edit=async()=>{s.sync.mark('Works/a.md');await minute();};
+ return s;
+}
+test('a waiting private record leaves a refused note blocked and reported once until the user edits it',async()=>{
+ let refused=true;const s=waitingRecord({refuse:()=>refused});
+ await s.hour();
+ assert.equal(s.saves,1,'an unchanged note with a waiting record is saved');
+ assert.deepEqual(s.reports.map(r=>r.path),['Works/a.md']);assert.equal(s.sync.blocked.has('Works/a.md'),true);
+ for(let i=0;i<3;i++)await s.hour();
+ assert.equal(s.saves,1,'later scans do not retry it');assert.equal(s.reports.length,1,'nor report it again');
+ refused=false;await s.edit();
+ assert.equal(s.record,false,'an edit retries it and the record goes with the save');assert.equal(s.saves,3,'the save, then the check after it');
+ assert.equal(s.sync.blocked.size,0);
+ await s.hour();assert.equal(s.saves,3);assert.equal(s.reports.length,1);assert.equal(s.sync.dirty.size,0);
+});
+test('a waiting private record queues a note once per session, and again for a record written after a save',async()=>{
+ const s=waitingRecord();
+ await s.hour();assert.equal(s.record,false);assert.equal(s.saves,2,'the save, then the check after it');
+ await s.hour();assert.equal(s.saves,2);
+ s.record=true;await s.hour();
+ assert.equal(s.record,false,'a record written later in the session is sent');assert.equal(s.saves,4);assert.equal(s.reports.length,0);
+ // A record that cannot go yet (its note is not downloaded) is tried once, not on every scan.
+ let tries=0,time=0;const t=new AutoSync({now:()=>time,pull:async()=>({}),save:async()=>{tries++;return {state:'unchanged'};}});
+ for(let i=0;i<3;i++){t.queueWaiting('Works/en/b.md');await t.tick({scan:true});time+=10000;await t.tick();time+=3600000;}
+ assert.equal(tries,1);
+});
+test('after a manual save of a refused note, a record written later queues it again',async()=>{
+ let refused=true;const s=waitingRecord({refuse:()=>refused});
+ await s.hour();assert.equal(s.sync.blocked.has('Works/a.md'),true);
+ // The user fixes the note and saves it with the command, which sends the record and clears the block.
+ refused=false;s.record=false;s.sync.unblock('Works/a.md');
+ s.record=true;await s.hour();
+ assert.equal(s.record,false);assert.equal(s.reports.length,1);
+});
+test('a waiting private record neither lifts a conflict nor queues paths outside Works',async()=>{
+ const saved=[];const s=new AutoSync({pull:async()=>({conflicts:['b']}),save:async path=>{saved.push(path);return {state:'unchanged'};}});
+ await s.tick({scan:true});s.queueWaiting('Works/b.md');s.queueWaiting('Notes/c.md');s.queueWaiting('Works/../d.md');await s.tick();
+ assert.deepEqual(saved,[]);assert.equal(s.blocked.has('Works/b.md'),true);
+ s.stop();s.queueWaiting('Works/e.md');assert.equal(s.dirty.has('Works/e.md'),false);
+});
 test('an incomplete scan is retried while genuine edits arriving during a scan remain queued',async()=>{
  let release,now=0,calls=0;const s=new AutoSync({now:()=>now,pull:async()=>await new Promise(r=>release=r),save:async()=>{calls++;return {state:'unchanged'};}});
  const tick=s.tick({scan:true});s.mark('Works/a.md');release({failed:[{articleId:'remote'}]});assert.equal(await tick,false);
