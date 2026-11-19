@@ -22,7 +22,7 @@ import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {updateFromCenter,rollback,diskVersion,newerVersion} from './self-update.mjs';
 import {SITE_SECTIONS} from '../../contracts/site-sections.mjs';
 import {wechatHtml,wechatSource,copyRich} from './wechat.mjs';
-import {wechatTemplate,wechatSite,cardTemplate} from './wechat-template.mjs';
+import {wechatTemplate,wechatSite,cardTemplate,WECHAT_SITES} from './wechat-template.mjs';
 import {decorateWechat,ARTICLE_THEMES,defaultArticleTheme} from './wechat-designs.mjs';
 import {buildCards,packageCardPages} from './cards.mjs';
 import {CARD_WIDTH,CARD_HEIGHT,PHONE_ZOOM,TILE_ZOOMS,clampCardIndex,fitCardWidth,stepCardZoom,stepTileZoom,zoomLabel} from './card-view.mjs';
@@ -420,7 +420,7 @@ export default class RssdPlugin extends Plugin{
   this.registerEvent(this.app.vault.on('delete',file=>{if(file instanceof TFile)void this.recordPathChange('delete',file.path);}));
   // Stagger open vaults; each successful scan repeats hourly. The scan also
   // rediscovers changes made while Obsidian was closed.
-  let nextScan=Date.now()+startupDelay(this.settings.workspaceId);
+  let nextScan=Date.now()+startupDelay(this.settings.workspaceId,Object.keys(WECHAT_SITES));
   this.registerInterval(window.setInterval(()=>{
    // Fold journaled baselines into the settings file once saving has been quiet for half a minute.
    if(this.log().pending&&!this.operations.active&&Date.now()-this.log().lastRecord>30000)void this.saveSettings().catch(()=>{});

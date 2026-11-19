@@ -1,12 +1,14 @@
 // A bounded in-memory scheduler. The catalog scan rediscovers local edits after
 // restart; it never treats deletion or a rename as a remote delete.
 import {renamedSiteId} from '../../contracts/site-renames.mjs';
-const SPACES=['academic','design','enter','legis','xsime','metho','personal','pets','study','xsiching'];
-// Distribute the ten known vaults across twenty minutes after opening Obsidian.
-// Edits still enter the regular debounce queue immediately. This is a fallback
-// for hosts where Web Locks are unavailable or do not span vault windows.
-export function startupDelay(space,random=Math.random){
- const index=SPACES.indexOf(renamedSiteId(space)),slot=index<0?Math.floor(random()*SPACES.length):index;
+// Give each known space its own two-minute slot after opening Obsidian, so open vaults do not all scan at once.
+// `spaces` is the list of known space IDs in a stable order; the plugin passes the spaces of RSSD's
+// sites/profiles.json, bundled at build time, so a new site gets a slot without touching this file. An unknown
+// space takes a random slot. Edits still enter the regular debounce queue immediately. This is a fallback for
+// hosts where Web Locks are unavailable or do not span vault windows.
+export function startupDelay(space,spaces=[],random=Math.random){
+ const known=[...new Set(spaces.map(renamedSiteId))],index=known.indexOf(renamedSiteId(space));
+ const slot=index<0?Math.floor(random()*Math.max(known.length,10)):index;
  return 15000+slot*120000+Math.floor(random()*30000);
 }
 // Web Locks can coordinate same-origin windows where the host supports them;

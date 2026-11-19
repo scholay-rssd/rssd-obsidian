@@ -58,9 +58,21 @@ test('same-origin Web Locks refuse concurrent automatic cycles without silently 
 });
 test('known vault startup scans are separated by two minutes',()=>{
  const spaces=['academic','design','enter','legis','xsime','metho','personal','pets','study','xsiching'];
- const values=spaces.map(space=>startupDelay(space,()=>0));assert.equal(new Set(values).size,spaces.length);
- assert.equal(startupDelay('lingxi',()=>0),startupDelay('xsime',()=>0),'the retired ID keeps its slot');
+ const values=spaces.map(space=>startupDelay(space,spaces,()=>0));assert.equal(new Set(values).size,spaces.length);
+ assert.equal(startupDelay('lingxi',spaces,()=>0),startupDelay('xsime',spaces,()=>0),'the retired ID keeps its slot');
  for(let i=1;i<values.length;i++)assert.equal(values[i]-values[i-1],120000);
+});
+test('the startup slots follow the bundled site profiles, so a new site gets its own slot',async()=>{
+ const {wechatSites}=await import('../build-templates.mjs');
+ const spaces=Object.keys(wechatSites());assert.ok(spaces.length>=10);
+ const values=spaces.map(space=>startupDelay(space,spaces,()=>0));assert.equal(new Set(values).size,spaces.length);
+ const grown=[...spaces,'newsite'];
+ assert.equal(startupDelay('newsite',grown,()=>0),15000+spaces.length*120000,'a site added to the profiles takes the next slot');
+ assert.equal(startupDelay('academic',grown,()=>0),startupDelay('academic',spaces,()=>0),'existing sites keep their slots');
+});
+test('an unknown space takes a random slot, also when no spaces are known',()=>{
+ assert.equal(startupDelay('unknown',['academic'],()=>0.99),15000+9*120000+29700);
+ assert.equal(startupDelay('unknown',[],()=>0),15000);
 });
 test('gate readiness, stop and changed generation prevent overlapping operations',async()=>{
  let release,calls=0;const s=new AutoSync({pull:async()=>new Promise(r=>release=r),save:async()=>{calls++;return {state:'unchanged'};}});
