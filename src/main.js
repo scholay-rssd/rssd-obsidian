@@ -8,6 +8,8 @@ import {deviceLogin} from './device-login.mjs';
 import {SyncEngine} from './sync-engine.mjs';
 import {installTopicPool,poolSettingRows,isPoolVault,isCenterVault,POOL_DEFAULTS} from './pool-plugin.mjs';
 import {latestPublications,publicationOf} from './publications.mjs';
+import {readCardIndex,cloudCardOf,cloudCardPagePath,layoutMediaIds} from './cloud-cards.mjs';
+import {rasterLayout,pictureToPng} from './cloud-card-raster.mjs';
 import {StagedSyncEngine} from './staged-sync-engine.mjs';
 import {canonicalPathIdentity,trackRename,trackDelete,confirmReturn} from './path-guard.mjs';
 import {AutoSync,startupDelay,syncLease} from './auto-sync.mjs';
@@ -43,7 +45,7 @@ export const DEFAULT_ORIGIN=typeof RSSD_DEFAULT_ORIGIN==='string'?RSSD_DEFAULT_O
 const RELEASE_KEY=typeof RSSD_RELEASE_KEY==='string'&&RSSD_RELEASE_KEY?RSSD_RELEASE_KEY:null;
 // The version a release build was built as. A development build has none and updates only on a manual check.
 const BUILD_VERSION=typeof RSSD_BUILD_VERSION==='string'?RSSD_BUILD_VERSION:'';
-const DEFAULTS={...POOL_DEFAULTS,tokenSecret:'',pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',layout:'',center:false,publicationState:{},keyRevoked:false,spaceFolders:{},syncSpaces:{},pathRecordsBySpace:{},baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
+const DEFAULTS={...POOL_DEFAULTS,tokenSecret:'',pluginUpdates:true,skippedPluginRelease:null,origin:'',readerSpace:'',readerLocale:'zh-CN',readerDrafts:false,deviceName:'',workspaceId:'',layout:'',center:false,publicationState:{},cloudCards:{},keyRevoked:false,spaceFolders:{},syncSpaces:{},pathRecordsBySpace:{},baselines:{},baselinesByLocale:{},pathRecords:{},allowAutomation:false,autoSync:true,previewOpened:false,layoutVersion:0,propertiesBefore:null};
 const LOCALES=['zh-CN','en'];
 // The RSSD tabs, in order: each is one view of the open work, so Obsidian's own tab bar is where you choose
 // between them.
@@ -441,10 +443,12 @@ export default class RssdPlugin extends Plugin{
   this.registerEvent(this.app.workspace.on('file-open',file=>{if(file&&this.isWork(file))this.shownWork=file;}));
   this.app.workspace.onLayoutReady(()=>{void this.tidySidebar().catch(error=>console.error('RSSD sidebar',error));});
   this.app.workspace.onLayoutReady(()=>{if(!this.token())new WelcomeModal(this.app,this).open();});
+  // The Center's card sets change without the works changing, so their index is read once at start too.
+  this.app.workspace.onLayoutReady(()=>{this.cardsTimer=window.setTimeout(()=>{if(this.token()&&!this.settings.keyRevoked)void this.refreshCloudCards();},5000);});
   this.autoSync=new AutoSync({
    ready:()=>this.settings.autoSync!==false&&!this.settings.keyRevoked&&!!this.settings.origin&&this.syncSpaces().length>0&&!!this.token()&&!this.operations.active,
    lease:run=>{let locks;try{locks=globalThis.navigator?.locks;}catch{}return syncLease(locks,this.settings.origin)(run);},
-   pull:async()=>{const result=await this.operations.run('automatic-pull',()=>this.multiSpace()?this.pullSpaces():this.pullAll(this.settings.workspaceId));void this.refreshPublications();return result;},
+   pull:async()=>{const result=await this.operations.run('automatic-pull',()=>this.multiSpace()?this.pullSpaces():this.pullAll(this.settings.workspaceId));void this.refreshPublications();void this.refreshCloudCards();return result;},
    save:path=>this.operations.run('automatic-save',async()=>{const at=this.locate(path);if(!at)return {state:'unchanged'};const engine=this.engine(at.space);if(!await engine.hasLocalChanges(at.space,at.rel))return {state:'unchanged'};return this.saveWork(at.space,path,engine);}),
    report:({path,error})=>{console.error('RSSD automatic sync',path||'',error?.code||'',error?.message||error);new Notice('RSSD automatic sync needs attention'+(path?' for '+path:'')+': '+saveFailureMessage(error),10000);}
   });
@@ -860,6 +864,23 @@ export default class RssdPlugin extends Plugin{
   for(const leaf of this.app.workspace?.getLeavesOfType?.('rssd-works')||[])leaf.view?.render?.();
  }
  /**
+  * The Center's card sets (智能排版, 模型生图) of every space this vault syncs, as a small index; the pages are read
+  * when a set is first opened. A Center without card sets, or a failed read, leaves the old index.
+  */
+ async refreshCloudCards(){
+  if(this.cloudCardsRefreshing)return;this.cloudCardsRefreshing=true;
+  try{
+   const state=this.settings.cloudCards??={};let changed=false;
+   for(const space of this.syncSpaces()){
+    try{const client=this.client(),index=await readCardIndex(options=>client.renditions(space,options));if(JSON.stringify(state[space]||{})!==JSON.stringify(index)){state[space]=index;changed=true;}}
+    catch(error){console.error('RSSD card sets',space,error?.status,error?.code,error?.message);}
+   }
+   if(!changed)return;
+   await this.saveSettings().catch(()=>{});
+   for(const leaf of this.app.workspace?.getLeavesOfType?.('rssd-works')||[])leaf.view?.render?.();
+  }finally{this.cloudCardsRefreshing=false;}
+ }
+ /**
   * Update every space this vault syncs, one after another. Works are reported by vault path. A space that fails
   * is reported and the others still update. `onProgress` hears {space, index, count} as each space starts and
   * each work's progress within it, so the Works list can show the notes written so far.
@@ -942,7 +963,7 @@ export default class RssdPlugin extends Plugin{
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
  }
- onunload(){this.unloaded=true;window.clearTimeout(this.updateCheckTimer);window.clearTimeout(this.reloadTimer);document.body.removeClass('rssd-one-row');this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
+ onunload(){this.unloaded=true;window.clearTimeout(this.updateCheckTimer);window.clearTimeout(this.cardsTimer);window.clearTimeout(this.reloadTimer);document.body.removeClass('rssd-one-row');this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
  workLabel(file){return file instanceof TFile&&this.isWork(file)?workLabel(this.app.metadataCache.getFileCache(file)?.frontmatter):null;}
  /** Paint titles and dates over ID file names in the explorer, tabs and note headers. Never renames a file. */
  refreshTitles({restore=false}={}){
@@ -1020,6 +1041,7 @@ export default class RssdPlugin extends Plugin{
    if(summary.conflicts.length)new Notice('Conflicts were not changed: '+summary.conflicts.join(', '),10000);
    // A vault whose key includes RSSD Center also brings its topics and publication states up to date.
    if(isCenterVault(this.settings)){await this.refreshPublications();void this.topicPool?.update({quiet:true});}
+   void this.refreshCloudCards();
    // The footer shows how it went: 'done', 'incomplete' or 'failed'.
    return incomplete?'incomplete':'done';
   }catch(error){new Notice('Update failed: '+error.message);return 'failed';}
@@ -1241,6 +1263,46 @@ export default class RssdPlugin extends Plugin{
   const path=this.spacePath(at.space,'Card Samples/'+at.rel.slice(WORKS_FOLDER.length+1,-3)+'/'+style+'.png');
   const found=this.app.vault.getAbstractFileByPath(path);return found instanceof TFile?found:null;
  }
+ /** The Center's card set of `style` made for exactly this edition of the work, as {space, set}, or null. */
+ cloudCard(file,style){
+  const at=file&&this.locate(file.path);if(!at||!at.rel.startsWith(WORKS_FOLDER+'/'))return null;
+  const p=this.app.metadataCache.getFileCache(file)?.frontmatter;if(!p?.['rssd-id'])return null;
+  const locale=String(p['rssd-locale']||'zh-CN'),workId=baselineBucket(this.settings,at.space,locale)?.[String(p['rssd-id'])]?.workId;
+  const set=cloudCardOf(this.settings.cloudCards?.[at.space],{workId,locale,version:p['rssd-version'],variant:style});
+  return set?{space:at.space,set}:null;
+ }
+ /** Whether the card tab of `style` has a set for this work: a local sample, or one kept in the Center. */
+ hasCardVariant(file,style){return !!this.sampleCard(file,style)||!!this.cloudCard(file,style);}
+ /** The pages of a Center card set as PNG blobs, read once and then kept under .rssd/cloud-cards/. */
+ async cloudCardBlobs({space,set},{signal,onProgress}={}){
+  const adapter=this.app.vault.adapter,page=n=>this.spacePath(space,cloudCardPagePath(set.id,n));
+  const kept=[];
+  for(let n=1;n<=set.pages;n++){if(!await adapter.exists(page(n)))break;kept.push(page(n));}
+  if(kept.length===set.pages){
+   const blobs=[];for(const [i,path] of kept.entries()){signal?.throwIfAborted();onProgress?.({stage:'read',count:i+1,total:kept.length});blobs.push(new Blob([await adapter.readBinary(path)],{type:'image/png'}));}
+   return blobs;
+  }
+  const client=this.client(),recipe=await client.rendition(space,set.id);signal?.throwIfAborted();
+  let blobs;
+  if(recipe.representation==='raster'){
+   blobs=[];
+   for(const [i,item] of (recipe.pages||[]).entries()){signal?.throwIfAborted();onProgress?.({stage:'read',count:i+1,total:recipe.pages.length});const {bytes,type}=await client.mediaBytes(item.mediaId);blobs.push(await pictureToPng(bytes,type));}
+  }else{
+   const urls={},made=[];
+   try{
+    for(const id of layoutMediaIds(recipe)){signal?.throwIfAborted();const {bytes,type}=await client.mediaBytes(id);const url=URL.createObjectURL(new Blob([bytes],{type}));urls[id]=url;made.push(url);}
+    blobs=await rasterLayout({css:recipe.css||'',pages:recipe.pages||[],media:urls,width:Number(recipe.width)||set.width,height:Number(recipe.height)||set.height,signal,
+     onPage:index=>onProgress?.({stage:'draw',count:index+1,total:recipe.pages.length})});
+   }finally{made.forEach(url=>URL.revokeObjectURL(url));}
+  }
+  if(!blobs.length)throw Error('This card set has no pages.');
+  const folder=this.spacePath(space,cloudCardPagePath(set.id,1)).replace(/\/[^/]+$/,'');
+  try{
+   for(const part of folder.split('/').map((_,i,all)=>all.slice(0,i+1).join('/')))if(!await adapter.exists(part))await adapter.mkdir(part);
+   for(const [i,blob] of blobs.entries())await adapter.writeBinary(page(i+1),await blob.arrayBuffer());
+  }catch(error){console.error('RSSD card set cache',set.id,error?.message||error);}
+  return blobs;
+ }
  /** A work as picture cards (1080×1440 PNG). Reads the note and its images; changes nothing. */
  async cardsResult(file,content,{style,signal,onProgress,night}={}){
   style??=this.defaultStyle('cards',file);
@@ -1251,8 +1313,12 @@ export default class RssdPlugin extends Plugin{
    const refusal=cardSetRefusal(this.workType(file,content));if(refusal)throw refusal;
    const space=this.spaceOf(file),site=wechatSite(space);
    if(style==='ai-code'||style==='ai-image'){
-    const sample=this.sampleCard(file,style);
-    if(!sample)throw Error('Local sample is missing.');
+    const sample=this.sampleCard(file,style),cloud=sample?null:this.cloudCard(file,style);
+    if(cloud){
+     const blobs=await this.cloudCardBlobs(cloud,{signal,onProgress});
+     return packageCardPages({source:wechatSource(content,parseYaml),site,style,blobs,engineVersion:this.manifest.version,...this.noteVersions(file)});
+    }
+    if(!sample)throw Error('This work has no '+CARD_VARIANTS[style]+' set for its current version.');
     const info=JSON.parse(await adapter.read(sample.parent.path+'/source.json'));
     const work=noteToWork(content,parseYaml);
     if(info.sourceHash!==await workFingerprint(work.data,localMediaPaths(work.media)))throw Error('The article has changed since these samples were made.');
@@ -1727,7 +1793,7 @@ class WorksView extends ItemView{
    // In a vault of several spaces a section is named with its space, since two sites can use the same section ID.
    const space=this.plugin.spaceOf(file),sectionId=String(p['rssd-section']||'');
    items.push({file,space,sectionId,id:String(p['rssd-id']),locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||file.basename),summary:String(p.summary||''),date:fieldText(p.date),
-    cardVariants:Object.keys(CARD_VARIANTS).filter(id=>this.plugin.sampleCard(file,id)),
+    cardVariants:Object.keys(CARD_VARIANTS).filter(id=>this.plugin.hasCardVariant(file,id)),
     section:this.plugin.multiSpace()?space+'/'+sectionId:sectionId,type:this.plugin.workType(file),
     publication:publicationOf(this.plugin.settings.publicationState?.[space],{workId:baselineBucket(this.plugin.settings,space,String(p['rssd-locale']||'zh-CN'))?.[String(p['rssd-id'])]?.workId,locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||'')}),author:String(p.author??''),category:String(p.category??''),
     version:p['rssd-version'],publishedVersion:p['rssd-published-version'],
@@ -2077,7 +2143,7 @@ const PREVIEW_TARGETS=[
   build:(plugin,file,content,style)=>plugin.wechatResult(file,content,{style}),copy:(plugin,file,style)=>plugin.copyForWechat(file,{style})},
  {id:'cards',label:'Cards',name:'Card view',icon:'gallery-vertical-end',copyLabel:'Save cards',actionIcon:'download',
   styles:[{id:'site',label:'算法排版',icon:CARD_STYLE_ICONS.site},
-   ...Object.entries(CARD_VARIANTS).map(([id,label])=>({id,label,icon:CARD_STYLE_ICONS[id],when:(plugin,file)=>!!plugin.sampleCard(file,id)}))],
+   ...Object.entries(CARD_VARIANTS).map(([id,label])=>({id,label,icon:CARD_STYLE_ICONS[id],when:(plugin,file)=>plugin.hasCardVariant(file,id)}))],
   build:(plugin,file,content,style,options)=>plugin.cardsResult(file,content,{style,...options}),copy:(plugin,file,style,result)=>plugin.saveCards(file,result)},
  // Outline and details are not outputs: they show how the work is built and what it is, beside the outputs.
  {id:'outline',label:'Outline',name:'Outline',icon:'list',styles:[],panel:'outline'},

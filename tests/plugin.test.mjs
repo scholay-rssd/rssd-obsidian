@@ -466,6 +466,21 @@ test('a revoked key is reported once, stops syncing, and a new key starts it aga
  response=who({workspaceIds:['pets']});await p.adoptToken('rssd_device_'+'j'.repeat(48));
  assert.equal(p.settings.keyRevoked,false);assert.ok(p.client());
 });
+test('every synced space reads its Center card sets, and a work shows the sets made for its version',async()=>{
+ const p=spacesPlugin(),asked=[];
+ p.client=()=>({renditions:async(space,options)=>{asked.push([space,options.locale]);
+  if(space==='legis')throw Object.assign(Error('Not found'),{status:404});
+  return {items:options.locale==='zh-CN'?[{id:'rendition-a',workId:'w1',variant:'ai-image',representation:'raster',source:{revision:2},pageCount:2}]:[],next:null};}});
+ await p.refreshCloudCards();
+ assert.deepEqual(asked,[['pets','zh-CN'],['pets','en'],['legis','zh-CN']]);
+ assert.equal(p.settings.cloudCards.pets['w1|zh-CN']['ai-image'].id,'rendition-a');assert.equal(p.settings.cloudCards.legis,undefined,'a failed space keeps no index');
+ p.settings.baselines={pets:{a:{articleId:'a',workId:'w1',version:2}}};
+ const file={path:'pet.piggytuck.com/Works/a.md',extension:'md'};let front={'rssd-id':'a','rssd-version':2};
+ p.app.metadataCache={getFileCache:()=>({frontmatter:front})};p.app.vault={...p.app.vault,getAbstractFileByPath:()=>null};
+ assert.equal(p.hasCardVariant(file,'ai-image'),true);assert.equal(p.hasCardVariant(file,'ai-code'),false);
+ assert.equal(p.cloudCard(file,'ai-image').space,'pets');
+ front={'rssd-id':'a','rssd-version':3};assert.equal(p.hasCardVariant(file,'ai-image'),false,'a newer version has no set yet');
+});
 test('a Center vault reads each site\'s newest publications after an update; other vaults do not ask',async()=>{
  const p=spacesPlugin(),asked=[];p.settings.center=true;
  p.client=()=>({publications:async options=>{asked.push(options);return [{workId:'w1',locale:'zh-CN',revision:2,destinationId:'site-pets',state:'blocked',title:'缅因猫'}];}});
