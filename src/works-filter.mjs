@@ -7,12 +7,21 @@
 
 export const STATUSES=Object.freeze(['all','edited','check']);
 export const LOCALES=Object.freeze(['zh-CN','en']);
+/**
+ * Where a work stands, from idea to website: a topic still to be written (the demand pool), a draft (never published,
+ * or newer than the website), or published. Topics and works share one list; this facet chooses which are shown.
+ */
+export const STAGES=Object.freeze(['topic','draft','published']);
+export const DEFAULT_STAGES=Object.freeze(['draft','published']);
+export const STAGE_LABELS=Object.freeze({topic:'选题',draft:'草稿',published:'已发布'});
+/** A work's stage from its draft and published versions; a topic is always 'topic'. */
+export const stageOf=work=>work?.kind==='topic'?'topic':(Number(work?.publishedVersion)||0)>0&&(Number(work?.version)||0)<=(Number(work?.publishedVersion)||0)?'published':'draft';
 export const CARD_VARIANTS=Object.freeze({'ai-code':'智能排版','ai-image':'模型生图'});
 /** The agent or model value for a work whose writer the Center has no record of (or that is not read yet). */
 export const NO_WRITER='';
 const DATE=/^\d{4}-\d{2}-\d{2}$/;
 
-export function emptyFilter(locale='zh-CN'){return {status:'all',locale,cardVariants:[],spaces:[],sections:[],agents:[],models:[],machines:[],from:'',to:''};}
+export function emptyFilter(locale='zh-CN'){return {stages:[...DEFAULT_STAGES],status:'all',locale,cardVariants:[],spaces:[],sections:[],agents:[],models:[],machines:[],from:'',to:''};}
 
 /** A filter read back from storage or built by the panel: anything unknown or malformed falls back to "all". */
 export function normalizeFilter(value){
@@ -20,7 +29,9 @@ export function normalizeFilter(value){
  const list=items=>Array.isArray(items)?[...new Set(items.filter(item=>typeof item==='string'))]:[];
  let from=DATE.test(v.from)?v.from:'',to=DATE.test(v.to)?v.to:'';
  if(from&&to&&from>to)[from,to]=[to,from];
- return {status:STATUSES.includes(v.status)?v.status:base.status,locale:LOCALES.includes(v.locale)?v.locale:base.locale,
+ // A filter kept by an earlier version has no stages: it shows works, as it did.
+ const stages=Array.isArray(v.stages)?list(v.stages).filter(id=>STAGES.includes(id)):[...DEFAULT_STAGES];
+ return {stages,status:STATUSES.includes(v.status)?v.status:base.status,locale:LOCALES.includes(v.locale)?v.locale:base.locale,
   cardVariants:list(v.cardVariants).filter(id=>Object.hasOwn(CARD_VARIANTS,id)),
   spaces:list(v.spaces),sections:list(v.sections),agents:list(v.agents),models:list(v.models),machines:list(v.machines),from,to};
 }
@@ -42,6 +53,7 @@ const statusMatches=(status,work,state)=>status==='all'||
 export function matches(work,filter,{state,writer,query=''}={},skip=''){
  const q=String(query).trim().toLowerCase();
  if(q&&![work.title,work.summary].some(text=>String(text??'').toLowerCase().includes(q)))return false;
+ if(skip!=='stages'&&filter.stages.length&&!filter.stages.includes(stageOf(work)))return false;
  if(skip!=='locale'&&localeOf(work)!==filter.locale)return false;
  if(skip!=='status'&&!statusMatches(filter.status,work,state))return false;
  if(skip!=='cardVariants'&&filter.cardVariants.length&&!work.cardVariants?.some(id=>filter.cardVariants.includes(id)))return false;
@@ -63,10 +75,11 @@ export function matches(work,filter,{state,writer,query=''}={},skip=''){
  * not. `context(work)` returns {state, writer}. Sections, agents, models and machines come back as Maps of value → count.
  */
 export function facetCounts(works,filter,context,query=''){
- const counts={status:{all:0,edited:0,check:0},locale:{'zh-CN':0,en:0},cardVariants:new Map(),spaces:new Map(),sections:new Map(),agents:new Map(),models:new Map(),machines:new Map(),dates:0};
+ const counts={stages:{topic:0,draft:0,published:0},status:{all:0,edited:0,check:0},locale:{'zh-CN':0,en:0},cardVariants:new Map(),spaces:new Map(),sections:new Map(),agents:new Map(),models:new Map(),machines:new Map(),dates:0};
  const add=(map,key)=>map.set(key,(map.get(key)||0)+1);
  for(const work of works){
   const c={...context(work),query};
+  if(matches(work,filter,c,'stages'))counts.stages[stageOf(work)]++;
   if(matches(work,filter,c,'status'))for(const status of STATUSES)if(statusMatches(status,work,c.state))counts.status[status]++;
   if(matches(work,filter,c,'locale'))counts.locale[localeOf(work)]++;
   if(matches(work,filter,c,'cardVariants'))for(const id of work.cardVariants||[])add(counts.cardVariants,id);
@@ -81,11 +94,12 @@ export function facetCounts(works,filter,context,query=''){
 }
 
 /** How many facets narrow the list (the language is a choice of list, not a narrowing). */
-export const narrowedBy=filter=>(filter.status!=='all')+(filter.cardVariants.length>0)+(filter.spaces.length>0)+(filter.sections.length>0)+(filter.agents.length>0)+(filter.models.length>0)+(filter.machines.length>0)+(!!(filter.from||filter.to));
+export const narrowedBy=filter=>(filter.stages.length!==DEFAULT_STAGES.length||filter.stages.some(id=>!DEFAULT_STAGES.includes(id)))+(filter.status!=='all')+(filter.cardVariants.length>0)+(filter.spaces.length>0)+(filter.sections.length>0)+(filter.agents.length>0)+(filter.models.length>0)+(filter.machines.length>0)+(!!(filter.from||filter.to));
 
 /** One removable chip per chosen value, in the panel's order. `sectionName(id)` names a section, `spaceName(id)` a space. */
 export function activeChips(filter,{sectionName=id=>id,spaceName=id=>id}={}){
  const chips=[];
+ if(narrowedBy({...filter,status:'all',cardVariants:[],spaces:[],sections:[],agents:[],models:[],machines:[],from:'',to:''}))for(const id of filter.stages)chips.push({facet:'stages',value:id,text:STAGE_LABELS[id]});
  if(filter.status!=='all')chips.push({facet:'status',value:filter.status,text:filter.status==='edited'?'Edited':'To check'});
  for(const id of filter.cardVariants)chips.push({facet:'cardVariants',value:id,text:CARD_VARIANTS[id]});
  for(const id of filter.spaces)chips.push({facet:'spaces',value:id,text:spaceName(id)||id});
@@ -101,7 +115,7 @@ export function withoutChip(filter,{facet,value}){
  const next=normalizeFilter(filter);
  if(facet==='status')next.status='all';
  else if(facet==='dates'){next.from='';next.to='';}
- else if(['cardVariants','spaces','sections','agents','models','machines'].includes(facet))next[facet]=next[facet].filter(item=>item!==value);
+ else if(['stages','cardVariants','spaces','sections','agents','models','machines'].includes(facet))next[facet]=next[facet].filter(item=>item!==value);
  return next;
 }
 /** The filter with one value of a multi-choice facet turned on or off. */

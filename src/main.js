@@ -15,9 +15,9 @@ import {saveFailureMessage,saveManySummary} from './messages.mjs';
 import {spaceInfo,readOnlyReason,spacesSummary} from './spaces.mjs';
 import {readerCatalog,filterCatalog,readerArticle,MEDIA_HOST} from './reader.mjs';
 import {workLabel,labelText,tabTitle} from './titles.mjs';
-import {agoText,cardChips,mediaName,noteFacts,lengthText,writerOf,writerLabel,isBrandLine} from './work-cards.mjs';
+import {agoText,cardChips,cardStatus,cardAttention,shortDate,mediaName,noteFacts,lengthText,writerOf,writerLabel,isBrandLine} from './work-cards.mjs';
 import {internalNotes,hasOpenChecks,runHistory,rowNotes,anchorMatches} from './private-notes.mjs';
-import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER,CARD_VARIANTS} from './works-filter.mjs';
+import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER,CARD_VARIANTS,STAGE_LABELS} from './works-filter.mjs';
 import {CARD_STYLE_ICONS,styleOptions,nextStyle} from './style-switch.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {layoutMode,spaceFolderName,VaultLayout,prefixedVault,SPACES} from './vault-layout.mjs';
@@ -256,6 +256,8 @@ body.rssd-one-row .mod-left-split .workspace-tab-header-container .workspace-tab
 .rssd-works-card-body{min-width:0}
 .rssd-works-card-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;color:var(--text-normal);font-size:var(--font-ui-small);font-weight:var(--font-medium);line-height:1.35}
 .rssd-works-status{cursor:help}.rssd-works-status .rssd-works-fact-icon svg{width:14px;height:14px}
+.rssd-works-status.is-success{color:var(--color-green)}.rssd-works-card.rssd-works-topic{border-style:dashed;background:var(--background-modifier-hover);color:var(--text-faint)}.rssd-works-topic .rssd-works-card-title,.rssd-works-row.rssd-works-topic .rssd-works-title{color:var(--text-muted)}.rssd-works-topic .rssd-works-section{opacity:.75}.rssd-works-row.rssd-works-topic{background:var(--background-modifier-hover)}.rssd-works-row.rssd-works-topic .rssd-works-status{margin-right:4px}.rssd-works-type{display:inline-flex;vertical-align:-2px;margin-right:4px;color:var(--text-muted)}.rssd-works-type svg{width:13px;height:13px}
+.rssd-works-writer:has(.rssd-works-actions){overflow:visible}.rssd-works-writer .rssd-works-actions{display:inline-flex;gap:0;margin-left:auto;padding:0;border:0}.rssd-works-actions .rssd-works-action.clickable-icon{padding:1px 3px;height:auto;border-radius:var(--radius-s)}.rssd-works-actions .rssd-works-action.is-active{background:var(--background-modifier-active-hover);color:var(--text-accent)}.rssd-works-actions .rssd-works-action svg{width:13px;height:13px}
 .rssd-works-status.is-warning{color:var(--color-orange)}.rssd-works-status.is-danger{color:var(--color-red)}.rssd-works-status.is-site{color:var(--color-blue)}.rssd-works-status.is-plain{color:var(--text-faint)}
 .rssd-works-facts{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
 .rssd-works-fact,.rssd-works-writer{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
@@ -393,6 +395,7 @@ export default class RssdPlugin extends Plugin{
   this.settingTab=new RssdSettings(this.app,this);this.addSettingTab(this.settingTab);
   // The topic pool: a vault that shows the demand queue of every authorized space (see pool-plugin.mjs).
   this.topicPool=installTopicPool(this,{Notice,TFile,Platform,parseYaml,stringifyYaml});
+
   this.addCommand({id:'login',name:'Log in to the RSSD Center',callback:()=>this.login().catch(error=>new Notice('Login failed: '+error.message))});
   this.addCommand({id:'pull',name:'Update works from the Center',callback:()=>this.pull()});
   this.addCommand({id:'save',name:'Save this work to the Center as a private draft',checkCallback:checking=>{
@@ -1626,6 +1629,8 @@ class WorksFilterPanel{
     row.createSpan({cls:'rssd-filter-option-name',text:name});row.createSpan({cls:'rssd-filter-option-count',text:String(count)});
    }
   };
+  // From idea to website: topics (the demand pool) only where the vault has them.
+  options(group('阶段'),'stages',(view.plugin.topicPool?.enabled()?['topic','draft','published']:['draft','published']).map(value=>({value,name:STAGE_LABELS[value],count:c.stages[value]||0})));
   segments(group('Show'),'status',[['all','All',c.status.all],['edited','Edited',c.status.edited],['check','To check',c.status.check]],f.status,id=>set({...view.filterState,status:id}));
   if(c.locale.en)segments(group('Language'),'locale',[['zh-CN','中文',c.locale['zh-CN']],['en','English',c.locale.en]],f.locale,id=>set({...view.filterState,locale:id}));
   options(group('卡片版本'),'cardVariants',Object.entries(CARD_VARIANTS).map(([value,name])=>({value,name,count:c.cardVariants.get(value)||0})));
@@ -1666,7 +1671,7 @@ const WORKS_PAGE=60;
 const WRITERS_KEY='rssd-writers-6';
 const FILTER_KEY='rssd-works-filter';
 class WorksView extends ItemView{
- constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.limit=WORKS_PAGE;this.panel=null;this.states=new Map();
+ constructor(leaf,plugin){super(leaf);this.plugin=plugin;this.query='';this.limit=WORKS_PAGE;this.panel=null;this.states=new Map();this.topicEdits=new Map();
   // What is listed, kept on this device (see works-filter.mjs).
   this.filterState=(()=>{try{return normalizeFilter(this.app.loadLocalStorage?.(FILTER_KEY));}catch{return emptyFilter();}})();
   this.facts=new Map();this.shown=new Map();this.timer=null;this.filling=false;this.fetchingWriters=false;this.machineAsked=new Set();
@@ -1702,9 +1707,11 @@ class WorksView extends ItemView{
   this.foot=el.createDiv({cls:'rssd-works-foot'});this.progress=this.foot.createDiv({cls:'rssd-works-progress'});this.footBody=this.foot.createDiv({cls:'rssd-works-foot-body'});
   const later=()=>{window.clearTimeout(this.timer);this.timer=window.setTimeout(()=>this.render(),300);};
   this.registerEvent(this.app.metadataCache.on('changed',file=>{this.states.delete(file.path);later();}));
-  this.registerEvent(this.app.vault.on('modify',file=>{this.states.delete(file.path);later();}));
+  this.registerEvent(this.app.vault.on('modify',file=>{this.states.delete(file.path);this.topicEdits.delete(file.path);later();}));
   for(const event of ['create','delete','rename'])this.registerEvent(this.app.vault.on(event,later));
   this.registerEvent(this.app.workspace.on('file-open',()=>this.mark()));
+  // The tab buttons on the open work's card follow the tab in front.
+  this.registerEvent(this.app.workspace.on('active-leaf-change',()=>this.mark()));
   this.registerInterval(window.setInterval(()=>this.renderFoot(),60000));
   // Placed again when the layout changes, as the sidebar's top row may be rebuilt.
   for(const event of ['active-leaf-change','layout-change'])this.registerEvent(this.app.workspace.on(event,()=>this.placeHeadbar()));
@@ -1725,6 +1732,16 @@ class WorksView extends ItemView{
     publication:publicationOf(this.plugin.settings.publicationState?.[space],{workId:baselineBucket(this.plugin.settings,space,String(p['rssd-locale']||'zh-CN'))?.[String(p['rssd-id'])]?.workId,locale:String(p['rssd-locale']||'zh-CN'),title:String(p.title||'')}),author:String(p.author??''),category:String(p.category??''),
     version:p['rssd-version'],publishedVersion:p['rssd-published-version'],
     media:(this.app.metadataCache.getFileCache(file)?.embeds||[]).map(embed=>mediaName(embed.link)).filter(Boolean)});
+  }
+  // Topics share the list, so one filter (the 阶段 facet) shows ideas, drafts and published works together.
+  if(this.plugin.topicPool?.enabled())for(const {file,space,path} of this.plugin.topicPool.files()){
+   const p=this.app.metadataCache.getFileCache(file)?.frontmatter||{},topicSpace=space||String(p['rssd-space']||''),sectionId=String(p['rssd-section']||'');
+   const state=String(p['rssd-state']||(p['rssd-demand']?'':'new'));
+   if(['completed','cancelled'].includes(state))continue;
+   items.push({kind:'topic',file,path,space:topicSpace,sectionId,section:this.plugin.multiSpace()?topicSpace+'/'+sectionId:sectionId,sectionName:file.parent?.name||'',
+    id:String(p['rssd-demand']||file.path),locale:'zh-CN',title:String(p.title||file.basename),summary:'',date:String(p.due||p['rssd-updated']||'').slice(0,10),
+    topicState:state,priority:Number(p.priority)||0,topicType:String(p.type||''),due:String(p.due||''),updated:String(p['rssd-updated']||''),claimedBy:String(p['rssd-claimed-by']||''),
+    media:[],cardVariants:[],author:'x',category:'x'});
   }
   return items;
  }
@@ -1822,8 +1839,9 @@ class WorksView extends ItemView{
   for(const work of shown.slice(0,this.limit))this.item(this.list,work);
   if(shown.length>this.limit){const rest=shown.length-this.limit,more=this.list.createDiv({cls:'rssd-works-more',text:'Show '+Math.min(WORKS_PAGE,rest)+' more of '+rest});more.addEventListener('click',()=>{this.limit+=WORKS_PAGE;this.render();});}
   // Save takes the edited works of the language on screen, whatever else is filtered.
-  this.edited=inLanguage.filter(work=>this.states.get(work.file.path)?.state==='edited').map(work=>work.file);
-  this.mark();this.renderFoot();void this.fillStates(every);void this.fillWriters([...this.shown.values(),...inLanguage]);
+  this.edited=inLanguage.filter(work=>work.kind!=='topic'&&this.states.get(work.file.path)?.state==='edited').map(work=>work.file);
+  const works=list=>list.filter(work=>work.kind!=='topic');
+  this.mark();this.renderFoot();void this.fillStates(works(every));void this.fillWriters(works([...this.shown.values(),...inLanguage]));void this.fillTopicEdits([...this.shown.values()].filter(work=>work.kind==='topic'));
  }
  /** A section's name; a section the site catalog does not name shows its own ID, never the space prefix. */
  sectionName(id){return this.names?.get(id)?.name||String(id||'').split('/').pop()||'';}
@@ -1851,7 +1869,34 @@ class WorksView extends ItemView{
   }
   if(chips.length>1){const clear=this.active.createEl('button',{cls:'rssd-works-clear',text:'Clear all'});clear.addEventListener('click',()=>this.setFilter(emptyFilter(f.locale)));}
  }
- item(group,work){this.shown.set(work.file.path,work);return this.layout==='cards'?this.card(group,work):this.row(group,work);}
+ item(group,work){this.shown.set(work.file.path,work);if(work.kind==='topic')return this.topicCard(group,work);return this.layout==='cards'?this.card(group,work):this.row(group,work);}
+ /** A topic still to be written: a dashed card, a light bulb in the topic's state colour, priority, type, due or update. */
+ topicCard(group,topic){
+  const compact=this.layout!=='cards',card=group.createDiv({cls:(compact?'rssd-works-row':'rssd-works-card')+' rssd-works-topic'});card.dataset.path=topic.file.path;
+  const [tone,label]={queued:['site','选题 · 待认领'],claimed:['success','选题 · 写作中'],blocked:['danger','选题 · 受阻'],new:['warning','新选题，还没存到 Center']}[topic.topicState]||['plain','选题'];
+  const title=(compact?card:card.createDiv({cls:'rssd-works-card-body'}).createDiv({cls:'rssd-works-card-title'}));
+  const sectionName=this.sectionName(topic.section)||topic.sectionName;
+  if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(topic.sectionId,topic.space);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label',(this.plugin.multiSpace()?this.spaceName(topic.space)+' · ':'')+sectionName);}
+  if(compact){const bulb=title.createSpan({cls:'rssd-works-fact rssd-works-status is-'+tone});setIcon(bulb,'lightbulb');bulb.setAttribute('aria-label',label);title.createSpan({cls:'rssd-works-title',text:topic.title});card.addEventListener('click',()=>void this.app.workspace.getLeaf(false).openFile(topic.file));return card;}
+  title.appendText(topic.title);
+  const row=card.createDiv({cls:'rssd-works-facts'});
+  const mark=(icon,text,aria,markTone='')=>{const el=row.createSpan({cls:'rssd-works-fact'+(markTone?' rssd-works-status is-'+markTone:'')});setIcon(el.createSpan({cls:'rssd-works-fact-icon'}),icon);if(text)el.createSpan({text});el.setAttribute('aria-label',aria);};
+  mark('lightbulb','',label,tone);
+  mark('flag',String(topic.priority),'优先级 '+topic.priority);
+  if(topic.topicType)mark(topic.topicType==='note'?'notebook-pen':'file-text','',topic.topicType==='note'?'写成笔记':'写成文章');
+  if(topic.due){const days=(Date.parse(topic.due)-Date.now())/86400000;mark('calendar-clock',topic.due.slice(5,10),'截止 '+topic.due.slice(0,10),days<3?'warning':'');}
+  else if(topic.updated)mark('clock',topic.updated.slice(5,10),'更新于 '+topic.updated.slice(0,10));
+  if(this.topicEdits.get(topic.file.path))mark('pencil','','本地改过，还没存到 Center','warning');
+  if(topic.topicState==='claimed'){const line=card.createDiv({cls:'rssd-works-writer'});setIcon(line.createSpan({cls:'rssd-works-fact-icon'}),'laptop');line.createSpan({text:'已被设备认领，正在写'});}
+  card.addEventListener('click',()=>void this.app.workspace.getLeaf(false).openFile(topic.file));
+  return card;
+ }
+ /** Which topic notes have edits the Center does not have, a few at a time; a card is redrawn when it is known. */
+ async fillTopicEdits(topics){
+  if(this.fillingTopics||!topics.length)return;this.fillingTopics=true;
+  try{for(const topic of topics){if(this.topicEdits.has(topic.file.path))continue;const value=await this.plugin.topicPool.edited(topic);this.topicEdits.set(topic.file.path,value);if(value)this.refreshItem(topic.file.path);}}
+  finally{this.fillingTopics=false;}
+ }
  /** Draw one work again in place, after its state or length became known. */
  refreshItem(path){
   const old=this.list?.querySelector(`[data-path="${CSS.escape(path)}"]`),work=this.shown.get(path);
@@ -1861,43 +1906,51 @@ class WorksView extends ItemView{
  }
  card(group,work){
   const card=group.createDiv({cls:'rssd-works-card'});card.dataset.path=work.file.path;
-  const state=this.states.get(work.file.path)?.state,facts=this.facts.get(work.file.path);
+  const state=this.states.get(work.file.path)?.state,facts=this.facts.get(work.file.path),writer=this.writerFor(work);
   const body=card.createDiv({cls:'rssd-works-card-body'});
-  // The section's label leads the title, in the section's colour.
+  // The section's label leads the title, in the section's colour; in a vault of several sites, hover names the site.
   const title=body.createDiv({cls:'rssd-works-card-title'}),sectionName=this.sectionName(work.section);
-  if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.sectionId,work.space);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label','Section');}
-  // Long articles are the usual work; a note says so after its section.
-  if(work.type==='note')title.createSpan({cls:'rssd-works-type',text:'笔记',attr:{'aria-label':'Note'}});
+  if(sectionName){const tag=title.createSpan({cls:'rssd-works-section',text:sectionName}),accent=this.plugin.sectionAccentOf(work.sectionId,work.space);if(accent)tag.style.setProperty('--rssd-section',accent);tag.setAttribute('aria-label',this.plugin.multiSpace()?this.spaceName(work.space)+' · '+sectionName:'栏目');}
+  if(work.type==='note'){const note=title.createSpan({cls:'rssd-works-type'});setIcon(note,'notebook-pen');note.setAttribute('aria-label','笔记');}
   title.appendText(work.title);
-  // Most works need nothing, so the chip row is only there when there is a chip.
-  // What the work is made of. Length, references and the brand line arrive with the background pass.
-  const row=card.createDiv({cls:'rssd-works-facts'}),pictures=work.media.length,references=facts?.references;
-  // What needs attention leads the row as coloured icons; hovering one says what it is, in full.
-  for(const chip of cardChips({...work,state,checks:this.writerFor(work)?.checks})){const mark=row.createSpan({cls:'rssd-works-fact rssd-works-status is-'+chip.tone});setIcon(mark.createSpan({cls:'rssd-works-fact-icon'}),chip.icon);mark.setAttribute('aria-label',chip.title);}
-  const fact=(icon,text,label,{missing=false,absent=false}={})=>{const el=row.createSpan({cls:'rssd-works-fact'+(missing||absent?' is-missing':'')+(absent?' is-absent':'')});setIcon(el.createSpan({cls:'rssd-works-fact-icon'}),icon);el.createSpan({text});el.setAttribute('aria-label',label);};
-  fact('calendar',work.date.slice(5)||'—',work.date?'Date '+work.date:'No date',{missing:!work.date});
-  if(facts?.length!=null)fact('type',lengthText(facts.length,work.locale),'Length');
-  fact('image',String(pictures),pictures?pictures+(pictures===1?' image':' images'):'No images',{missing:!pictures});
-  if(references!=null)fact('quote',String(references),references?references+(references===1?' reference':' references'):'No references',{missing:!references});
-  if(facts?.brand!=null)fact(facts.brand?'badge-check':'badge','Brand',facts.brand?'The site\'s brand line is mounted':'No brand line',{absent:!facts.brand});
+  // One row of icons: where the work stands, what it is made of, then what still needs doing. Nothing is shown
+  // for a count of zero; hovering any icon says what it means.
+  const row=card.createDiv({cls:'rssd-works-facts'});
+  const mark=(icon,text,label,tone='')=>{const el=row.createSpan({cls:'rssd-works-fact'+(tone?' rssd-works-status is-'+tone:'')});setIcon(el.createSpan({cls:'rssd-works-fact-icon'}),icon);if(text)el.createSpan({text});el.setAttribute('aria-label',label);return el;};
+  const status=cardStatus({state,publication:work.publication,version:work.version,publishedVersion:work.publishedVersion});
+  mark(status.icon,'',status.title,status.tone);
+  if(work.date)mark('calendar',shortDate(work.date),work.date);
+  if(facts?.length)mark('type',lengthText(facts.length,work.locale).replace(/\s*(字|words)$/,''),lengthText(facts.length,work.locale));
+  if(work.media.length)mark('image',String(work.media.length),work.media.length+' 张图片');
+  if(facts?.references)mark('quote',String(facts.references),facts.references+' 条参考文献');
   const other=work.locale==='en'?'zh-CN':'en',doc=this.pairs?.document(work);
-  if(doc){const has=this.pairs.has(other,doc,work),name=other==='en'?'English':'Chinese';fact('languages',other==='en'?'EN':'中',(has?'Has a ':'No ')+name+' edition',{absent:!has});}
-  const writer=this.writerFor(work),label=writerLabel(writer);
-  if(writer!==undefined){
-   const line=card.createDiv({cls:'rssd-works-writer'+(label?'':' is-missing')});setIcon(line.createSpan({cls:'rssd-works-fact-icon'}),'bot');line.createSpan({text:label||'Writer not recorded'});line.setAttribute('aria-label',label?'Written by '+label:'The Center has no record of the agent that wrote this');
-   // The machine that saved the first version, by its device name.
-   if(writer?.machine){const machine=line.createSpan({cls:'rssd-works-machine'});setIcon(machine.createSpan({cls:'rssd-works-fact-icon'}),'laptop');machine.createSpan({text:writer.machine});machine.setAttribute('aria-label','First written on '+writer.machine);}
-  }
+  if(doc&&this.pairs.has(other,doc,work))mark('languages',other==='en'?'EN':'中',other==='en'?'有英文版':'有中文版');
+  for(const item of cardAttention({...work,checks:writer?.checks}))mark(item.icon,'',item.title,item.tone);
+  // Who wrote it, on which machine: always shown, so a missing record is visible too.
+  const label=writerLabel(writer),line=card.createDiv({cls:'rssd-works-writer'+(label?'':' is-missing')});
+  setIcon(line.createSpan({cls:'rssd-works-fact-icon'}),'bot');line.createSpan({text:writer===undefined?'…':label||'未记录'});
+  line.setAttribute('aria-label',writer===undefined?'正在读取写作记录':label?'智能体与模型：'+label:'Center 没有这篇的写作记录');
+  if(writer?.machine){const machine=line.createSpan({cls:'rssd-works-machine'});setIcon(machine.createSpan({cls:'rssd-works-fact-icon'}),'laptop');machine.createSpan({text:writer.machine});machine.setAttribute('aria-label','第一次保存它的设备：'+writer.machine);}
   card.addEventListener('click',()=>void this.openWork(work.file));
   return card;
  }
- /** Save on the open work's card, only when that work has something to save. Preview, Cards, Outline and Details stay out of this list. */
+ /**
+  * On the open work's card: one icon per RSSD tab (article, cards, outline, details) to switch the editor to it,
+  * the one in front highlighted, and Save when the work has edits.
+  */
  actions(card,work){
-  if(this.states.get(work.file.path)?.state!=='edited'||Platform.isMobile)return;
-  const bar=card.createDiv({cls:'rssd-works-actions'});
-  const button=bar.createEl('button',{cls:'rssd-works-action mod-cta'});setIcon(button.createSpan({cls:'rssd-works-action-icon'}),'upload');button.createSpan({text:'Save'});
-  button.setAttribute('aria-label','Save this work to the Center as a private draft. Nothing is published.');
-  button.addEventListener('click',async event=>{event.stopPropagation();await this.plugin.save(work.file);this.states.delete(work.file.path);this.render();});
+  // Small icons at the right end of the writer line: no row of their own.
+  const line=card.querySelector('.rssd-works-writer')||card,bar=line.createSpan({cls:'rssd-works-actions'}),front=this.app.workspace.getMostRecentLeaf?.(this.app.workspace.rootSplit)?.view?.getViewType?.();
+  for(const [type,id] of SIDEBAR_VIEWS){
+   const target=PREVIEW_TARGETS.find(item=>item.id===id),button=bar.createEl('button',{cls:'rssd-works-action clickable-icon'+(front===type?' is-active':'')});
+   setIcon(button,target.icon);button.setAttribute('aria-label',{article:'文章',cards:'卡片',outline:'大纲',details:'详情'}[id]||target.label);
+   button.addEventListener('click',event=>{event.stopPropagation();void this.plugin.openView(type).then(()=>this.mark());});
+  }
+  if(this.states.get(work.file.path)?.state==='edited'&&!Platform.isMobile){
+   const save=bar.createEl('button',{cls:'rssd-works-action clickable-icon mod-cta'});setIcon(save,'upload');
+   save.setAttribute('aria-label','保存到 Center（私有草稿，不会发布）');
+   save.addEventListener('click',async event=>{event.stopPropagation();await this.plugin.save(work.file);this.states.delete(work.file.path);this.render();});
+  }
  }
  row(group,work){
   const row=group.createDiv({cls:'rssd-works-row'});row.dataset.path=work.file.path;
@@ -1921,7 +1974,7 @@ class WorksView extends ItemView{
    const active=item.dataset.path===current;item.toggleClass('is-active',active);
    if(!item.classList.contains('rssd-works-card'))continue;
    const bar=item.querySelector('.rssd-works-actions'),work=this.shown.get(item.dataset.path);
-   if(active&&!bar&&work)this.actions(item,work);else if(!active&&bar)bar.remove();
+   bar?.remove();if(active&&work)this.actions(item,work);
   }
  }
  /** Work out each work's state in the background, a few at a time, and show it as it arrives. */
