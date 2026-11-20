@@ -257,7 +257,7 @@ body.rssd-one-row .mod-left-split .workspace-tab-header-container .workspace-tab
 .rssd-works-card-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;color:var(--text-normal);font-size:var(--font-ui-small);font-weight:var(--font-medium);line-height:1.35}
 .rssd-works-status{cursor:help}.rssd-works-status .rssd-works-fact-icon svg{width:14px;height:14px}
 .rssd-works-status.is-success{color:var(--color-green)}.rssd-works-card.rssd-works-topic{border-style:dashed}.rssd-works-row.rssd-works-topic .rssd-works-status{margin-right:4px}.rssd-works-type{display:inline-flex;vertical-align:-2px;margin-right:4px;color:var(--text-muted)}.rssd-works-type svg{width:13px;height:13px}
-.rssd-works-actions .rssd-works-action.clickable-icon{flex:1;justify-content:center;padding:3px 0;border-radius:var(--radius-s)}.rssd-works-actions .rssd-works-action.is-active{background:var(--background-modifier-active-hover);color:var(--text-accent)}.rssd-works-actions .rssd-works-action svg{width:15px;height:15px}
+.rssd-works-writer:has(.rssd-works-actions){overflow:visible}.rssd-works-writer .rssd-works-actions{display:inline-flex;gap:0;margin-left:auto;padding:0;border:0}.rssd-works-actions .rssd-works-action.clickable-icon{padding:1px 3px;height:auto;border-radius:var(--radius-s)}.rssd-works-actions .rssd-works-action.is-active{background:var(--background-modifier-active-hover);color:var(--text-accent)}.rssd-works-actions .rssd-works-action svg{width:13px;height:13px}
 .rssd-works-status.is-warning{color:var(--color-orange)}.rssd-works-status.is-danger{color:var(--color-red)}.rssd-works-status.is-site{color:var(--color-blue)}.rssd-works-status.is-plain{color:var(--text-faint)}
 .rssd-works-facts{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--text-muted);font-size:var(--font-ui-smaller);font-variant-numeric:tabular-nums}
 .rssd-works-fact,.rssd-works-writer{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
@@ -1939,7 +1939,8 @@ class WorksView extends ItemView{
   * the one in front highlighted, and Save when the work has edits.
   */
  actions(card,work){
-  const bar=card.createDiv({cls:'rssd-works-actions'}),front=this.app.workspace.getMostRecentLeaf?.(this.app.workspace.rootSplit)?.view?.getViewType?.();
+  // Small icons at the right end of the writer line: no row of their own.
+  const line=card.querySelector('.rssd-works-writer')||card,bar=line.createSpan({cls:'rssd-works-actions'}),front=this.app.workspace.getMostRecentLeaf?.(this.app.workspace.rootSplit)?.view?.getViewType?.();
   for(const [type,id] of SIDEBAR_VIEWS){
    const target=PREVIEW_TARGETS.find(item=>item.id===id),button=bar.createEl('button',{cls:'rssd-works-action clickable-icon'+(front===type?' is-active':'')});
    setIcon(button,target.icon);button.setAttribute('aria-label',{article:'文章',cards:'卡片',outline:'大纲',details:'详情'}[id]||target.label);
