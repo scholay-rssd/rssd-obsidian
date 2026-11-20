@@ -64,7 +64,7 @@ test('each option is counted with every other facet applied but its own',()=>{
 test('stored or hand-built filters are cleaned, and an inverted range is put the right way round',()=>{
  assert.deepEqual(normalizeFilter(null),emptyFilter());
  assert.deepEqual(normalizeFilter({status:'nope',locale:'fr',sections:['a','a',3],writers:'x',from:'2026-11-10',to:'2026-11-01'}),
-  {status:'all',locale:'zh-CN',cardVariants:[],spaces:[],sections:['a'],agents:[],models:[],machines:[],from:'2026-11-01',to:'2026-11-10'});
+  {stages:['draft','published'],status:'all',locale:'zh-CN',cardVariants:[],spaces:[],sections:['a'],agents:[],models:[],machines:[],from:'2026-11-01',to:'2026-11-10'});
  assert.deepEqual(normalizeFilter({from:'11/01/2026'}).from,'');
 });
 
@@ -115,4 +115,19 @@ test('in a vault of several spaces, works can be narrowed to some spaces',()=>{
  assert.equal(narrowedBy(f),1);
  assert.deepEqual(activeChips(f,{spaceName:id=>id==='pets'?'萌宠':id}),[{facet:'spaces',value:'pets',text:'萌宠'}]);
  assert.deepEqual(withoutChip(f,{facet:'spaces',value:'pets'}).spaces,[]);
+});
+
+import {stageOf,STAGES} from '../src/works-filter.mjs';
+test('topics and works share one list; the stage facet chooses topics, drafts or published works',()=>{
+ const items=[{title:'t',kind:'topic',locale:'zh-CN'},{title:'d',version:3,publishedVersion:2,locale:'zh-CN'},{title:'n',version:1,publishedVersion:null,locale:'zh-CN'},{title:'p',version:2,publishedVersion:2,locale:'zh-CN'}];
+ assert.deepEqual(items.map(stageOf),['topic','draft','draft','published']);
+ const shown=f=>items.filter(item=>matches(item,f,{})).map(item=>item.title);
+ assert.deepEqual(shown(emptyFilter()),['d','n','p'],'by default only works, as before');
+ assert.deepEqual(shown({...emptyFilter(),stages:['topic','draft']}),['t','d','n']);
+ assert.deepEqual(facetCounts(items,emptyFilter(),()=>({})).stages,{topic:1,draft:2,published:1});
+ assert.equal(narrowedBy(emptyFilter()),0);assert.equal(narrowedBy({...emptyFilter(),stages:['topic']}),1);
+ assert.deepEqual(activeChips({...emptyFilter(),stages:['topic']}).map(chip=>chip.text),['选题']);
+ assert.deepEqual(normalizeFilter({}).stages,['draft','published'],'a filter kept by an earlier version shows works');
+ assert.deepEqual(normalizeFilter({stages:['topic','nope']}).stages,['topic']);
+ assert.deepEqual(STAGES,['topic','draft','published']);
 });
