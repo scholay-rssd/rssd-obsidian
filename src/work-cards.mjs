@@ -125,3 +125,33 @@ export function runWriter(run){
  const agent=(at>0?full.slice(0,at).trim():'')||(at===0?full:'')||full;
  return {agent,model:at===0&&agent===full?'':model};
 }
+
+/**
+ * The one icon that leads a work's card (version 2 of the card, 2026-11-20): what is going on locally if anything,
+ * otherwise where the work stands on the website. {icon, tone, title}; tone is success, warning, danger, site or
+ * plain. `version` and `publishedVersion` are the note's rssd-version and rssd-published-version.
+ */
+export function cardStatus({state,publication,version,publishedVersion}){
+ if(state==='conflict')return {icon:'triangle-alert',tone:'danger',title:'冲突：Center 上有更新的版本，需要处理'};
+ if(state==='saving')return {icon:'loader-2',tone:'site',title:'正在保存到 Center'};
+ if(state==='edited')return {icon:'pencil',tone:'warning',title:'已编辑，还没存回 Center'};
+ if(state==='unlinked')return {icon:'unlink',tone:'plain',title:'还没从 Center 下载过'};
+ if(publication&&['blocked','failed'].includes(publication.state))return {icon:'circle-x',tone:'danger',title:'网站发布 v'+publication.revision+' 没有完成'+(publication.error?'：'+publication.error:'')};
+ if(publication&&['queued','dispatching'].includes(publication.state))return {icon:'send',tone:'site',title:'网站正在发布 v'+publication.revision};
+ const draft=Number(version)||0,live=Number(publishedVersion)||0;
+ if(!live)return {icon:'circle-dashed',tone:'plain',title:'还没发布到网站'+(draft?'（草稿 v'+draft+'）':'')};
+ if(draft>live)return {icon:'upload-cloud',tone:'warning',title:'网站是 v'+live+'，草稿 v'+draft+' 还没发布'};
+ return {icon:'globe',tone:'success',title:'已发布 v'+live};
+}
+
+/** Icons after the facts for what still needs doing: open checks, a missing author or category. */
+export function cardAttention({author,category,checks}){
+ const marks=[];
+ if(checks)marks.push({icon:'list-checks',tone:'warning',title:'核对与待办'+(typeof checks==='string'?'：'+checks:'还有项目')});
+ const missing=[!String(author??'').trim()&&'作者',!String(category??'').trim()&&'分类'].filter(Boolean);
+ if(missing.length)marks.push({icon:'user-x',tone:'danger',title:'缺'+missing.join('和')+'，在详情里补上'});
+ return marks;
+}
+
+/** "2026-12-10" → "26-12-10": the year stays, short. */
+export const shortDate=date=>/^\d{4}-\d{2}-\d{2}/.test(String(date??''))?String(date).slice(2,10):'';

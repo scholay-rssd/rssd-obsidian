@@ -85,6 +85,15 @@ export function installTopicPool(plugin,obsidian){
   save:({path,space})=>run('pool-save',async(engine,registry)=>{writable();return engine.save(path,registry);},
    result=>result.state==='unchanged'?'Nothing to save':result.state==='created'?'Queued as a new topic: '+result.title:'Topic saved: '+result.title,space),
   withdraw:({path,space})=>run('pool-withdraw',async engine=>{writable();return engine.withdraw(path);},result=>'Topic withdrawn: '+result.title,space),
+  /** Whether a topic note has edits the Center does not have yet. Read only; no operation gate. */
+  edited:async({path,space})=>{try{return await sync(space).edited(path);}catch{return false;}},
+  /** The topic notes of this vault: {file, space, path} with path inside the pool's vault. */
+  files:()=>app.vault.getMarkdownFiles().map(file=>{
+   if(isPoolVault(plugin.settings))return file.path.startsWith(POOL_FOLDER+'/')?{file,space:'',path:file.path}:null;
+   if(!isCenterVault(plugin.settings))return null;
+   const at=plugin.locate(file.path);return at?.rel.startsWith(POOL_FOLDER+'/')?{file,space:at.space,path:at.rel}:null;
+  }).filter(Boolean),
+  enabled,
   restore:({path,space})=>run('pool-restore',async(engine,registry)=>engine.restore(path,registry),result=>result.state==='removed'?'The topic was withdrawn at the Center; its note was removed':'Replaced with the Center\'s version: '+result.title,space),
  };
  plugin.addCommand({id:'pool-update',name:'Update the topic pool',checkCallback:checking=>{if(!enabled())return false;if(!checking)void pool.update();return true;}});

@@ -99,3 +99,23 @@ test('one model is named one way, however the record wrote it',()=>{
  assert.equal(one('Antigravity',{}).label,'Antigravity');
  assert.equal(one('Gemini 3.8 Flash',{modelName:'Gemini 3.8 Flash'}).label,'Gemini 3.8 Flash','an agent named only by its model is not split into nothing');
 });
+
+import {cardStatus,cardAttention,shortDate} from '../src/work-cards.mjs';
+test('one icon leads a card: local trouble first, then the website',()=>{
+ const icon=input=>cardStatus(input).icon;
+ assert.equal(icon({state:'conflict',publication:{state:'blocked'}}),'triangle-alert');
+ assert.equal(icon({state:'edited',version:3,publishedVersion:3}),'pencil');
+ assert.equal(icon({state:'synced',publication:{state:'blocked',revision:3,error:'build failed'},version:3,publishedVersion:2}),'circle-x');
+ assert.match(cardStatus({publication:{state:'failed',revision:3,error:'build failed'}}).title,/v3 没有完成：build failed/);
+ assert.equal(icon({publication:{state:'dispatching',revision:4},version:4,publishedVersion:3}),'send');
+ assert.equal(icon({version:2,publishedVersion:null}),'circle-dashed');
+ assert.equal(cardStatus({version:3,publishedVersion:2}).title,'网站是 v2，草稿 v3 还没发布');
+ assert.deepEqual(cardStatus({version:3,publishedVersion:3}),{icon:'globe',tone:'success',title:'已发布 v3'});
+ assert.equal(icon({publication:{state:'published',revision:3},version:3,publishedVersion:3}),'globe');
+});
+test('what still needs doing follows the facts; dates keep a short year',()=>{
+ assert.deepEqual(cardAttention({author:'a',category:'b'}),[]);
+ assert.deepEqual(cardAttention({author:'',category:'b',checks:'核对图片来源'}).map(m=>m.icon),['list-checks','user-x']);
+ assert.equal(cardAttention({author:'',category:''})[0].title,'缺作者和分类，在详情里补上');
+ assert.equal(shortDate('2026-12-10'),'26-12-10');assert.equal(shortDate(''),'');
+});
