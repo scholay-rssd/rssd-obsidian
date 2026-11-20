@@ -6,6 +6,8 @@
 //   node release.mjs publish          Build, sign, upload to the Center, and check what vaults will receive.
 //   node release.mjs starter          Package the Center's current release as a starter vault (a zip) for a new
 //                                     writer: open it in Obsidian, trust the plugin, add a device token. Needs no key.
+//   node release.mjs github           Make the GitHub release of the Center's current release, if there is none yet
+//                                     (publish does this itself; this is for a retry). Needs gh signed in, no key.
 //
 // Options for publish:
 //   --origin <Center URL>   default: the plugin's default Center
@@ -124,6 +126,9 @@ async function publish(){
   ledger.releases.push({version,commit,coreCommit,publishedAt:release.publishedAt,files});
   await mkdir(HOME,{recursive:true,mode:0o700});await writeAtomically(LEDGER,JSON.stringify(ledger,null,1)+'\n');
   console.log('Published RSSD '+version+'. Vaults install it at their next start or within three hours. Files: '+out);
+  // The Center already serves the release; a failure here leaves vaults updating as usual, and `github` retries it.
+  try{const bytes={};for(const name of FILES)bytes[name]=await readFile(join(out,name));await githubRelease(release,bytes);}
+  catch(error){console.warn('The GitHub release was not made ('+(error.message||error)+'). Run: node release.mjs github');}
  }finally{await rm(work,{recursive:true,force:true});}
 }
 
@@ -158,32 +163,69 @@ export function zipFiles(entries){
  end.writeUInt32LE(0x06054b50,0);end.writeUInt16LE(entries.length,8);end.writeUInt16LE(entries.length,10);end.writeUInt32LE(directory.length,12);end.writeUInt32LE(offset,16);
  return Buffer.concat([...locals,directory,end]);
 }
-async function starter(){
- const origin=option('origin',/DEFAULT_ORIGIN=.*?'(https:\/\/[^']+)'/.exec(await readFile('src/main.js','utf8'))[1]);
+/** The starter vault for a release, given its files as {name: bytes}. */
+export function starterVault(files){
+ return zipFiles([
+  ...FILES.map(name=>({name:'RSSD/.obsidian/plugins/rssd/'+name,bytes:files[name]})),
+  {name:'RSSD/.obsidian/community-plugins.json',bytes:Buffer.from(JSON.stringify(['rssd'])+'\n')},
+  {name:'RSSD/开始使用.md',bytes:Buffer.from(STARTER_GUIDE)},
+ ]);
+}
+const defaultOrigin=async()=>option('origin',/DEFAULT_ORIGIN=.*?'(https:\/\/[^']+)'/.exec(await readFile('src/main.js','utf8'))[1]);
+/** The Center's current release with its files, checked exactly as a vault checks an update: the signature against release-key.pub, then every file's hash. */
+async function centerRelease(origin){
  const {readRelease,verifyRelease,releasePath}=await import(pathToFileURL(join(process.cwd(),'src','self-update.mjs')).href);
  const response=await fetch(releasePath(origin)+'/latest');
  if(!response.ok)stop('The Center did not return its latest release (HTTP '+response.status+')');
  const release=readRelease(await response.json());
  if(!release)stop('The Center returned an invalid release');
- // Checked exactly as a vault checks an update: the signature against release-key.pub, then every file's hash.
  if(!await verifyRelease(release,(await readFile('release-key.pub','utf8')).trim()))stop('Release '+release.version+' is not signed with release-key.pub');
- const entries=[];
+ const files={};
  for(const file of release.files){
   const got=await fetch(releasePath(origin)+'/files/'+file.sha256);
   const bytes=Buffer.from(await got.arrayBuffer());
   if(!got.ok||bytes.length!==file.size||sha256(bytes)!==file.sha256)stop(file.name+' does not match the signed release');
-  entries.push({name:'RSSD/.obsidian/plugins/rssd/'+file.name,bytes});
+  files[file.name]=bytes;
  }
- entries.push({name:'RSSD/.obsidian/community-plugins.json',bytes:Buffer.from(JSON.stringify(['rssd'])+'\n')},{name:'RSSD/开始使用.md',bytes:Buffer.from(STARTER_GUIDE)});
+ return {release,files};
+}
+async function starter(){
+ const {release,files}=await centerRelease(await defaultOrigin());
  const out=option('out','.'),zip=join(out,'rssd-starter-vault-'+release.version+'.zip');
- await mkdir(out,{recursive:true});await writeFile(zip,zipFiles(entries));
+ await mkdir(out,{recursive:true});await writeFile(zip,starterVault(files));
  console.log('Starter vault for RSSD '+release.version+' (rssd-obsidian '+release.commit.slice(0,7)+'): '+resolve(zip)+'\nUnzip, open the RSSD folder in Obsidian and trust the plugin; it updates itself from then on.');
 }
 
+// Every release is also a GitHub release of this repository, with the starter vault, so people download the
+// plugin from GitHub and the Center only answers vaults' update checks. Vaults never install from GitHub.
+const GITHUB_REPO='scholay-rssd/rssd-obsidian';
+export const githubAssetNames=version=>[...FILES,'release.json','rssd-starter-vault-'+version+'.zip'];
+export function githubNotes(release){
+ return 'RSSD Obsidian 插件 '+release.version+'，构建自 rssd-obsidian `'+release.commit.slice(0,7)+'` 和 rssd `'+release.coreCommit.slice(0,7)+'`。\n\n'+
+  '- 新 vault：下载 `rssd-starter-vault-'+release.version+'.zip`，解压后用 Obsidian 打开里面的 `RSSD` 文件夹，信任插件，再填入管理员给的密钥。\n'+
+  '- 已经装了 RSSD 的 vault 会从 RSSD 中心自动更新，不用来这里下载。\n'+
+  '- 手动安装：把 `main.js` 和 `manifest.json` 放进 vault 的 `.obsidian/plugins/rssd/`。\n\n'+
+  '`release.json` 是这个版本的签名描述，签名用的公钥是仓库里的 `release-key.pub`。\n';
+}
+async function githubRelease(release,files){
+ const tag=release.version;
+ try{run('gh',['release','view',tag,'--repo',GITHUB_REPO,'--json','tagName'],{stdio:['ignore','pipe','ignore']});console.log('GitHub release '+tag+' already exists; left as it is.');return;}catch{}
+ const dir=await mkdtemp(join(tmpdir(),'rssd-github-release-'));
+ try{
+  const bytes={...files,'release.json':Buffer.from(JSON.stringify(release,null,1)+'\n'),['rssd-starter-vault-'+tag+'.zip']:starterVault(files)};
+  const paths=githubAssetNames(tag).map(name=>join(dir,name));
+  for(const path of paths)await writeFile(path,bytes[path.slice(dir.length+1)]);
+  run('gh',['release','create',tag,'--repo',GITHUB_REPO,'--target',release.commit,'--title','RSSD '+tag,'--notes',githubNotes(release),...paths]);
+  console.log('GitHub release: https://github.com/'+GITHUB_REPO+'/releases/tag/'+tag);
+ }finally{await rm(dir,{recursive:true,force:true});}
+}
+async function github(){const {release,files}=await centerRelease(await defaultOrigin());await githubRelease(release,files);}
+
 const command=args[0];
-try{
+if(import.meta.url===pathToFileURL(process.argv[1]||'').href)try{
  if(command==='key')await createKey();
  else if(command==='publish')await publish();
  else if(command==='starter')await starter();
- else stop('Usage: node release.mjs key [--rotate] | publish [--dry-run] [--out <folder>] [--origin <url>] [--server <ssh host>] [--plugin-ref <branch>] | starter [--out <folder>] [--origin <url>]');
+ else if(command==='github')await github();
+ else stop('Usage: node release.mjs key [--rotate] | publish [--dry-run] [--out <folder>] [--origin <url>] [--server <ssh host>] [--plugin-ref <branch>] | starter [--out <folder>] [--origin <url>] | github [--origin <url>]');
 }catch(error){console.error(error.stop?error.message:error);process.exitCode=1;}
