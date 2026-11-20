@@ -127,6 +127,16 @@ export function createCenterClient({http,origin,token}){
   annotationTarget:(workspaceId,articleId,locale)=>request('/annotations/target?'+query({workspaceId,articleId,locale})),
   /** Add one answer sheet. Never changes the work. */
   submitAnnotation:body=>request('/annotations',{method:'POST',body}),
+  /** The card sets of a space (center/rssd/RENDITIONS.md): one page of summaries, `next` the cursor or null. */
+  renditions:(workspaceId,options={})=>request(editorial(workspaceId,'renditions?'+query(options))),
+  rendition:(workspaceId,id)=>request(editorial(workspaceId,'renditions/'+encodeURIComponent(id))),
+  /** The bytes of one stored image, as {bytes: ArrayBuffer, type}. A media ID names its content, so the bytes never change. */
+  mediaBytes:async id=>{
+   if(!/^[A-Za-z0-9._:-]{1,200}$/.test(String(id||'')))throw Error('Invalid media ID');
+   const response=await http({url:origin+'/api/rssd/v1/media/'+encodeURIComponent(id)+'/raw',method:'GET',throw:false,headers:{Authorization:'Bearer '+token}});
+   if(response.status<200||response.status>=300)throw new CenterError('Image '+id+' could not be read ('+response.status+')',{status:response.status,code:'media_unreadable'});
+   return {bytes:response.arrayBuffer,type:String(response.headers?.['content-type']||response.headers?.['Content-Type']||'image/webp')};
+  },
   stagedSite:site,
   stagedList:(workspaceId,locale,options={})=>request(editorial(workspaceId,'staged-drafts?'+query({locale,...options}))),
   stagedWork:(workspaceId,articleId,locale)=>boundedDetail(workspaceId,editorial(workspaceId,'staged-drafts/'+encodeURIComponent(articleId)+'?'+query({locale}))),
