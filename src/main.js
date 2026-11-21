@@ -1295,7 +1295,7 @@ export default class RssdPlugin extends Plugin{
  hasCardVariant(file,style){return !!this.sampleCard(file,style)||!!this.cloudCard(file,style);}
  /** The pages of a Center card set as PNG blobs, read once and then kept under .rssd/cloud-cards/. */
  async cloudCardBlobs({space,set},{signal,onProgress}={}){
-  const adapter=this.app.vault.adapter,page=n=>this.spacePath(space,cloudCardPagePath(set.id,n));
+  const adapter=this.app.vault.adapter,page=n=>this.spacePath(space,cloudCardPagePath(set.id,n,set.representation));
   const kept=[];
   for(let n=1;n<=set.pages;n++){if(!await adapter.exists(page(n)))break;kept.push(page(n));}
   if(kept.length===set.pages){
@@ -1319,6 +1319,9 @@ export default class RssdPlugin extends Plugin{
   const folder=this.spacePath(space,cloudCardPagePath(set.id,1)).replace(/\/[^/]+$/,'');
   try{
    for(const part of folder.split('/').map((_,i,all)=>all.slice(0,i+1).join('/')))if(!await adapter.exists(part))await adapter.mkdir(part);
+   // Pages kept by an earlier drawing are replaced, not left beside the new ones.
+   const keep=new Set(blobs.map((_,i)=>page(i+1)));
+   for(const path of (await adapter.list(folder)).files)if(/\.png$/.test(path)&&!keep.has(path))await adapter.remove(path);
    for(const [i,blob] of blobs.entries())await adapter.writeBinary(page(i+1),await blob.arrayBuffer());
   }catch(error){console.error('RSSD card set cache',set.id,error?.message||error);}
   return blobs;

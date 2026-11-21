@@ -44,11 +44,22 @@ export async function rasterLayout({css,pages,media,width,height,signal,onPage=(
  return blobs;
 }
 
+// A transparent pixel: a picture's stand-in in the copy, which can load nothing from outside itself.
+const BLANK='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
 async function drawPage(doc,sheet,{w,h,scale,pictures,signal}){
- // Pictures inside an SVG foreignObject are not painted reliably, so they keep their place in the copy and are
- // drawn onto the canvas from the frame, where they are already decoded.
+ // Pictures inside an SVG foreignObject are not painted, so they are drawn onto the canvas from the frame, where
+ // they are already decoded. In the copy each keeps its place as a blank of exactly its size: a blob: address
+ // does not load there, and a picture with no size would let a centred page close up and move the text away
+ // from where the picture is then drawn (a cover's picture landed on its title).
  const clone=doc.documentElement.cloneNode(true);clone.setAttribute('xmlns','http://www.w3.org/1999/xhtml');
- clone.querySelectorAll('img').forEach(image=>{image.style.visibility='hidden';});
+ const copies=[...clone.querySelectorAll('img')];
+ doc.querySelectorAll('img').forEach((image,index)=>{
+  const copy=copies[index];if(!copy)return;
+  const box=image.getBoundingClientRect();
+  copy.removeAttribute('srcset');copy.setAttribute('src',BLANK);
+  for(const [name,value] of [['visibility','hidden'],['box-sizing','border-box'],['width',box.width+'px'],['height',box.height+'px'],['min-width','0'],['min-height','0'],['max-width','none'],['max-height','none']])copy.style.setProperty(name,value,'important');
+ });
  clone.querySelectorAll('meta,script').forEach(node=>node.remove());
  const xml=new XMLSerializer().serializeToString(clone);
  const svg='<svg xmlns="http://www.w3.org/2000/svg" width="'+w+'" height="'+h+'" viewBox="0 0 '+w+' '+h+'"><foreignObject x="0" y="0" width="'+w+'" height="'+h+'">'+xml+'</foreignObject></svg>';
