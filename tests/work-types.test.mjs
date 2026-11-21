@@ -249,13 +249,14 @@ test('the Type row offers only what the section takes, and says when the Center 
  assert.match(tagProblems(['长'.repeat(41)])[0],/40 characters/);
 });
 
-test('a note gets no card set, and each language edition saves its own set from its own revision',async()=>{
- const {cardSetRefusal,cardExportFolder,packageCardPages}=await import('../src/cards.mjs');
+test('a note gets no card set, and each language edition exports its own set from its own revision',async()=>{
+ const {cardSetRefusal,packageCardPages}=await import('../src/cards.mjs');
  const {wechatSource}=await import('../src/wechat.mjs');
  assert.equal(cardSetRefusal('note').code,'note_has_no_cards');
  assert.equal(cardSetRefusal('article'),null);
- assert.equal(cardExportFolder('a-one','zh-CN'),'Exports/cards/a-one');
- assert.equal(cardExportFolder('a-one','en'),'Exports/cards/en/a-one','the English set never replaces the Chinese one');
+ const {exportFolderName}=await import('../src/card-export.mjs');
+ assert.equal(exportFolderName('a-one',()=>false,'zh-CN'),'a-one');
+ assert.equal(exportFolderName('a-one',()=>false,'en'),'a-one (en)','the English set never replaces the Chinese one');
  const zh=detail('a-one',{version:5}),en=detail('a-one',{version:2,title:'English title'});en.data.locale='en';
  const blob={size:3,arrayBuffer:async()=>new Uint8Array([1,2,3]).buffer};
  const pack=async(d)=>(await packageCardPages({source:wechatSource(workToNote(d,yaml.stringify).content,yaml.parse),site:{id:'pets',name:'Pets'},style:'site',blobs:[blob],version:d.version,publishedVersion:null,engineVersion:'1'})).manifest;

@@ -30,7 +30,9 @@ import {sectionWorkPolicy,MAX_WORK_TAGS} from '../../contracts/work-types.mjs';
 import {wechatHtml,wechatSource,copyRich} from './wechat.mjs';
 import {wechatTemplate,wechatSite,cardTemplate,WECHAT_SITES} from './wechat-template.mjs';
 import {decorateWechat,ARTICLE_THEMES,defaultArticleTheme} from './wechat-designs.mjs';
-import {buildCards,packageCardPages,cardSetRefusal,cardExportFolder} from './cards.mjs';
+import {buildCards,packageCardPages,cardSetRefusal} from './cards.mjs';
+import {cardFileName,exportFolderName,exportFiles} from './card-export.mjs';
+import {desktop,chooseFolder,chooseFile,writeFolder,writeFile,reveal,CardDrag} from './desktop.mjs';
 import {CARD_WIDTH,CARD_HEIGHT,PHONE_ZOOM,TILE_ZOOMS,clampCardIndex,fitCardWidth,stepCardZoom,stepTileZoom,zoomLabel} from './card-view.mjs';
 import {ReviewSidebar,REVIEW_VIEW} from './review-sidebar.mjs';
 import {CARD_STYLE_FOLDER,cardStylePath,checkCardStylesheet,cardStyleBrief} from './card-stylesheet.mjs';
@@ -169,6 +171,18 @@ const TITLE_STYLE=`
 .rssd-card-pages.is-all img.is-current{outline:2px solid var(--interactive-accent);outline-offset:3px}
 .rssd-card-rail{flex:0 0 clamp(86px,12%,132px);min-height:0;overflow:auto;padding:12px 8px;border-right:1px solid var(--background-modifier-border);background:var(--background-primary)}
 .rssd-card-rail[hidden]{display:none}
+/* The post text beside the cards: read and copied on the spot, each part on its own. */
+.rssd-card-copy{flex:0 0 clamp(200px,26%,320px);min-height:0;overflow:auto;padding:12px;border-left:1px solid var(--background-modifier-border);background:var(--background-primary);font-size:var(--font-ui-small)}
+.rssd-card-copy[hidden]{display:none}
+.rssd-card-copy-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:10px;font-weight:var(--font-semibold)}
+.rssd-card-copy-part{margin-bottom:14px}
+.rssd-card-copy-row{display:flex;align-items:center;gap:6px;margin-bottom:4px;color:var(--text-muted);font-size:var(--font-ui-smaller)}
+.rssd-card-copy-label{flex:1 1 auto}
+.rssd-card-copy-count{font-variant-numeric:tabular-nums}.rssd-card-copy-count.is-over{color:var(--text-error)}
+.rssd-card-copy-text{padding:6px 8px;border-radius:var(--radius-s);background:var(--background-secondary);line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text;cursor:text}
+.rssd-card-copy-note{margin-top:4px;color:var(--text-error);font-size:var(--font-ui-smaller);line-height:1.5}
+.rssd-card-copy-text.is-empty{color:var(--text-faint);cursor:default}
+.rssd-card-copy button.rssd-card-copy-all{height:auto;padding:2px 8px;font-size:var(--font-ui-smaller)}
 .rssd-card-rail button{display:flex;flex-direction:column;align-items:center;gap:4px;width:100%;height:auto;padding:6px;margin-bottom:6px;border:0;border-radius:var(--radius-m);box-shadow:none;background:transparent;color:var(--text-faint);font-size:11px;font-variant-numeric:tabular-nums;cursor:pointer}
 .rssd-card-rail button img{display:block;width:100%;height:auto;aspect-ratio:3/4;border-radius:3px;box-shadow:0 0 0 1px var(--background-modifier-border)}
 .rssd-card-rail button[aria-current]{background:var(--background-modifier-hover);color:var(--text-normal)}
@@ -310,6 +324,10 @@ textarea.rssd-details-input{resize:vertical;min-height:4.5em;line-height:var(--l
 const http=request=>requestUrl(request);
 // The device key's own path to the Center. A 401 answer means the key was revoked (or deleted) at the Center.
 export const CENTER_KEYS_PATH='/rssd?tab=workers';
+// The folder cards were last exported to, kept on this device only.
+// Cards leave the vault under the work's title, not its note name, which is an ID.
+const cardName=(file,cards)=>cards?.title||file.basename;
+const CARD_EXPORT_KEY='rssd-card-export-folder',CARD_COPY_KEY='rssd-card-copy-panel';
 
 class CodeModal extends Modal{
  constructor(app,info){super(app);this.info=info;}
@@ -411,8 +429,8 @@ export default class RssdPlugin extends Plugin{
   for(const type of ['rssd-preview','rssd-wechat'])this.registerView(type,leaf=>new LayoutPreview(leaf,this,type,'article'));
   this.addCommand({id:'preview-layout',name:'Preview this work\'s layout',checkCallback:checking=>{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.openPreview();return true;}});
-  this.addCommand({id:'save-cards',name:'Save this work as cards',checkCallback:checking=>{
-   const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file))return false;if(!checking)void this.saveCards(file);return true;}});
+  this.addCommand({id:'export-cards',name:'Export this work\'s cards to a folder',checkCallback:checking=>{
+   const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file)||!desktop())return false;if(!checking)void this.exportCards(file);return true;}});
   this.addCommand({id:'rewrite-as-note',name:'Rewrite this article as a note',checkCallback:checking=>{
    const file=this.app.workspace.getActiveFile();if(!file||!this.isWork(file)||this.workType(file)!=='article')return false;if(!checking)void this.rewriteAsNote(file);return true;}});
   this.addCommand({id:'status',name:'Check sync state of all works',callback:()=>this.refreshStates()});
@@ -963,7 +981,7 @@ export default class RssdPlugin extends Plugin{
    return {loggedIn:true,spaces};
   }finally{if(modal){modal.onCancel=null;modal.close();}this.loginController=null;}
  }
- onunload(){this.unloaded=true;window.clearTimeout(this.updateCheckTimer);window.clearTimeout(this.cardsTimer);window.clearTimeout(this.reloadTimer);document.body.removeClass('rssd-one-row');this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();}
+ onunload(){this.unloaded=true;window.clearTimeout(this.updateCheckTimer);window.clearTimeout(this.cardsTimer);window.clearTimeout(this.reloadTimer);document.body.removeClass('rssd-one-row');this.autoSync?.stop();this.loginController?.abort();window.clearTimeout(this.titleTimer);this.refreshTitles({restore:true});this.titleStyle?.remove();this.drag?.clear();}
  workLabel(file){return file instanceof TFile&&this.isWork(file)?workLabel(this.app.metadataCache.getFileCache(file)?.frontmatter):null;}
  /** Paint titles and dates over ID file names in the explorer, tabs and note headers. Never renames a file. */
  refreshTitles({restore=false}={}){
@@ -1365,27 +1383,58 @@ export default class RssdPlugin extends Plugin{
   try{return checkCardStylesheet(await this.app.vault.read(found)).css;}
   catch(error){throw Error(path+' cannot be used: '+error.message);}
  }
- /** Writes the cards as a package into the vault: the pictures, their caption and the manifest. Nothing is sent anywhere. */
- async saveCards(file,result){
-  try{
-   const refusal=cardSetRefusal(this.workType(file));if(refusal)throw refusal;
-   if(this.nightPreview()&&result?.manifest.style==='site')result=null;
-   result??=await this.cardsResult(file,undefined,{night:false});
-   // Each language edition keeps its own set, made from its own revision: English cards never replace Chinese ones.
-   // Each space keeps its exports in its own folder.
-   const space=this.spaceOf(file),inside=rel=>normalizePath(this.spacePath(space,rel));
-   const locale=result.manifest.locale==='en'?'en':'zh-CN',folder=inside(cardExportFolder(file.basename,locale));
-   for(const part of [...(this.multiSpace()?[this.layout().root(space)]:[]),inside('Exports'),inside('Exports/cards'),...(locale==='en'?[inside('Exports/cards/en')]:[]),folder])if(!await adapter.exists(part))await adapter.mkdir(part);
-   // A shorter set must not leave pages of an earlier, longer one behind.
-   const keep=new Set(result.pages.map(page=>page.name));
-   for(const path of (await adapter.list(folder)).files){const name=path.split('/').at(-1);if(/^\d+\.png$/.test(name)&&!keep.has(name))await adapter.remove(path);}
-   for(const page of result.pages)await adapter.writeBinary(folder+'/'+page.name,await page.blob.arrayBuffer());
-   await adapter.write(folder+'/caption.txt',result.caption);
-   await adapter.write(folder+'/manifest.json',JSON.stringify(result.manifest,null,2));
-   new Notice('Saved '+result.pages.length+(result.pages.length===1?' card':' cards')+' to '+folder+'/ with the caption and manifest.',10000);
-   return folder;
-  }catch(error){console.error('RSSD cards save',error);new Notice('Could not save the cards: '+error.message,10000);}
+ /**
+  * The cards as they leave the vault. A site-style set drawn for night viewing is drawn again by day: black
+  * pages are for looking at in a dark room, not for posting. Other sets are the same by day and night.
+  */
+ async exportableCards(file,result){
+  const refusal=cardSetRefusal(this.workType(file));if(refusal)throw refusal;
+  if(result&&!(result.manifest.style==='site'&&this.nightPreview()))return result;
+  return await this.cardsResult(file,undefined,{style:result?.manifest.style,night:false});
  }
+ /**
+  * Export a set to a folder the writer picks outside the vault: a new folder named after the work, with the
+  * numbered cards and the post text. The vault keeps no copy: the card view draws or reads the set again.
+  */
+ async exportCards(file,result){
+  const d=desktop();if(!d){new Notice('Exporting to a folder needs Obsidian on a computer. Copy the cards instead.',8000);return null;}
+  try{
+   const cards=await this.exportableCards(file,result);
+   let last=null;try{last=this.app.loadLocalStorage?.(CARD_EXPORT_KEY)||null;}catch{}
+   const parent=await chooseFolder(d,{title:'导出卡片',buttonLabel:'导出到这里',defaultPath:last||d.remote.app.getPath('downloads')});if(!parent)return null;
+   const locale=cards.manifest.locale==='en'?'en':'zh-CN';
+   const name=exportFolderName(cardName(file,cards),taken=>d.fs.existsSync(d.path.join(parent,taken)),locale);
+   const folder=await writeFolder(d,parent,name,exportFiles({pages:cards.pages,post:cards.post,locale}));
+   try{this.app.saveLocalStorage?.(CARD_EXPORT_KEY,parent);}catch{}
+   reveal(d,folder);
+   new Notice('已导出 '+cards.pages.length+' 张卡片'+(cards.post?.all?'和文案':'')+'：'+folder,8000);
+   return folder;
+  }catch(error){console.error('RSSD cards export',error);new Notice('Could not export the cards: '+error.message,10000);return null;}
+ }
+ /** Save one card where the writer picks. */
+ async saveCardAs(file,result,index){
+  const d=desktop();if(!d)return;
+  try{
+   const cards=await this.exportableCards(file,result),page=cards.pages[index];if(!page)return;
+   let last=null;try{last=this.app.loadLocalStorage?.(CARD_EXPORT_KEY)||null;}catch{}
+   const path=await chooseFile(d,{title:'另存卡片',defaultPath:d.path.join(last||d.remote.app.getPath('downloads'),cardFileName(cardName(file,cards),page))});if(!path)return;
+   await writeFile(d,path,page);reveal(d,path);
+  }catch(error){console.error('RSSD card save',error);new Notice('Could not save the card: '+error.message,10000);}
+ }
+ /** Put one card on the clipboard as a picture. */
+ async copyCardImage(blob){
+  try{
+   if(globalThis.ClipboardItem&&navigator.clipboard?.write)await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);
+   else{const d=desktop();if(!d)throw Error('this device cannot copy pictures');const {clipboard,nativeImage}=window.require('electron');clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(await blob.arrayBuffer())));}
+   new Notice('已复制卡片图片');
+  }catch(error){console.error('RSSD card copy',error);new Notice('Could not copy the card: '+error.message,8000);}
+ }
+ /** Put text on the clipboard. */
+ async copyText(text,what){
+  try{await navigator.clipboard.writeText(text);new Notice('已复制'+what);}catch(error){new Notice('Could not copy: '+error.message,8000);}
+ }
+ /** Cards dragged out as files, on a computer; null elsewhere. */
+ cardDrag(){if(this.drag===undefined){const d=desktop();this.drag=d?new CardDrag(d):null;}return this.drag;}
  /**
   * Once per vault that edits works, arrange the layout: the Works list in the left sidebar, and Preview, Cards,
   * Outline and Details as tabs in the center. Tabs that earlier versions kept in the right sidebar, or in a pane
@@ -2141,10 +2190,10 @@ const PREVIEW_TARGETS=[
   // The site's own style comes first, under the site's name; the general themes are numbered (hover for names).
   styles:[{id:'site',site:true},...Object.entries(ARTICLE_THEMES).map(([id,theme],index)=>({id,label:String(index+1),name:theme.label}))],
   build:(plugin,file,content,style)=>plugin.wechatResult(file,content,{style}),copy:(plugin,file,style)=>plugin.copyForWechat(file,{style})},
- {id:'cards',label:'Cards',name:'Card view',icon:'gallery-vertical-end',copyLabel:'Save cards',actionIcon:'download',
+ {id:'cards',label:'Cards',name:'Card view',icon:'gallery-vertical-end',copyLabel:'导出（可把它拖出去，带走全部卡片）',actionIcon:'share',
   styles:[{id:'site',label:'算法排版',icon:CARD_STYLE_ICONS.site},
    ...Object.entries(CARD_VARIANTS).map(([id,label])=>({id,label,icon:CARD_STYLE_ICONS[id],when:(plugin,file)=>plugin.hasCardVariant(file,id)}))],
-  build:(plugin,file,content,style,options)=>plugin.cardsResult(file,content,{style,...options}),copy:(plugin,file,style,result)=>plugin.saveCards(file,result)},
+  build:(plugin,file,content,style,options)=>plugin.cardsResult(file,content,{style,...options}),copy:(plugin,file,style,result,view,event)=>view.exportMenu(event)},
  // Outline and details are not outputs: they show how the work is built and what it is, beside the outputs.
  {id:'outline',label:'Outline',name:'Outline',icon:'list',styles:[],panel:'outline'},
  {id:'details',label:'Details',name:'Work details',icon:'info',styles:[],panel:'details'},
@@ -2208,7 +2257,8 @@ class LayoutPreview extends ItemView{
   this.iconButton(actions,'refresh-cw','Refresh').addEventListener('click',()=>this.show(this.file,{force:true}));
   // Outline and details have no action; their controls row stays hidden, but the button still needs an icon.
   this.actionButton=this.iconButton(actions,this.target.actionIcon||'copy',this.target.copyLabel||'','mod-cta');
-  this.actionButton.addEventListener('click',()=>{if(this.file)void this.target.copy(this.plugin,this.file,this.style,this.result);});
+  this.actionButton.addEventListener('click',event=>{if(this.file)void this.target.copy(this.plugin,this.file,this.style,this.result,this,event);});
+  this.actionsEl=actions;
   if(this.target.id==='article'||this.target.id==='cards'){
    this.appearanceSelect=actions.createEl('select',{cls:'rssd-appearance',attr:{'aria-label':'日间或夜间',title:'日间或夜间'}});
    for(const [value,text] of [['system','跟随'],['light','日间'],['dark','夜间']])this.appearanceSelect.createEl('option',{value,text});
@@ -2321,6 +2371,16 @@ class LayoutPreview extends ItemView{
   this.controls.prepend(this.thumbToggle);
   this.thumbOpen=true;
   this.thumbToggle.addEventListener('click',()=>{this.thumbOpen=!this.thumbOpen;this.markCardMode();});
+  // The post text sits on the other side of the cards; the choice to show it is kept on this device.
+  let copyOpen=true;try{copyOpen=this.app.loadLocalStorage?.(CARD_COPY_KEY)!=='closed';}catch{}
+  this.copyOpen=copyOpen;
+  this.copyToggle=this.iconButton(this.actionsEl||this.controls,'panel-right','发布文案');
+  this.actionsEl?.prepend(this.copyToggle);
+  this.copyToggle.addEventListener('click',()=>{this.copyOpen=!this.copyOpen;try{this.app.saveLocalStorage?.(CARD_COPY_KEY,this.copyOpen?'open':'closed');}catch{}this.markCardMode();});
+  // The export button can itself be dragged out, carrying every card.
+  this.actionButton.draggable=!!this.plugin.cardDrag();
+  this.actionButton.addEventListener('pointerover',()=>{for(const image of this.cardImages||[])void this.prepareDrag(image.index);});
+  this.actionButton.addEventListener('dragstart',event=>this.dragCards(event,(this.cardImages||[]).map(image=>image.index)));
   const nav=this.cardBar.createDiv({cls:'rssd-card-nav'});
   this.cardPrev=this.iconButton(nav,'chevron-left','上一页');
   this.cardPrev.addEventListener('click',()=>this.moveCard(-1));
@@ -2357,6 +2417,8 @@ class LayoutPreview extends ItemView{
   // All cards as tiles already are the thumbnails, so the rail steps aside there.
   this.thumbToggle.disabled=!page;this.thumbToggle.setAttribute('aria-expanded',String(page&&this.thumbOpen));
   if(this.thumbRail)this.thumbRail.hidden=!page||!this.thumbOpen;
+  this.copyToggle.setAttribute('aria-expanded',String(this.copyOpen));
+  if(this.copyPanel)this.copyPanel.hidden=!this.copyOpen;
   this.cardZoomLabel.setText(zoomLabel(page?zoom:tile));
   const fit=this.cardFitScale();
   this.cardZoomOut.disabled=page?stepCardZoom(zoom,-1,fit)===zoom:stepTileZoom(tile,-1)===tile;
@@ -2379,6 +2441,15 @@ class LayoutPreview extends ItemView{
     this.cardLook.index=Number(button.dataset.page);this.paintCards();
    });
    this.cardPages=this.cardViewEl.createDiv({cls:'rssd-card-pages'});
+   this.copyPanel=this.cardViewEl.createEl('aside',{cls:'rssd-card-copy',attr:{'aria-label':'发布文案'}});
+   this.copyPanel.hidden=!this.copyOpen;
+   // A card is dragged out as a picture file, as from a folder; it is written ahead, when the pointer reaches it.
+   const indexOf=target=>{const holder=target?.closest?.('img[data-index],button[data-page]');if(!holder)return null;const value=holder.dataset.index??holder.dataset.page;return value==null?null:Number(value);};
+   for(const area of [this.cardPages,this.thumbRail]){
+    area.addEventListener('pointerover',event=>{const index=indexOf(event.target);if(index!=null)void this.prepareDrag(index);});
+    area.addEventListener('dragstart',event=>{const index=indexOf(event.target);if(index!=null)this.dragCards(event,[index]);});
+    area.addEventListener('contextmenu',event=>{const index=indexOf(event.target);if(index==null)return;event.preventDefault();this.cardMenu(index).showAtMouseEvent(event);});
+   }
    this.cardPages.addEventListener('click',event=>{
     const img=event.target?.closest?.('img');if(!img||img.dataset.index==null)return;
     if(this.cardLook.mode==='all'){this.cardLook.mode='page';this.cardLook.index=Number(img.dataset.index);this.paintCards();return;}
@@ -2404,9 +2475,73 @@ class LayoutPreview extends ItemView{
    button.createSpan({text:String(image.index+1)});
   }
   this.cardLook.index=clampCardIndex(this.cardLook.index,pages.length);
+  this.dragSet=(this.dragSet||0)+1;this.dayCards=null;
+  this.paintPostText(this.result?.post);
   this.contentEl.addClass('rssd-preview');this.contentEl.addClass('is-cards');this.stage.addClass('is-cards');
   this.cardBar.hidden=false;this.cardViewEl.style.display='flex';
   this.paintCards();
+ }
+ /** The post text beside the cards: title, body and tags, each copied with its own button, or all at once. */
+ paintPostText(post){
+  const panel=this.copyPanel;if(!panel)return;panel.empty();
+  if(!post){panel.createDiv({cls:'rssd-card-copy-text is-empty',text:'这组卡片没有文案。'});return;}
+  const head=panel.createDiv({cls:'rssd-card-copy-head'});head.createSpan({text:'发布文案'});
+  const all=head.createEl('button',{cls:'rssd-card-copy-all',text:'全部复制'});all.disabled=!post.all;
+  all.addEventListener('click',()=>void this.plugin.copyText(post.all,'全部文案'));
+  const empty={title:'作品没有标题。',body:'作品还没有摘要。正文取自摘要，在“详情”里填写。',tags:'作品还没有标签，可在“详情”里添加。'};
+  for(const part of post.parts){
+   const box=panel.createDiv({cls:'rssd-card-copy-part'}),row=box.createDiv({cls:'rssd-card-copy-row'});
+   row.createSpan({cls:'rssd-card-copy-label',text:part.label});
+   if(part.limit)row.createSpan({cls:'rssd-card-copy-count'+(part.over?' is-over':''),text:part.count+' / '+part.limit+(part.id==='tags'?' 个':''),
+    attr:{'aria-label':part.over?'超出 '+part.limit+(part.id==='tags'?' 个':' 字'):part.count+(part.id==='tags'?' 个':' 字')}});
+   const copy=this.iconButton(row,'copy','复制'+part.label,'clickable-icon');copy.disabled=!part.text;
+   copy.addEventListener('click',()=>void this.plugin.copyText(part.text,part.label));
+   box.createDiv({cls:'rssd-card-copy-text'+(part.text?'':' is-empty'),text:part.text||empty[part.id]});
+   // Over is not an error in the work: the work's title is written for the website; the limit is the platform's.
+   if(part.over)box.createDiv({cls:'rssd-card-copy-note',text:'小红书'+part.label+'最多 '+part.limit+(part.id==='tags'?' 个':' 字')+'，发之前要删短；作品本身不受影响。'});
+  }
+ }
+ /** The set as it leaves the vault (by day), drawn once per set shown. */
+ cardsToExport(){
+  if(!this.file||!this.result)return Promise.reject(Error('No cards yet'));
+  this.dayCards??=this.plugin.exportableCards(this.file,this.result).catch(error=>{this.dayCards=null;throw error;});
+  return this.dayCards;
+ }
+ /** Write card `index` ahead of a drag. */
+ async prepareDrag(index){
+  const drag=this.plugin.cardDrag();if(!drag||!this.file)return;
+  const set=this.dragSet,file=this.file;
+  try{const cards=await this.cardsToExport(),page=cards.pages[index];if(!page||set!==this.dragSet)return;await drag.prepare(set+':'+index,cardFileName(cardName(file,cards),page),page.blob);}
+  catch(error){console.error('RSSD card drag',error);}
+ }
+ /** Hand a drag of these cards to the system as files; a card not written yet asks to be dragged again. */
+ dragCards(event,indexes){
+  const drag=this.plugin.cardDrag();if(!drag||!indexes.length)return;
+  event.preventDefault();
+  if(!drag.start(indexes.map(index=>this.dragSet+':'+index))){for(const index of indexes)void this.prepareDrag(index);new Notice('卡片还在准备，请再拖一次。',3000);}
+ }
+ /** The export button's menu. */
+ exportMenu(event){
+  const menu=new Menu(),index=this.cardLook?.index||0,file=this.file,computer=!!desktop();
+  menu.addItem(item=>item.setTitle('复制这张卡片').setIcon('image').onClick(async()=>{const cards=await this.cardsToExport();void this.plugin.copyCardImage(cards.pages[index].blob);}));
+  if(this.result?.post?.all)menu.addItem(item=>item.setTitle('复制全部文案').setIcon('copy').onClick(()=>void this.plugin.copyText(this.result.post.all,'全部文案')));
+  if(computer){
+   menu.addSeparator();
+   menu.addItem(item=>item.setTitle('导出全部到文件夹…').setIcon('folder-output').onClick(async()=>{const cards=await this.cardsToExport();void this.plugin.exportCards(file,cards);}));
+   menu.addItem(item=>item.setTitle('这张另存为…').setIcon('download').onClick(async()=>{const cards=await this.cardsToExport();void this.plugin.saveCardAs(file,cards,index);}));
+  }
+  // Under the button, opening leftwards: the button sits at the pane's right edge.
+  const box=this.actionButton.getBoundingClientRect();menu.showAtPosition({x:box.right,y:box.bottom+4,left:true});
+ }
+ /** The right-click menu of one card. */
+ cardMenu(index){
+  const menu=new Menu(),file=this.file;
+  menu.addItem(item=>item.setTitle('复制图片').setIcon('image').onClick(async()=>{const cards=await this.cardsToExport();void this.plugin.copyCardImage(cards.pages[index].blob);}));
+  if(desktop()){
+   menu.addItem(item=>item.setTitle('另存为…').setIcon('download').onClick(async()=>{const cards=await this.cardsToExport();void this.plugin.saveCardAs(file,cards,index);}));
+   menu.addItem(item=>item.setTitle('导出全部到文件夹…').setIcon('folder-output').onClick(async()=>{const cards=await this.cardsToExport();void this.plugin.exportCards(file,cards);}));
+  }
+  return menu;
  }
  moveCard(delta){
   const count=this.cardImages?.length||0;if(!count)return;
