@@ -20,7 +20,7 @@ import {workLabel,labelText,tabTitle} from './titles.mjs';
 import {agoText,cardChips,cardStatus,cardAttention,shortDate,mediaName,noteFacts,lengthText,writerOf,writerLabel,isBrandLine} from './work-cards.mjs';
 import {internalNotes,hasOpenChecks,runHistory,rowNotes,anchorMatches} from './private-notes.mjs';
 import {emptyFilter,normalizeFilter,matches,facetCounts,narrowedBy,activeChips,withoutChip,toggled,datePreset,NO_WRITER,CARD_VARIANTS,STAGE_LABELS} from './works-filter.mjs';
-import {CARD_STYLE_ICONS,styleOptions,nextStyle} from './style-switch.mjs';
+import {CARD_STYLE_ICONS,CARD_STYLE_ORDER,preferredCardStyle,styleOptions,nextStyle} from './style-switch.mjs';
 import {SettingsLog,baselineBucket} from './settings-log.mjs';
 import {layoutMode,spaceFolderName,VaultLayout,prefixedVault,SPACES} from './vault-layout.mjs';
 import {adoptKey,centerAccess} from './key-vault.mjs';
@@ -896,6 +896,8 @@ export default class RssdPlugin extends Plugin{
    if(!changed)return;
    await this.saveSettings().catch(()=>{});
    for(const leaf of this.app.workspace?.getLeavesOfType?.('rssd-works')||[])leaf.view?.render?.();
+   // A card view still on the style it opened with moves to a better set that has just arrived.
+   for(const leaf of this.app.workspace?.getLeavesOfType?.('rssd-cards')||[])leaf.view?.betterDefault?.();
   }finally{this.cloudCardsRefreshing=false;}
  }
  /**
@@ -1242,8 +1244,8 @@ export default class RssdPlugin extends Plugin{
   return {version:integer(properties['rssd-version']),publishedVersion:integer(properties['rssd-published-version'])};
  }
  /** Puts the styled article on the clipboard only. Nothing is sent to the Center or to any platform. */
- /** Every view starts with the site's own style. */
- defaultStyle(){return 'site';}
+ /** The article starts with the site's own style; cards with the best set the work has (see CARD_STYLE_ORDER). */
+ defaultStyle(target,file){return target==='cards'&&file?preferredCardStyle(id=>this.hasCardVariant(file,id)):'site';}
  /** Day, night, or follow Obsidian. Remembered on this device. */
  previewAppearance(){const saved=this.app.loadLocalStorage?.('rssd-preview-appearance');return saved==='light'||saved==='dark'?saved:'system';}
  setPreviewAppearance(value){this.app.saveLocalStorage?.('rssd-preview-appearance',value==='light'||value==='dark'?value:'system');}
@@ -2191,8 +2193,8 @@ const PREVIEW_TARGETS=[
   styles:[{id:'site',site:true},...Object.entries(ARTICLE_THEMES).map(([id,theme],index)=>({id,label:String(index+1),name:theme.label}))],
   build:(plugin,file,content,style)=>plugin.wechatResult(file,content,{style}),copy:(plugin,file,style)=>plugin.copyForWechat(file,{style})},
  {id:'cards',label:'Cards',name:'Card view',icon:'gallery-vertical-end',copyLabel:'导出（可把它拖出去，带走全部卡片）',actionIcon:'share',
-  styles:[{id:'site',label:'算法排版',icon:CARD_STYLE_ICONS.site},
-   ...Object.entries(CARD_VARIANTS).map(([id,label])=>({id,label,icon:CARD_STYLE_ICONS[id],when:(plugin,file)=>plugin.hasCardVariant(file,id)}))],
+  styles:CARD_STYLE_ORDER.map(id=>id==='site'?{id,label:'算法排版',icon:CARD_STYLE_ICONS.site}:
+   {id,label:CARD_VARIANTS[id],icon:CARD_STYLE_ICONS[id],when:(plugin,file)=>plugin.hasCardVariant(file,id)}),
   build:(plugin,file,content,style,options)=>plugin.cardsResult(file,content,{style,...options}),copy:(plugin,file,style,result,view,event)=>view.exportMenu(event)},
  // Outline and details are not outputs: they show how the work is built and what it is, beside the outputs.
  {id:'outline',label:'Outline',name:'Outline',icon:'list',styles:[],panel:'outline'},
@@ -2506,6 +2508,12 @@ class LayoutPreview extends ItemView{
   if(!this.file||!this.result)return Promise.reject(Error('No cards yet'));
   this.dayCards??=this.plugin.exportableCards(this.file,this.result).catch(error=>{this.dayCards=null;throw error;});
   return this.dayCards;
+ }
+ /** If the writer has not picked a style for this work, open it on the best set it now has. */
+ betterDefault(){
+  if(!this.file||this.style!==this.defaultStyle)return;
+  const best=this.plugin.defaultStyle('cards',this.file);if(best===this.style)return;
+  this.defaultStyle=this.style=best;this.drawTabs(this.file);void this.show(this.file,{force:true});
  }
  /** Write card `index` ahead of a drag. */
  async prepareDrag(index){

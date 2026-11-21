@@ -16,7 +16,7 @@ export const DEFAULT_STAGES=Object.freeze(['draft','published']);
 export const STAGE_LABELS=Object.freeze({topic:'选题',draft:'草稿',published:'已发布'});
 /** A work's stage from its draft and published versions; a topic is always 'topic'. */
 export const stageOf=work=>work?.kind==='topic'?'topic':(Number(work?.publishedVersion)||0)>0&&(Number(work?.version)||0)<=(Number(work?.publishedVersion)||0)?'published':'draft';
-export const CARD_VARIANTS=Object.freeze({'ai-code':'智能排版','ai-image':'模型生图'});
+export const CARD_VARIANTS=Object.freeze({'ai-image':'模型生图','ai-code':'智能排版'});
 /** The agent or model value for a work whose writer the Center has no record of (or that is not read yet). */
 export const NO_WRITER='';
 const DATE=/^\d{4}-\d{2}-\d{2}$/;

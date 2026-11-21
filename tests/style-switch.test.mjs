@@ -24,3 +24,11 @@ test('arrow keys move between the styles that can be chosen, wrapping around',()
  assert.equal(nextStyle(options,'site','Enter'),null);
  assert.equal(nextStyle(styleOptions(styles,[],'site'),'site','ArrowRight'),null);
 });
+
+test('cards open on 模型生图, then 智能排版, and fall back to 算法排版',async()=>{
+ const {CARD_STYLE_ORDER,preferredCardStyle}=await import('../src/style-switch.mjs');
+ assert.deepEqual(CARD_STYLE_ORDER,['ai-image','ai-code','site']);
+ assert.equal(preferredCardStyle(()=>true),'ai-image');
+ assert.equal(preferredCardStyle(id=>id==='ai-code'),'ai-code');
+ assert.equal(preferredCardStyle(()=>false),'site');
+});

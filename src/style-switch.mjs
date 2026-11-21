@@ -2,6 +2,11 @@
 // without Obsidian: which options the group shows, how each is named, and where the arrow keys move.
 
 /** Icons for the card view's styles: laid out by the plug-in, laid out by an agent, drawn by an image model. */
+// Card sets in order of preference (owner, 2026-11-21): 模型生图 first, 智能排版 next, 算法排版 as the fallback
+// every long article has. The card view shows them in this order and opens on the first a work has.
+export const CARD_STYLE_ORDER=Object.freeze(['ai-image','ai-code','site']);
+/** The card style a work opens on: the first in CARD_STYLE_ORDER it has a set for; `has(id)` answers for the two AI sets. */
+export const preferredCardStyle=has=>CARD_STYLE_ORDER.find(id=>id==='site'||has(id));
 export const CARD_STYLE_ICONS=Object.freeze({site:'layout-template','ai-code':'sparkles','ai-image':'palette'});
 
 /**
