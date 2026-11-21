@@ -32,6 +32,7 @@ test('a set is shown only for the edition it was made for',()=>{
  assert.equal(cloudCardOf(index,{workId:'w1',version:2,variant:'ai-code'}),null);
  assert.equal(cloudCardOf(index,{workId:undefined,version:2,variant:'ai-image'}),null);
  assert.equal(cloudCardPagePath('rendition-a',3),'.rssd/cloud-cards/rendition-a/03.png');
+ assert.equal(cloudCardPagePath('rendition-a',3,'layout'),'.rssd/cloud-cards/rendition-a/d2-03.png','a layout set drawn by an older drawing is drawn again');
 });
 
 test('a layout page becomes a document that runs nothing and loads only its own images',()=>{

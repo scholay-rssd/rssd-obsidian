@@ -47,8 +47,12 @@ export function cloudCardOf(index,{workId,locale='zh-CN',version,variant}){
  return found&&Number(version)===found.revision?found:null;
 }
 
+// A layout set is drawn here, so its kept pages carry the version of the drawing: a fix to the drawing (2: pictures
+// keep their size in the copy) draws the set again instead of showing a wrong page kept earlier. A raster set is
+// only re-encoded and keeps plain names.
+export const LAYOUT_DRAWING=2;
 /** Where page `n` (1-based) of a set is kept, inside the space. */
-export const cloudCardPagePath=(id,n)=>CLOUD_CARD_FOLDER+'/'+id+'/'+String(n).padStart(2,'0')+'.png';
+export const cloudCardPagePath=(id,n,representation='raster')=>CLOUD_CARD_FOLDER+'/'+id+'/'+(representation==='layout'?'d'+LAYOUT_DRAWING+'-':'')+String(n).padStart(2,'0')+'.png';
 
 const MEDIA_REF=/(?:https?:\/\/[^/\s)"']+)?\/api\/rssd\/v1\/media\/([A-Za-z0-9._:-]+)\/raw/g;
 /** The media IDs a layout set refers to. */
