@@ -7,6 +7,7 @@ import {paginate} from '../../web/engine/browser-export/pagination.mjs';
 import {rasterPage} from '../../web/engine/browser-export/raster.mjs';
 import {checkVisibleText} from './card-stylesheet.mjs';
 import {outputManifest,outputFields,checkSource} from '../../contracts/output-package.mjs';
+import {postText} from './card-export.mjs';
 import {workFingerprint,localMediaPaths,bytesToBase64} from './sync-model.mjs';
 import {MEDIA_HOST,mediaType} from './reader.mjs';
 import {wechatSource} from './wechat.mjs';
@@ -155,7 +156,6 @@ const dataUrl=(name,bytes)=>{const data=bytesToBase64(bytes);return 'data:'+medi
 /** A long article gets a card set; a note does not: its pictures are its content. Returns the refusal, or null. */
 export function cardSetRefusal(type){return type==='note'?Object.assign(Error('A note has no card set: its pictures are its content.'),{code:'note_has_no_cards'}):null;}
 /** Where a work's card package is saved: one folder per language edition, so each edition keeps its own set. */
-export const cardExportFolder=(name,locale='zh-CN')=>'Exports/cards/'+(locale==='en'?'en/':'')+name;
 
 /**
  * Build the cards for a note. `render(markdown,element)` fills an element with the rendered body,
@@ -215,5 +215,7 @@ export async function packageCardPages({source,site,style,blobs,version,publishe
  const manifest=outputManifest({format:'cards',source:record,site:{id:site?.id||'unknown',name:site?.name||''},style,createdAt:now().toISOString(),engine:{name:'rssd-obsidian',version:engineVersion},
   sourceHash:await workFingerprint(work.data,localMediaPaths(work.media)),fields,files,
   warnings:[...checkSource(record).warnings,...warnings,...extraWarnings]});
- return {title:source.title,pages,caption,missing,manifest,sectionId:source.sectionId,styled,size:CARD_SIZE};
+ // The post text shown beside the cards: the title and summary as written, and the work's tags.
+ const post=postText({title:record.title,summary:record.summary,tags:work.data.tags});
+ return {title:source.title,pages,caption,post,missing,manifest,sectionId:source.sectionId,styled,size:CARD_SIZE};
 }
